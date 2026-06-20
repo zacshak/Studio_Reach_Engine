@@ -1,0 +1,4 @@
+# Rename this file to `steam_key.txt` and paste your free Steam Web API key below.
+# Get one at: https://steamcommunity.com/dev/apikey  (any domain works, e.g. localhost)
+# steam_key.txt is git-ignored so your key is never committed.
+PASTE_YOUR_32_CHAR_STEAM_WEB_API_KEY_HERE
