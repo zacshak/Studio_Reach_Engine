@@ -20,8 +20,9 @@ DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache.sqlite
 TIMEOUT = 15  # seconds to wait on a locked DB before raising
 
 STATUSES = ("pending", "seeded", "SCRAPED", "no_email", "failed")
-# outreach state, managed by the (future) mailer; Mail_status defaults to 'Pending'
-MAIL_STATUSES = ("Pending", "Scheduled", "Sent", "Replied")
+# outreach state; Mail_status defaults to 'Pending'. Review moves it Pending ->
+# Writing (accepted) ; the mailer later moves Writing -> Scheduled -> Sent -> Replied.
+MAIL_STATUSES = ("Pending", "Writing", "Scheduled", "Sent", "Replied")
 
 # Canonical scrape_tracker schema — ONE definition, used both for fresh DBs and
 # for the rebuild migration below (SQLite's ALTER can only append a column, so
@@ -247,6 +248,38 @@ def write_result(appid, *, scrape_status, emails=None, country=None, engine=None
             conn.execute("INSERT INTO scrape_tracker (appid) VALUES (?)", (appid,))
             conn.execute(
                 f"UPDATE scrape_tracker SET {','.join(sets)} WHERE appid=?", vals)
+        conn.commit()
+
+
+# --- review actions (used by the Leads Reviewer) ------------------------
+def mail_status_appids(status):
+    """Appids whose Mail_status equals `status` (e.g. 'Pending'). Read-only."""
+    _ensure()
+    with closing(_ro()) as conn:
+        return [r[0] for r in conn.execute(
+            "SELECT appid FROM scrape_tracker WHERE Mail_status=? ORDER BY appid",
+            (status,))]
+
+
+def set_mail_status(appid, status):
+    """Set one lead's Mail_status (e.g. 'Writing' on acceptance)."""
+    if status not in MAIL_STATUSES:
+        raise ValueError(f"bad mail status {status!r}; expected one of {MAIL_STATUSES}")
+    _ensure()
+    with closing(_rw()) as conn:
+        conn.execute("UPDATE scrape_tracker SET Mail_status=? WHERE appid=?",
+                     (status, int(appid)))
+        conn.commit()
+
+
+def delete_lead(appid):
+    """Permanently remove a rejected lead from BOTH tables — scrape_tracker and
+    the canonical newly_added cache — so it won't reappear (a re-fetch would
+    otherwise re-insert newly_added and the trigger would re-create the row)."""
+    _ensure()
+    with closing(_rw()) as conn:
+        conn.execute("DELETE FROM scrape_tracker WHERE appid=?", (int(appid),))
+        conn.execute("DELETE FROM newly_added WHERE appid=?", (int(appid),))
         conn.commit()
 
 

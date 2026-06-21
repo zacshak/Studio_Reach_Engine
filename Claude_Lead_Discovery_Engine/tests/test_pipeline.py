@@ -228,6 +228,17 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(row[2], "US")
         self.assertEqual(row[3], "Keep")      # seeded data intact
 
+    def test_delete_lead_removes_from_both_tables(self):
+        with self._raw() as c:
+            insert_lead(c, 650)                    # trigger seeds scrape_tracker
+        pipeline.delete_lead(650)
+        with self._raw() as c:
+            in_tracker = c.execute("SELECT COUNT(*) FROM scrape_tracker "
+                                   "WHERE appid=650").fetchone()[0]
+            in_added = c.execute("SELECT COUNT(*) FROM newly_added "
+                                 "WHERE appid=650").fetchone()[0]
+        self.assertEqual((in_tracker, in_added), (0, 0))
+
     def test_write_result_rejects_bad_status(self):
         with self.assertRaises(ValueError):
             pipeline.write_result(700, scrape_status="bogus")

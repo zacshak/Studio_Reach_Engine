@@ -27,8 +27,8 @@ from concurrent.futures import ThreadPoolExecutor
 import pipeline  # same folder; the DB contract (read_lead + connections)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-# repo-root/Approval_Pending_Games (one level up from this engine folder)
-DEFAULT_BASE = os.path.join(os.path.dirname(HERE), "Approval_Pending_Games")
+# the media store lives under the reviewer: repo-root/Leads_Reviewer/Approval_Pending_Games
+DEFAULT_BASE = os.path.join(os.path.dirname(HERE), "Leads_Reviewer", "Approval_Pending_Games")
 UA = "claude-lead-discovery/1.0 (approval-export)"
 
 _ILLEGAL = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
