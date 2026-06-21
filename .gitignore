@@ -4,7 +4,11 @@ __pycache__/
 venv/
 out/
 *.sqlite
+!claude Steam Search/cache.sqlite
+*.sqlite-wal
+*.sqlite-shm
 *.sqbpro
 *.db
 .env
 steam_key.txt
+HermesScraper/nul
