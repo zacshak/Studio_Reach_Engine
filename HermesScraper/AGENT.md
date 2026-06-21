@@ -10,10 +10,10 @@ track down the studio's web presence, extract the best recruiting-grade contact 
 (plus country and engine when available), and record it.** You're finished when no
 pending leads remain.
 
-You reach the database **only** through `pipeline.py` (in this folder). It is your
-work-queue, your reader, and your writer. You never open the database file yourself.
+You reach the database **only** through `scraper_interface.py` (in this folder). It is
+your work-queue, your reader, and your writer. You never open the database file yourself.
 
-## Your interface — `pipeline.py`
+## Your interface — `scraper_interface.py`
 Call these Python functions; they are your only DB access.
 
 | Function | Purpose |
@@ -32,31 +32,31 @@ Call these Python functions; they are your only DB access.
 
 ## Workflow (per lead)
 ```python
-import pipeline
+import scraper_interface as leads
 
-for appid in pipeline.get_pending():           # 1. take the queue (pending only)
-    lead = pipeline.read_lead(appid)           # 2. read the lead (use ALL its fields)
+for appid in leads.get_pending():              # 1. take the queue (pending only)
+    lead = leads.read_lead(appid)              # 2. read the lead (use ALL its fields)
     site = lead["website"] or resolve_site(lead)   # no website? find one (see below)
     try:
         emails  = browse_for_emails(site, lead) # 3. browse + extract (your job)
         country = derive_country(site, emails)
         engine  = derive_engine(lead)
         if emails:
-            pipeline.write_result(appid, scrape_status="SCRAPED",
+            leads.write_result(appid, scrape_status="SCRAPED",
                 emails=emails, country=country, engine=engine, website=site)
         else:                                   # checked everywhere, nothing published
-            pipeline.write_result(appid, scrape_status="no_email",
+            leads.write_result(appid, scrape_status="no_email",
                 country=country, engine=engine)
     except Exception:
-        pipeline.write_result(appid, scrape_status="failed")
+        leads.write_result(appid, scrape_status="failed")
 ```
 
 **Precheck before scraping everything** — prove your method on 5 leads first:
-1. Get 5 appids: `pipeline.get_pending(limit=5)`.
+1. Get 5 appids: `leads.get_pending(limit=5)`.
 2. Run the full fetch→scrape→save loop on just those 5.
-3. Read those 5 rows back from `scrape_tracker` and check: is each `emails` a real
-   address (not blank, not invented)? are `country`/`engine`/`scrape_status` filled
-   sensibly?
+3. Inspect what you extracted for each before trusting the method: is the email a real
+   address (not blank, not invented)? do `country`/`engine` look sensible, and did you
+   pick the right `scrape_status`?
 4. If yes, your method works → run the loop on the entire queue (`get_pending()` with
    no limit). If not, fix your scraping before scaling up.
 
@@ -96,8 +96,9 @@ upstream — you never write them.)
 the queue (except `failed`, which a later run retries).
 
 ## Boundaries (hard rules)
-1. The database is reached **only** through `pipeline.py`. Don't open the DB file.
-2. The lead table is **read-only** to you (`read_lead`). You cannot and must not write it.
+1. The database is reached **only** through `scraper_interface.py`'s three calls. Don't
+   open the DB file or import anything deeper.
+2. The lead is **read-only** to you (`read_lead`). You cannot and must not write it.
 3. **Write only via `write_result`** — it is physically confined to the results table.
 4. **Never invent an email.** Report only what's published, or Steam's.
 5. Trust the queue: process whatever `get_pending()` returns; write each result once.
@@ -106,14 +107,11 @@ the queue (except `failed`, which a later run retries).
 ## Done & verify
 You're finished when `get_pending()` returns `[]`. Check progress any time:
 ```python
-import pipeline, sqlite3
-c = sqlite3.connect(pipeline.DB_PATH)
-print(c.execute("SELECT scrape_status, COUNT(*) FROM scrape_tracker "
-                "GROUP BY scrape_status").fetchall())
-print("remaining:", len(pipeline.get_pending()))
+import scraper_interface as leads
+print("remaining:", len(leads.get_pending()))
 ```
 
 ## Notes
-- `import pipeline` works from this folder; it auto-resolves the DB path. No config.
+- `import scraper_interface` works from this folder; it auto-resolves everything. No config.
 - WAL is on, so your reads never block the writer; concurrent writers still serialize —
   if you see "database is locked", another writer holds it briefly; retry.

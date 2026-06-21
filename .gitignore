@@ -3,8 +3,9 @@ __pycache__/
 .venv/
 venv/
 out/
+Approval_Pending_Games/
 *.sqlite
-!claude Steam Search/cache.sqlite
+!Claude_Lead_Discovery_Engine/cache.sqlite
 *.sqlite-wal
 *.sqlite-shm
 *.sqbpro

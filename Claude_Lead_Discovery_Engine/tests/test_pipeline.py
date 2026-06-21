@@ -73,6 +73,39 @@ class PipelineTest(unittest.TestCase):
         self.assertIn("scrape_tracker", tabs)
         self.assertIn("trg_sync_scrape_tracker", trigs)
 
+    def test_mail_status_default_and_position(self):
+        cols = [c[1] for c in self._raw().execute("PRAGMA table_info(scrape_tracker)")]
+        self.assertEqual(cols[cols.index("short_descript") + 1], "Mail_status")
+        with self._raw() as c:
+            insert_lead(c, 105)
+            ms = c.execute("SELECT Mail_status FROM scrape_tracker "
+                           "WHERE appid=105").fetchone()[0]
+        self.assertEqual(ms, "Pending")
+
+    def test_rebuild_migration_adds_mail_status_preserving_data(self):
+        # simulate an OLD scrape_tracker (no Mail_status), with a row, then re-init:
+        # the rebuild must add Mail_status in position AND keep the existing row
+        with self._raw() as c:
+            c.execute("DROP TRIGGER IF EXISTS trg_sync_scrape_tracker")
+            c.execute("DROP TABLE scrape_tracker")
+            # the real pre-Mail_status schema (everything except Mail_status)
+            c.execute("CREATE TABLE scrape_tracker (appid INTEGER PRIMARY KEY, "
+                      "game_name TEXT, short_descript TEXT, scrape_status TEXT, "
+                      "country TEXT, emails TEXT, engine TEXT, steam_url TEXT, "
+                      "website TEXT, support_info TEXT, developers TEXT, "
+                      "publishers TEXT, genres TEXT, added_at TEXT)")
+            c.execute("INSERT INTO scrape_tracker (appid, game_name, short_descript, "
+                      "scrape_status, emails) VALUES (7, 'Old', 'd', 'seeded', 'a@b.com')")
+            c.commit()
+        pipeline._ensured = False
+        pipeline.init_tracker()                 # must rebuild, not crash
+        with self._raw() as c:
+            cols = [r[1] for r in c.execute("PRAGMA table_info(scrape_tracker)")]
+            row = c.execute("SELECT scrape_status, emails, Mail_status "
+                            "FROM scrape_tracker WHERE appid=7").fetchone()
+        self.assertEqual(cols[cols.index("short_descript") + 1], "Mail_status")
+        self.assertEqual(row, ("seeded", "a@b.com", "Pending"))  # data kept, default set
+
     # ---- trigger auto-sync --------------------------------------------
     def test_trigger_seeds_row_with_transforms(self):
         with self._raw() as c:
@@ -206,14 +239,19 @@ class PipelineTest(unittest.TestCase):
                             "WHERE appid=800").fetchone()
         self.assertEqual(row[0], "failed")
 
-    def test_write_result_stamps_scraped_at(self):
+    def test_added_at_copies_fetched_at(self):
+        # added_at is the lead's newly_added.fetched_at, set at row creation...
         with self._raw() as c:
-            insert_lead(c, 900)
+            insert_lead(c, 900)   # insert_lead stores fetched_at='t'
+            added = c.execute("SELECT added_at FROM scrape_tracker "
+                              "WHERE appid=900").fetchone()[0]
+        self.assertEqual(added, "t")
+        # ...and write_result must NOT touch it
         pipeline.write_result(900, scrape_status="SCRAPED")
         with self._raw() as c:
-            ts = c.execute("SELECT scraped_at FROM scrape_tracker "
-                           "WHERE appid=900").fetchone()[0]
-        self.assertTrue(ts and "T" in ts)
+            added2 = c.execute("SELECT added_at FROM scrape_tracker "
+                               "WHERE appid=900").fetchone()[0]
+        self.assertEqual(added2, "t")
 
 
 if __name__ == "__main__":
