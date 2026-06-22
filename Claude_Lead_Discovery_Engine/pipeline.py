@@ -32,22 +32,28 @@ _SCHEMA = """(
     game_name      TEXT,
     short_descript TEXT,
     Mail_status    TEXT NOT NULL DEFAULT 'Pending',
+    mail_template  INTEGER,
     scrape_status  TEXT NOT NULL DEFAULT 'pending',
-    country        TEXT,
     emails         TEXT,
-    engine         TEXT,
     steam_url      TEXT,
     website        TEXT,
     support_info   TEXT,
     developers     TEXT,
     publishers     TEXT,
     genres         TEXT,
-    added_at       TEXT
+    added_at       TEXT,
+    sent_at        TEXT
 )"""
-# columns carried over on rebuild (all but Mail_status, which takes its default)
-_REBUILD_COLS = ("appid, game_name, short_descript, scrape_status, country, emails, "
-                 "engine, steam_url, website, support_info, developers, publishers, "
+# columns carried over on rebuild (all but Mail_status / mail_template, which take
+# their defaults)
+_REBUILD_COLS = ("appid, game_name, short_descript, scrape_status, emails, "
+                 "steam_url, website, support_info, developers, publishers, "
                  "genres, added_at")
+# canonical column order (matches _SCHEMA) — used to detect/fix layout drift
+_SCHEMA_COLS = ("appid", "game_name", "short_descript", "Mail_status",
+                "mail_template", "scrape_status", "emails", "steam_url", "website",
+                "support_info", "developers", "publishers", "genres", "added_at",
+                "sent_at")
 
 # tracker columns seeded from newly_added (the rest are filled by the scraper)
 SEED_COLS = ("appid", "game_name", "short_descript", "steam_url",
@@ -130,6 +136,29 @@ def init_tracker():
                 f"CREATE TABLE _scrape_tracker_new {_SCHEMA};"
                 f"INSERT INTO _scrape_tracker_new ({_REBUILD_COLS}) "
                 f"SELECT {_REBUILD_COLS} FROM scrape_tracker;"
+                "DROP TABLE scrape_tracker;"
+                "ALTER TABLE _scrape_tracker_new RENAME TO scrape_tracker;")
+        # drop the unused country/engine columns; add mail_template (the chosen mail
+        # variant, set on mail approval). ALTER DROP/ADD COLUMN needs SQLite >= 3.35.
+        cols = {c[1] for c in conn.execute("PRAGMA table_info(scrape_tracker)")}
+        for dead in ("country", "engine"):
+            if dead in cols:
+                conn.execute(f"ALTER TABLE scrape_tracker DROP COLUMN {dead}")
+        if "mail_template" not in cols:
+            conn.execute("ALTER TABLE scrape_tracker ADD COLUMN mail_template INTEGER")
+        if "sent_at" not in cols:
+            conn.execute("ALTER TABLE scrape_tracker ADD COLUMN sent_at TEXT")
+        # fix column order if it drifted (ALTER only appends, so mail_template lands
+        # last). Rebuild from _SCHEMA, preserving every existing value. No-op once aligned.
+        ordered = [c[1] for c in conn.execute("PRAGMA table_info(scrape_tracker)")]
+        if ordered != list(_SCHEMA_COLS):
+            shared = ", ".join(c for c in _SCHEMA_COLS if c in ordered)
+            conn.executescript(
+                "DROP TRIGGER IF EXISTS trg_sync_scrape_tracker;"
+                "DROP TABLE IF EXISTS _scrape_tracker_new;"
+                f"CREATE TABLE _scrape_tracker_new {_SCHEMA};"
+                f"INSERT INTO _scrape_tracker_new ({shared}) "
+                f"SELECT {shared} FROM scrape_tracker;"
                 "DROP TABLE scrape_tracker;"
                 "ALTER TABLE _scrape_tracker_new RENAME TO scrape_tracker;")
         # guarantee the columns the trigger reads exist on newly_added, so an insert
@@ -225,8 +254,7 @@ def read_lead(appid):
     return dict(zip(cols, row)) if row is not None else None
 
 
-def write_result(appid, *, scrape_status, emails=None, country=None, engine=None,
-                 website=None):
+def write_result(appid, *, scrape_status, emails=None, website=None):
     """Write scrape results for ONE appid into scrape_tracker (and nowhere else).
     Only the fields you pass are touched; seeded game data (incl. added_at) is
     left intact."""
@@ -235,8 +263,7 @@ def write_result(appid, *, scrape_status, emails=None, country=None, engine=None
     _ensure()
     sets = ["scrape_status=?"]
     vals = [scrape_status]
-    for col, val in (("emails", emails), ("country", country),
-                     ("engine", engine), ("website", website)):
+    for col, val in (("emails", emails), ("website", website)):
         if val is not None:
             sets.append(f"{col}=?")
             vals.append(val)
@@ -270,6 +297,51 @@ def set_mail_status(appid, status):
         conn.execute("UPDATE scrape_tracker SET Mail_status=? WHERE appid=?",
                      (status, int(appid)))
         conn.commit()
+
+
+def get_emails(appid):
+    """The emails string stored for one lead (comma-separated, '' if none)."""
+    _ensure()
+    with closing(_ro()) as conn:
+        row = conn.execute("SELECT emails FROM scrape_tracker WHERE appid=?",
+                           (int(appid),)).fetchone()
+    return (row[0] or "") if row else ""
+
+
+def set_mail_template(appid, template):
+    """Record which mail variant was approved (the N in mail_<appid>_<N>.txt)."""
+    _ensure()
+    with closing(_rw()) as conn:
+        conn.execute("UPDATE scrape_tracker SET mail_template=? WHERE appid=?",
+                     (int(template), int(appid)))
+        conn.commit()
+
+
+def get_mail_template(appid):
+    """The approved mail variant N for a lead, or None."""
+    _ensure()
+    with closing(_ro()) as conn:
+        row = conn.execute("SELECT mail_template FROM scrape_tracker WHERE appid=?",
+                           (int(appid),)).fetchone()
+    return row[0] if row else None
+
+
+def mark_sent(appid):
+    """Mail was sent: Mail_status -> 'Sent', stamp sent_at (UTC) for the daily cap."""
+    _ensure()
+    with closing(_rw()) as conn:
+        conn.execute("UPDATE scrape_tracker SET Mail_status='Sent', "
+                     "sent_at=CURRENT_TIMESTAMP WHERE appid=?", (int(appid),))
+        conn.commit()
+
+
+def sent_today():
+    """How many mails were sent today (UTC) — enforces the daily cap across reruns."""
+    _ensure()
+    with closing(_ro()) as conn:
+        return conn.execute(
+            "SELECT COUNT(*) FROM scrape_tracker "
+            "WHERE sent_at IS NOT NULL AND date(sent_at)=date('now')").fetchone()[0]
 
 
 def delete_lead(appid):

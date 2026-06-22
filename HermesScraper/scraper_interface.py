@@ -34,10 +34,8 @@ def read_lead(appid):
     return pipeline.read_lead(appid)
 
 
-def write_result(appid, *, scrape_status, emails=None, country=None,
-                 engine=None, website=None):
+def write_result(appid, *, scrape_status, emails=None, website=None):
     """Save your result for one appid. Writes the results table only.
     scrape_status is one of: 'SCRAPED', 'no_email', 'failed'."""
     return pipeline.write_result(
-        appid, scrape_status=scrape_status, emails=emails,
-        country=country, engine=engine, website=website)
+        appid, scrape_status=scrape_status, emails=emails, website=website)

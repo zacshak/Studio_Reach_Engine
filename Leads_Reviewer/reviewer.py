@@ -35,6 +35,8 @@ APPROVE_H= "#3fb955"
 THUMB_H   = 104    # screenshot thumbnail height in a card
 MAX_THUMBS = 4     # cap thumbnails per card (bounds memory; rest shown as "+N")
 LAZY_MARGIN = 400  # px above/below viewport to pre-load thumbnails
+MAIL_ROWS = 18     # visible rows of the mail text field (scrolls internally beyond)
+MAIL_DESC_WRAP = 760  # desc wrap width in the mail card's left column
 
 
 class Reviewer(tk.Tk):
@@ -46,10 +48,12 @@ class Reviewer(tk.Tk):
         self.minsize(900, 600)
 
         self._fonts()
-        self.leads = review.games_to_review()
+        self.mode = "game"         # "game" (Pending) or "mail" (Writing)
+        self.leads = self._load_source()
         self.cards = {}            # appid -> card frame
         self._info = {}            # appid -> {card, strip, shots, loaded}
         self._desc_labels = []     # for dynamic re-wrapping
+        self._mail_texts = []      # mail Text widgets, auto-sized to their content
         self._building = True       # suppress scrollregion churn during bulk build
         self._lazy_pending = False
         self._resize_after = None
@@ -82,10 +86,59 @@ class Reviewer(tk.Tk):
         bar = tk.Frame(self, bg=RAIL, height=56)
         bar.pack(fill="x", side="top")
         bar.pack_propagate(False)
+        self._tg_w, self._tg_h = 300, 36
+        self.toggle = tk.Canvas(bar, width=self._tg_w, height=self._tg_h, bg=RAIL,
+                                highlightthickness=0, cursor="hand2")
+        self.toggle.pack(side="left", padx=16, pady=10)
+        self.toggle.bind("<Button-1>", lambda e: self._toggle_mode())
+        self._style_toggle()
         tk.Label(bar, text="◆  Leads Reviewer", bg=RAIL, fg=TEXT,
-                 font=self.f_brand).pack(side="left", padx=20)
+                 font=self.f_brand).pack(side="left", padx=8)
         self.counter = tk.Label(bar, text="", bg=RAIL, fg=MUTED, font=self.f_meta)
         self.counter.pack(side="right", padx=20)
+
+    def _round_rect(self, c, x1, y1, x2, y2, r, **kw):
+        pts = [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r, x2, y2 - r, x2, y2,
+               x2 - r, y2, x1 + r, y2, x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
+        return c.create_polygon(pts, smooth=True, **kw)
+
+    def _style_toggle(self):
+        """Pill toggle: a sliding highlight sits on the CURRENT section."""
+        c, W, H = self.toggle, self._tg_w, self._tg_h
+        c.delete("all")
+        self._round_rect(c, 1, 1, W - 1, H - 1, 17, fill=CARD, outline="")
+        if self.mode == "game":
+            kx1, kx2, hl = 2, W // 2, ACCENT
+        else:
+            kx1, kx2, hl = W // 2, W - 2, "#6b46c1"
+        self._round_rect(c, kx1, 2, kx2, H - 2, 16, fill=hl, outline="")
+        ga = "#ffffff" if self.mode == "game" else MUTED
+        ma = "#ffffff" if self.mode == "mail" else MUTED
+        c.create_text(W * 0.25, H / 2, text="Game Approval", fill=ga, font=self.f_btn)
+        c.create_text(W * 0.75, H / 2, text="Mail Approval", fill=ma, font=self.f_btn)
+
+    def _toggle_mode(self):
+        self.mode = "mail" if self.mode == "game" else "game"
+        self._style_toggle()
+        self._reload()
+
+    def _load_source(self):
+        return review.mails_to_review() if self.mode == "mail" \
+            else review.games_to_review()
+
+    def _reload(self):
+        """Switch sections: tear down current cards, repopulate from the new source."""
+        for child in self.holder.winfo_children():   # cards + any "empty" label
+            child.destroy()
+        self.cards.clear()
+        self._info.clear()
+        self._desc_labels.clear()
+        self._mail_texts.clear()
+        self._empty_shown = False
+        self.canvas.yview_moveto(0)
+        self._building = True
+        self.leads = self._load_source()
+        self._populate()
 
     def _build_scroll(self):
         wrap = tk.Frame(self, bg=BG)
@@ -121,10 +174,26 @@ class Reviewer(tk.Tk):
         self._resize_after = self.after(120, self._apply_wrap)   # debounce rewrap
 
     def _apply_wrap(self):
-        wl = max(420, self._width - 120)
+        # mail cards keep the desc in a fixed-width left column; only game cards rewrap
+        wl = MAIL_DESC_WRAP if self.mode == "mail" else max(420, self._width - 120)
         for lbl in self._desc_labels:
             lbl.config(wraplength=wl)
+        self._fit_mail_heights()              # wrap width changed -> re-fit mail boxes
         self._remeasure()                     # heights changed -> refresh geometry
+
+    def _fit_mail_heights(self):
+        """Size each mail Text to show every line — no internal scrolling. The line
+        count depends on the current wrap width, so this re-runs on resize too."""
+        if not self._mail_texts:
+            return
+        self.update_idletasks()               # let the text widths settle first
+        for t in self._mail_texts:
+            try:
+                res = t.count("1.0", "end-1c", "displaylines")
+            except tk.TclError:
+                continue
+            n = res[0] if isinstance(res, (tuple, list)) else int(res or 0)
+            t.config(height=max(3, n + 1))    # +1 keeps the last line off the edge
 
     def _remeasure(self):
         """Refresh layout once (after build / resize / removal), then lazy-load.
@@ -198,9 +267,16 @@ class Reviewer(tk.Tk):
             self.after(1, self._build_next)
         else:
             self._building = False           # done -> enable scrollregion + measure
-            self.after(20, self._remeasure)
+            self.after(20, self._fit_mail_heights)
+            self.after(40, self._remeasure)
 
     def _make_card(self, lead):
+        if self.mode == "mail":
+            self._make_mail_card(lead)
+        else:
+            self._make_game_card(lead)
+
+    def _make_game_card(self, lead):
         appid = lead["appid"]
         card = tk.Frame(self.holder, bg=CARD)
         card.pack(fill="x", padx=18, pady=9)
@@ -229,6 +305,59 @@ class Reviewer(tk.Tk):
                         anchor="nw", justify="left", wraplength=940)
         desc.pack(fill="x", padx=20, pady=(12, 18))
         self._desc_labels.append(desc)
+
+        self.cards[appid] = card
+        self._info[appid] = {"card": card, "strip": strip,
+                             "shots": lead["shots"], "loaded": False}
+
+    def _make_mail_card(self, lead):
+        """Mail Approval card: left = screenshots + desc, right = drafted mail in a
+        big text field with its own Accept (-> Scheduled) / Reject below."""
+        appid = lead["appid"]
+        card = tk.Frame(self.holder, bg=CARD)
+        card.pack(fill="x", padx=18, pady=9)
+
+        head = tk.Frame(card, bg=CARD)
+        head.pack(fill="x", padx=20, pady=(16, 2))
+        tk.Label(head, text=lead["name"], bg=CARD, fg=TEXT, font=self.f_title,
+                 anchor="w").pack(side="left")
+        tk.Label(head, text=lead.get("emails") or "(no email)", bg=CARD,
+                 fg=APPROVE_H if lead.get("emails") else MUTED, font=self.f_body,
+                 anchor="w").pack(side="left", padx=(14, 0), pady=(6, 0))
+        tk.Label(card, text=lead["meta"], bg=CARD, fg=ACCENT, font=self.f_meta,
+                 anchor="w").pack(fill="x", padx=20, pady=(0, 10))
+
+        split = tk.Frame(card, bg=CARD)
+        split.pack(fill="x", padx=20, pady=(0, 18))
+
+        # left = screenshots + desc (natural width); right = mail, expands to fill
+        # all remaining width so the field is big, not crammed into a corner
+        left = tk.Frame(split, bg=CARD)
+        left.pack(side="left", fill="y")
+        strip = tk.Frame(left, bg=CARD, height=THUMB_H)
+        strip.pack(fill="x")
+        strip.pack_propagate(False)
+        desc = tk.Label(left, text=lead["desc"], bg=CARD, fg=TEXT, font=self.f_body,
+                        anchor="nw", justify="left", wraplength=MAIL_DESC_WRAP)
+        desc.pack(fill="x", pady=(12, 0))
+        self._desc_labels.append(desc)
+
+        right = tk.Frame(split, bg=CARD)
+        right.pack(side="right", fill="both", expand=True, padx=(18, 0))
+        # buttons packed FIRST at the bottom so they're never clipped
+        macts = tk.Frame(right, bg=CARD)
+        macts.pack(side="bottom", fill="x", pady=(10, 0))
+        txt = tk.Text(right, height=3, bg=RAIL, fg=TEXT, bd=0, relief="flat",
+                      font=self.f_body, wrap="word", padx=14, pady=12,
+                      highlightthickness=0)
+        txt.pack(side="top", fill="both", expand=True)
+        txt.insert("1.0", lead.get("mail") or "(no mail draft found)")
+        txt.config(state="disabled")                  # read-only: no editing
+        self._mail_texts.append(txt)                  # height fitted after layout
+        self._btn(macts, "✗  Reject", REJECT, REJECT_H,
+                  lambda: self._reject(appid)).pack(side="right", padx=(8, 0))
+        self._btn(macts, "✓  Accept", APPROVE, APPROVE_H,
+                  lambda: self._accept_mail(appid)).pack(side="right")
 
         self.cards[appid] = card
         self._info[appid] = {"card": card, "strip": strip,
@@ -264,6 +393,14 @@ class Reviewer(tk.Tk):
             review.Accept_Game(appid)
         except Exception as e:
             messagebox.showerror("Allow failed", str(e))
+            return
+        self._remove(appid)
+
+    def _accept_mail(self, appid):
+        try:
+            review.Approve_Mail(appid)
+        except Exception as e:
+            messagebox.showerror("Accept failed", str(e))
             return
         self._remove(appid)
 

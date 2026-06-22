@@ -6,9 +6,8 @@ and extraction tools. An upstream system discovers brand-new, unreleased Steam s
 and stores each as a lead in a database. Leads that already list an email on their Steam
 page are pre-solved (`seeded`) and skipped — the queue hands you only the `pending` ones,
 which have **no email anywhere on the surface**. **Your mission: for every pending lead,
-track down the studio's web presence, extract the best recruiting-grade contact email
-(plus country and engine when available), and record it.** You're finished when no
-pending leads remain.
+track down the studio's web presence, extract the best recruiting-grade contact email,
+and record it.** You're finished when no pending leads remain.
 
 You reach the database **only** through `scraper_interface.py` (in this folder). It is
 your work-queue, your reader, and your writer. You never open the database file yourself.
@@ -20,7 +19,7 @@ Call these Python functions; they are your only DB access.
 |---|---|
 | `get_pending(limit=None) -> list[int]` | appids still needing work (status `pending`). Your queue. |
 | `read_lead(appid) -> dict` | the full lead row (read-only). Key fields below. |
-| `write_result(appid, *, scrape_status, emails=None, country=None, engine=None, website=None)` | save your result (writes the tracker only). |
+| `write_result(appid, *, scrape_status, emails=None, website=None)` | save your result (writes the tracker only). |
 
 `read_lead` returns these (among others); JSON fields are **raw strings — parse them**:
 - `name` — game name
@@ -39,14 +38,11 @@ for appid in leads.get_pending():              # 1. take the queue (pending only
     site = lead["website"] or resolve_site(lead)   # no website? find one (see below)
     try:
         emails  = browse_for_emails(site, lead) # 3. browse + extract (your job)
-        country = derive_country(site, emails)
-        engine  = derive_engine(lead)
         if emails:
             leads.write_result(appid, scrape_status="SCRAPED",
-                emails=emails, country=country, engine=engine, website=site)
+                emails=emails, website=site)
         else:                                   # checked everywhere, nothing published
-            leads.write_result(appid, scrape_status="no_email",
-                country=country, engine=engine)
+            leads.write_result(appid, scrape_status="no_email")
     except Exception:
         leads.write_result(appid, scrape_status="failed")
 ```
@@ -55,8 +51,7 @@ for appid in leads.get_pending():              # 1. take the queue (pending only
 1. Get 5 appids: `leads.get_pending(limit=5)`.
 2. Run the full fetch→scrape→save loop on just those 5.
 3. Inspect what you extracted for each before trusting the method: is the email a real
-   address (not blank, not invented)? do `country`/`engine` look sensible, and did you
-   pick the right `scrape_status`?
+   address (not blank, not invented)? did you pick the right `scrape_status`?
 4. If yes, your method works → run the loop on the entire queue (`get_pending()` with
    no limit). If not, fix your scraping before scaling up.
 
@@ -76,8 +71,6 @@ for appid in leads.get_pending():              # 1. take the queue (pending only
 - **Never fabricate.** Only report an email that actually appears (or Steam's
   `support_info.email`). Never guess `firstname@domain`. A made-up address is worse
   than `no_email`.
-- **country / engine** are best-effort: country from domain TLD, a "based in" line, or
-  whois; engine only if stated. Omit if unsure — don't guess.
 - **Time budget — ~6 min per lead.** If you can't land an email within ~6 minutes, stop
   and `write_result(appid, scrape_status="failed")`, then move on. `failed` stays in the
   queue and is retried next run — don't sink endless time into one studio.

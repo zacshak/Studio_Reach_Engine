@@ -12,8 +12,10 @@ pipeline.py.
     review.Accept_Game(appid)            # Mail_status -> 'Writing', leaves the list
     review.Reject_Game(appid)            # row deleted + media folder removed
 """
+import glob
 import json
 import os
+import re
 import shutil
 import sys
 
@@ -64,6 +66,30 @@ def _load_folder(folder, appid):
     }
 
 
+def _mail_file(folder, appid):
+    """First existing mail_<appid>_<N>.txt path, or None."""
+    files = sorted(glob.glob(os.path.join(folder, f"mail_{appid}_*.txt")))
+    return files[0] if files else None
+
+
+def _template_of(path):
+    """The N (template id) from a mail_<appid>_<N>.txt filename, or None."""
+    m = re.search(r"_(\d+)\.txt$", os.path.basename(path))
+    return int(m.group(1)) if m else None
+
+
+def _load_mail(folder, appid):
+    """The written mail text for a game: first existing mail_<appid>_<N>.txt."""
+    path = _mail_file(folder, appid)
+    if path:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                return fh.read().strip()
+        except OSError:
+            pass
+    return ""
+
+
 def games_to_review():
     """Games to show: those with Mail_status 'Pending' that still have a media
     folder. Sorted by name. Each item: {appid, name, desc, meta, shots[]}."""
@@ -76,10 +102,39 @@ def games_to_review():
     return out
 
 
+def mails_to_review():
+    """Games with Mail_status 'Writing' that still have a media folder. Same shape
+    as games_to_review() plus a 'mail' field (the drafted message text)."""
+    out = []
+    for appid in pipeline.mail_status_appids("Writing"):
+        folder = _folder_for(appid)
+        if folder:
+            item = _load_folder(folder, appid)
+            item["mail"] = _load_mail(folder, appid)
+            item["emails"] = pipeline.get_emails(appid)
+            out.append(item)
+    out.sort(key=lambda g: g["name"].lower())
+    return out
+
+
 def Accept_Game(gameId):
     """Accept: mark the lead for outreach (Mail_status -> 'Writing'). The media
     folder is kept. The game drops out of games_to_review()."""
     pipeline.set_mail_status(gameId, "Writing")
+
+
+def Approve_Mail(gameId):
+    """Approve the drafted mail: record the chosen template (N from the
+    mail_<appid>_<N>.txt filename) and set Mail_status -> 'Scheduled'. Drops out
+    of mails_to_review() (only 'Writing' renders there)."""
+    folder = _folder_for(gameId)
+    if folder:
+        path = _mail_file(folder, gameId)
+        if path:
+            tpl = _template_of(path)
+            if tpl is not None:
+                pipeline.set_mail_template(gameId, tpl)
+    pipeline.set_mail_status(gameId, "Scheduled")
 
 
 def Reject_Game(gameId):
