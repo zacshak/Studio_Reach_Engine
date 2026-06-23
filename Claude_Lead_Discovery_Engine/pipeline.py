@@ -326,12 +326,22 @@ def get_mail_template(appid):
     return row[0] if row else None
 
 
+def delete_newly_added(appid):
+    """Drop a lead from newly_added ONLY (its scrape_tracker row is kept)."""
+    _ensure()
+    with closing(_rw()) as conn:
+        conn.execute("DELETE FROM newly_added WHERE appid=?", (int(appid),))
+        conn.commit()
+
+
 def mark_sent(appid):
-    """Mail was sent: Mail_status -> 'Sent', stamp sent_at (UTC) for the daily cap."""
+    """Mail was sent: Mail_status -> 'Sent', stamp sent_at (UTC) for the daily cap,
+    and drop the newly_added row (the scrape_tracker row stays as the record)."""
     _ensure()
     with closing(_rw()) as conn:
         conn.execute("UPDATE scrape_tracker SET Mail_status='Sent', "
                      "sent_at=CURRENT_TIMESTAMP WHERE appid=?", (int(appid),))
+        conn.execute("DELETE FROM newly_added WHERE appid=?", (int(appid),))
         conn.commit()
 
 

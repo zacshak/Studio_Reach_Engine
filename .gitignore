@@ -4,6 +4,7 @@ __pycache__/
 venv/
 out/
 Approval_Pending_Games/
+No_Mail_Games/
 *.sqlite
 !Claude_Lead_Discovery_Engine/cache.sqlite
 *.sqlite-wal

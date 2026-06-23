@@ -190,6 +190,8 @@ def cache_put(conn, appid, success, raw_text, discovered_on=None):
             data = {}
     if not is_prerelease_lead(data):
         return False
+    if not data.get("screenshots"):       # no screenshots -> can't review it; drop
+        return False
     cols = {
         "appid": appid,
         "fetched_at": datetime.now(IST).isoformat(timespec="seconds"),

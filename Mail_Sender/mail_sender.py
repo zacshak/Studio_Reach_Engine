@@ -176,14 +176,16 @@ def main(dry_run=False, limit=None):
 
 
 def purge_sent():
-    """Sync: remove the media folder of every already-sent lead (rows kept)."""
+    """Sync: for every already-sent lead, remove its media folder and its
+    newly_added row (the scrape_tracker row is kept)."""
     sent = pipeline.mail_status_appids("Sent")
     removed = 0
     for appid in sent:
         if _delete_media(appid):
             removed += 1
-            print(f"  removed media for {appid}")
-    print(f"purged {removed}/{len(sent)} sent folder(s)")
+        pipeline.delete_newly_added(appid)
+    print(f"purged {len(sent)} sent lead(s): {removed} media folder(s) removed, "
+          f"newly_added rows dropped (scrape_tracker kept)")
 
 
 def _selftest():

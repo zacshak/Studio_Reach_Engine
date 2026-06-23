@@ -27,8 +27,9 @@ from concurrent.futures import ThreadPoolExecutor
 import pipeline  # same folder; the DB contract (read_lead + connections)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-# the media store lives under the reviewer: repo-root/Leads_Reviewer/Approval_Pending_Games
+# media stores live under the reviewer: repo-root/Leads_Reviewer/<store>
 DEFAULT_BASE = os.path.join(os.path.dirname(HERE), "Leads_Reviewer", "Approval_Pending_Games")
+NOMAIL_BASE = os.path.join(os.path.dirname(HERE), "Leads_Reviewer", "No_Mail_Games")
 UA = "claude-lead-discovery/1.0 (approval-export)"
 
 _ILLEGAL = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -73,8 +74,10 @@ class ApprovalExporter:
     the others or the run.
     """
 
-    def __init__(self, base_dir=DEFAULT_BASE, max_workers=8, timeout=20, retries=3):
+    def __init__(self, base_dir=DEFAULT_BASE, status="seeded", max_workers=8,
+                 timeout=20, retries=3):
         self.base_dir = base_dir
+        self.status = status        # only leads with this scrape_status get staged
         self.timeout = timeout
         self.retries = retries
         self._pool = ThreadPoolExecutor(max_workers=max_workers,
@@ -98,8 +101,8 @@ class ApprovalExporter:
     def _export_one(self, appid):
         """Returns True if it staged a folder, False if skipped/failed."""
         try:
-            if _scrape_status(appid) != "seeded":
-                return False                # only seeded leads get staged
+            if _scrape_status(appid) != self.status:
+                return False                # only the chosen status gets staged
             lead = pipeline.read_lead(appid)
             if not lead:
                 return False
@@ -147,27 +150,34 @@ def _scrape_status(appid):
     return row[0] if row else None
 
 
-def _all_seeded():
+def _with_status(status):
     from contextlib import closing
     with closing(pipeline._ro()) as conn:
         return [r[0] for r in conn.execute(
-            "SELECT appid FROM scrape_tracker WHERE scrape_status='seeded' ORDER BY appid")]
+            "SELECT appid FROM scrape_tracker WHERE scrape_status=? ORDER BY appid",
+            (status,))]
 
 
 if __name__ == "__main__":
-    # Manual run: export specific appids, or every seeded lead with --all.
-    #   python approval_export.py --all
-    #   python approval_export.py 1515540 1778510
+    # Manual run:
+    #   python approval_export.py --all        # all SEEDED -> Approval_Pending_Games
+    #   python approval_export.py --nomail      # all PENDING (no email) -> No_Mail_Games
+    #   python approval_export.py 1515540 1778510   # specific seeded appids
     args = sys.argv[1:]
     if not args:
-        sys.exit("usage: python approval_export.py --all | <appid> [appid ...]")
-    appids = _all_seeded() if args[0] == "--all" else [int(a) for a in args]
-    print(f"exporting {len(appids)} lead(s)...")
-    exp = ApprovalExporter()
+        sys.exit("usage: python approval_export.py --all | --nomail | <appid> ...")
+    if args[0] == "--nomail":
+        status, base = "pending", NOMAIL_BASE
+        appids = _with_status("pending")
+    else:
+        status, base = "seeded", DEFAULT_BASE
+        appids = _with_status("seeded") if args[0] == "--all" else [int(a) for a in args]
+    print(f"exporting {len(appids)} {status} lead(s) to {base} ...")
+    exp = ApprovalExporter(base_dir=base, status=status)
     for a in appids:
         exp.submit(a)
     done, errs = exp.close()
-    print(f"staged {done} new lead(s) to {exp.base_dir} "
+    print(f"staged {done} new lead(s) "
           f"({len(appids) - done - len(errs)} already done, {len(errs)} error(s))")
     for appid, err in errs:
         print(f"  ERROR {appid}: {err}")

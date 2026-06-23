@@ -26,7 +26,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 import batch_fetch as bf  # reuse the cached, rate-limited fetcher
-from approval_export import ApprovalExporter  # background staging of seeded leads
+from approval_export import ApprovalExporter, NOMAIL_BASE  # background staging
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -141,6 +141,9 @@ def main():
     # background exporter: stages each newly-seeded lead (folder + JSON + screenshots)
     # for human approval, off the main thread so downloads never slow the fetch loop.
     exporter = None if is_sample else ApprovalExporter()
+    # same staging for no-email leads, into No_Mail_Games (scrape_status 'pending')
+    nomail_exporter = None if is_sample else ApprovalExporter(base_dir=NOMAIL_BASE,
+                                                              status="pending")
     limiter = bf.RateLimiter(bf.MIN_INTERVAL, bf.MAX_PER_WINDOW, bf.WINDOW)
     rows, ok, dropped = [], 0, 0
     for idx, appid in enumerate(appids, 1):
@@ -151,9 +154,11 @@ def main():
         else:
             success, norm, raw = bf.fetch_one(appid, limiter)
             if not is_sample:  # cache_put itself guards to pre-release leads only
-                if bf.cache_put(conn, appid, success, raw, discovered_on=today) \
-                        and norm and norm.get("support_email"):
-                    exporter.submit(appid)  # newly seeded -> stage for approval
+                if bf.cache_put(conn, appid, success, raw, discovered_on=today) and norm:
+                    if norm.get("support_email"):
+                        exporter.submit(appid)        # seeded -> Approval_Pending_Games
+                    else:
+                        nomail_exporter.submit(appid)  # no email -> No_Mail_Games
             tag = "fetched"
         if not norm:
             dropped += 1
@@ -178,8 +183,9 @@ def main():
         w.writerows(rows)
     write_excel(rows, xlsx_path)
 
-    # wait for background approval-exports to finish (they ran during the loop)
+    # wait for background exports to finish (they ran during the loop)
     staged, exp_errors = exporter.close() if exporter else (0, [])
+    nomail_staged, nomail_errors = nomail_exporter.close() if nomail_exporter else (0, [])
 
     print("\n" + "=" * 60)
     print(f"  LEAD DISCOVERY COMPLETE")
@@ -189,6 +195,8 @@ def main():
     if exporter:
         print(f"  Approval-staged: {staged} seeded lead(s)"
               + (f", {len(exp_errors)} export error(s)" if exp_errors else ""))
+        print(f"  No-mail-staged : {nomail_staged} pending lead(s)"
+              + (f", {len(nomail_errors)} export error(s)" if nomail_errors else ""))
     print("=" * 60)
     if rows:
         print("\n  Preview (first 8):")

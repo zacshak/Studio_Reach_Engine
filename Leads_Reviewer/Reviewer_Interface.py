@@ -27,18 +27,19 @@ sys.path.insert(0, _PIPELINE_DIR)
 import pipeline  # noqa: E402
 
 # media folders (screenshots + curated JSON) live inside this reviewer folder
-MEDIA_DIR = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "Approval_Pending_Games")
+_HERE = os.path.dirname(os.path.abspath(__file__))
+MEDIA_DIR = os.path.join(_HERE, "Approval_Pending_Games")   # seeded leads
+NOMAIL_DIR = os.path.join(_HERE, "No_Mail_Games")           # pending (no-email) leads
 
 
-def _folder_for(appid):
-    """The media folder whose name ends in _<appid>, or None."""
-    if not os.path.isdir(MEDIA_DIR):
+def _folder_for(appid, base=MEDIA_DIR):
+    """The media folder under `base` whose name ends in _<appid>, or None."""
+    if not os.path.isdir(base):
         return None
     suffix = f"_{appid}"
-    for entry in os.listdir(MEDIA_DIR):
-        if entry.endswith(suffix) and os.path.isdir(os.path.join(MEDIA_DIR, entry)):
-            return os.path.join(MEDIA_DIR, entry)
+    for entry in os.listdir(base):
+        if entry.endswith(suffix) and os.path.isdir(os.path.join(base, entry)):
+            return os.path.join(base, entry)
     return None
 
 
@@ -102,6 +103,31 @@ def games_to_review():
     return out
 
 
+def nomail_games_to_review():
+    """Games with no email anywhere (scrape_status 'pending') that have a staged
+    folder in No_Mail_Games. Same shape as games_to_review(). Reject-only in the GUI."""
+    out = []
+    for appid in pipeline.get_pending():                 # scrape_status == 'pending'
+        folder = _folder_for(appid, NOMAIL_DIR)
+        if folder:
+            out.append(_load_folder(folder, appid))
+    out.sort(key=lambda g: g["name"].lower())
+    return out
+
+
+def leads_by_appids(appids):
+    """Game-card data for an explicit appid list, from whichever store holds each
+    (Approval_Pending_Games or No_Mail_Games). Ids with no folder are skipped.
+    Used by the --delete review window. Same shape as games_to_review()."""
+    out = []
+    for appid in appids:
+        folder = _folder_for(appid) or _folder_for(appid, NOMAIL_DIR)
+        if folder:
+            out.append(_load_folder(folder, appid))
+    out.sort(key=lambda g: g["name"].lower())
+    return out
+
+
 def mails_to_review():
     """Games with Mail_status 'Writing' that still have a media folder. Same shape
     as games_to_review() plus a 'mail' field (the drafted message text)."""
@@ -138,8 +164,16 @@ def Approve_Mail(gameId):
 
 
 def Reject_Game(gameId):
-    """Reject: delete the lead's scrape_tracker row AND its media folder."""
+    """Reject: delete the lead's DB rows AND its media folder (in whichever store
+    it lives — Approval_Pending_Games or No_Mail_Games). Returns a list of any
+    folders that could NOT be removed (e.g. locked on Windows) so callers can warn
+    instead of reporting a false success; empty list means a clean delete."""
     pipeline.delete_lead(gameId)
-    folder = _folder_for(gameId)
-    if folder:
-        shutil.rmtree(folder, ignore_errors=True)
+    leftover = []
+    for base in (MEDIA_DIR, NOMAIL_DIR):
+        folder = _folder_for(gameId, base)
+        if folder:
+            shutil.rmtree(folder, ignore_errors=True)
+            if os.path.exists(folder):        # rmtree swallowed a lock/permission error
+                leftover.append(folder)
+    return leftover
