@@ -115,6 +115,50 @@ def nomail_games_to_review():
     return out
 
 
+def pending_website_urls():
+    """Array of website URLs for leads with scrape_status=='pending' that have a
+    website — the sites to scrape for an email."""
+    return pipeline.pending_websites()
+
+
+def _norm_url(u):
+    """Loose URL key for matching: drop scheme, leading www., trailing slash."""
+    u = (u or "").strip().lower()
+    u = re.sub(r"^https?://", "", u)
+    u = re.sub(r"^www\.", "", u)
+    return u.rstrip("/")
+
+
+def ingest_emails(items):
+    """Take scraped [{"url":..,"email":..}, ..] back from the external scraper.
+    For each item that HAS an email, match its url to a pending lead, write the
+    email + flip scrape_status 'pending'->'seeded', and move its media folder
+    No_Mail_Games -> Approval_Pending_Games (so it shows in Game Approval).
+    Empty-email and unmatched items are left untouched. Returns a summary dict."""
+    by_url = {_norm_url(w): a for a, w in pipeline.pending_leads() if w}
+    updated, skipped, unmatched = [], [], []
+    for it in items:
+        url, email = it.get("url", ""), (it.get("email") or "").strip()
+        if not email:                              # no mail found -> leave as pending
+            skipped.append(url)
+            continue
+        appid = by_url.get(_norm_url(url))
+        if appid is None:
+            unmatched.append(url)
+            continue
+        pipeline.write_result(appid, scrape_status="seeded", emails=email)
+        src = _folder_for(appid, NOMAIL_DIR)       # move local data to the seeded store
+        if src:
+            dst = os.path.join(MEDIA_DIR, os.path.basename(src))
+            if not os.path.exists(dst):
+                try:
+                    shutil.move(src, dst)
+                except (OSError, shutil.Error):
+                    pass
+        updated.append((appid, email))
+    return {"updated": updated, "skipped": skipped, "unmatched": unmatched}
+
+
 def leads_by_appids(appids):
     """Game-card data for an explicit appid list, from whichever store holds each
     (Approval_Pending_Games or No_Mail_Games). Ids with no folder are skipped.

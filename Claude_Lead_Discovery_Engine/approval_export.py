@@ -32,6 +32,10 @@ DEFAULT_BASE = os.path.join(os.path.dirname(HERE), "Leads_Reviewer", "Approval_P
 NOMAIL_BASE = os.path.join(os.path.dirname(HERE), "Leads_Reviewer", "No_Mail_Games")
 UA = "claude-lead-discovery/1.0 (approval-export)"
 
+# sprite_sheet.py lives in the reviewer folder; reuse its 2x2 contact-sheet builder
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "Leads_Reviewer"))
+from sprite_sheet import build_sheet  # noqa: E402
+
 _ILLEGAL = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
@@ -117,6 +121,7 @@ class ApprovalExporter:
                 url = shot.get("path_thumbnail")
                 if url:
                     self._download(url, os.path.join(folder, f"screenshot_{i:02d}.jpg"))
+            build_sheet(folder)             # 2x2 sprite so the lead is agent-scannable
             open(marker, "w").close()       # write LAST: marks the folder complete
             return True
         except Exception as e:              # never let one lead kill the pool

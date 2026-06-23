@@ -11,6 +11,8 @@ All data + actions go through Reviewer_Interface (never pipeline.py directly).
 
     python reviewer.py
 """
+import json
+import os
 import re
 import sys
 import tkinter as tk
@@ -511,8 +513,41 @@ class Reviewer(tk.Tk):
                  bg=BG, fg=MUTED, font=self.f_title).pack(pady=80)
 
 
+def _parse_items(text):
+    """Lenient JSON: tolerate a bare object list with no [] and trailing commas
+    (so the scraper output can be pasted verbatim)."""
+    text = text.strip()
+    if not text.startswith("["):
+        text = "[" + text + "]"
+    text = re.sub(r",\s*([}\]])", r"\1", text)     # drop trailing commas
+    return json.loads(text)
+
+
+def _cli_ingest(argv):
+    """--ingest-mailids: read scraped {url,email} objects (from a file arg, the
+    remaining args, or stdin), apply the ones with a real email."""
+    if argv and os.path.isfile(argv[0]):
+        text = open(argv[0], encoding="utf-8").read()
+    else:
+        text = " ".join(argv) if argv else sys.stdin.read()
+    res = review.ingest_emails(_parse_items(text))
+    print(f"updated {len(res['updated'])}, skipped (no email) {len(res['skipped'])}, "
+          f"unmatched {len(res['unmatched'])}")
+    for a, e in res["updated"]:
+        print(f"  seeded {a} <- {e}  (folder -> Approval_Pending_Games)")
+    if res["unmatched"]:
+        print("  unmatched urls:", res["unmatched"])
+
+
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] in ("-delete", "--delete"):
+    if len(sys.argv) > 1 and sys.argv[1] in ("-ingest-mailids", "--ingest-mailids"):
+        _cli_ingest(sys.argv[2:])
+    elif len(sys.argv) > 1 and sys.argv[1] in ("-pending-urls", "--pending-urls",
+                                               "-pending", "--pending"):
+        # print the pending leads' website URLs as a brace-wrapped, quoted list
+        urls = review.pending_website_urls()
+        print("{" + ", ".join(f'"{u}"' for u in urls) + "}")
+    elif len(sys.argv) > 1 and sys.argv[1] in ("-delete", "--delete"):
         # Review-before-delete: open a GUI of just these appids, each with a single
         # Delete button (same effect as Reject). Any format works — `--delete 1 2 3`,
         # `--delete [1, 2, 3]`, etc. (any non-digit is a separator).

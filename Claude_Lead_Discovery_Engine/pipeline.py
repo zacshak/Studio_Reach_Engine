@@ -245,6 +245,24 @@ def get_pending(limit=None):
     return [r[0] for r in rows]
 
 
+def pending_websites():
+    """Website URLs of every 'pending' lead that actually has one (non-empty),
+    as a flat list. The scrape target list for fishing emails off studio sites."""
+    return [w for _, w in pending_leads()]
+
+
+def pending_leads():
+    """(appid, website) for every 'pending' lead that has a non-empty website.
+    Lets a caller map a scraped URL back to the lead it belongs to."""
+    _ensure()
+    with closing(_ro()) as conn:
+        rows = conn.execute(
+            "SELECT appid, website FROM scrape_tracker "
+            "WHERE scrape_status='pending' AND website IS NOT NULL AND website<>'' "
+            "ORDER BY appid").fetchall()
+    return [(r[0], r[1]) for r in rows]
+
+
 def read_lead(appid):
     """The complete newly_added row for one appid, as a {column: value} dict
     (read-only). Returns None if the appid isn't in newly_added."""
