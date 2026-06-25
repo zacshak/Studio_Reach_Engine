@@ -5,8 +5,8 @@ Picks 4 screenshots spread evenly across the folder (variety over first-4 near-
 dupes), lays them in a 2x2 grid with a thin gutter, NO downscale — the shots are
 already well under Claude's 1.15 MP cap, so quality is preserved.
 
-    python sprite_sheet.py                 # all folders in Approval_Pending_Games
-    python sprite_sheet.py No_Mail_Games   # a specific staging dir (rel or abs)
+    python sprite_sheet.py                 # all folders in Studios_To_Review/Approval_Pending_Games
+    python sprite_sheet.py Studios_To_Review/No_Mail_Games   # a specific staging dir (rel or abs)
     python sprite_sheet.py --force         # rebuild even if a sheet exists
     python sprite_sheet.py --selftest
 """
@@ -20,7 +20,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_BASE = os.path.join(HERE, "Approval_Pending_Games")
+DEFAULT_BASE = os.path.join(HERE, "Studios_To_Review", "Approval_Pending_Games")
 OUT_NAME = "SpriteSheet_Screenshots.png"
 GUTTER = 10                      # px between tiles, so the model doesn't read seams
 BG = (255, 0, 255)               # flashy magenta — a loud, unmistakable cell separator

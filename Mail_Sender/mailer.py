@@ -16,11 +16,13 @@ Setup (one time):
          GMAIL_USER=you@example.com
          GMAIL_APP_PASSWORD=xxxxxxxxxxxxxxxx
 Run:
-    python mail_sender.py --dry-run     # preview what WOULD send, send nothing
-    python mail_sender.py               # actually send, respecting the cap + gaps
-    python mail_sender.py --limit 5     # send at most 5 this run
+    python mailer.py --dry-run     # preview what WOULD send, send nothing
+    python mailer.py               # actually send, respecting the cap + gaps
+    python mailer.py --limit 5     # send at most 5 this run
+    python mailer.py --review      # check Sent leads for replies, flip -> 'Replied'
 """
 import glob
+import imaplib
 import os
 import random
 import shutil
@@ -35,10 +37,11 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, "Claude_Lead_Discovery_Engine"))
 import pipeline  # noqa: E402
 
-MEDIA_DIR = os.path.join(ROOT, "Leads_Reviewer", "Approval_Pending_Games")
+MEDIA_DIR = os.path.join(ROOT, "Leads_Reviewer", "Studios_To_Review", "Approval_Pending_Games")
 
 SENDER_NAME = "Meshak"              # the From display name
 SMTP_HOST, SMTP_PORT = "smtp.gmail.com", 587
+IMAP_HOST = "imap.gmail.com"
 DAILY_CAP = 40                     # never send more than this per (UTC) day
 MIN_GAP, MAX_GAP = 180, 480        # 3–8 min between sends, randomized
 
@@ -188,6 +191,46 @@ def purge_sent():
           f"newly_added rows dropped (scrape_tracker kept)")
 
 
+def review():
+    """For every already-sent lead (Mail_status == 'Sent'), look in the Gmail inbox
+    for a message FROM that lead's address. A hit = they replied -> flip the lead's
+    Mail_status to 'Replied'. Read-only on Gmail (IMAP), only the DB status changes.
+    Uses the same App password as sending (works for IMAP too)."""
+    _load_env()
+    user = os.environ.get("GMAIL_USER", "you@example.com")
+    password = os.environ.get("GMAIL_APP_PASSWORD", "")
+    if not password:
+        sys.exit("GMAIL_APP_PASSWORD not set. Add it to the repo-root .env "
+                 "(see this file's header).")
+
+    sent = pipeline.mail_status_appids("Sent")
+    if not sent:
+        print("no leads in 'Sent' to review.")
+        return
+
+    imap = imaplib.IMAP4_SSL(IMAP_HOST)
+    imap.login(user, password)
+    imap.select("INBOX", readonly=True)
+
+    replied = 0
+    for appid in sent:
+        addr = (pipeline.get_emails(appid).split(",")[0] or "").strip()
+        if not addr:
+            continue
+        # ponytail: INBOX-only search; replies land here. Add 'All Mail' if some slip past.
+        # bytes literal + UTF-8 charset so non-ASCII addresses (ø, IDN) don't crash imaplib.
+        try:
+            typ, data = imap.search("UTF-8", "FROM", f'"{addr}"'.encode("utf-8"))
+        except imaplib.IMAP4.error:
+            continue
+        if typ == "OK" and data and data[0].split():
+            pipeline.set_mail_status(appid, "Replied")
+            replied += 1
+            print(f"  REPLIED {appid} <- {addr}")
+    imap.logout()
+    print(f"reviewed {len(sent)} sent lead(s): {replied} replied -> marked 'Replied'.")
+
+
 def _selftest():
     s, b = _split_subject("Subject : Hi there\n\nhey,\nbody line")
     assert s == "Hi there" and b == "hey,\nbody line", (s, b)
@@ -200,6 +243,8 @@ if __name__ == "__main__":
     args = sys.argv[1:]
     if "--selftest" in args:
         _selftest()
+    elif "--review" in args:
+        review()
     elif "--purge-sent" in args:
         purge_sent()
     else:

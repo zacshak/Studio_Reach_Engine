@@ -28,8 +28,8 @@ import pipeline  # same folder; the DB contract (read_lead + connections)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # media stores live under the reviewer: repo-root/Leads_Reviewer/<store>
-DEFAULT_BASE = os.path.join(os.path.dirname(HERE), "Leads_Reviewer", "Approval_Pending_Games")
-NOMAIL_BASE = os.path.join(os.path.dirname(HERE), "Leads_Reviewer", "No_Mail_Games")
+DEFAULT_BASE = os.path.join(os.path.dirname(HERE), "Leads_Reviewer", "Studios_To_Review", "Approval_Pending_Games")
+NOMAIL_BASE = os.path.join(os.path.dirname(HERE), "Leads_Reviewer", "Studios_To_Review", "No_Mail_Games")
 UA = "claude-lead-discovery/1.0 (approval-export)"
 
 # sprite_sheet.py lives in the reviewer folder; reuse its 2x2 contact-sheet builder

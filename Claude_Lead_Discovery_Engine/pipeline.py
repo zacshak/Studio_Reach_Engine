@@ -19,7 +19,10 @@ from contextlib import closing
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache.sqlite")
 TIMEOUT = 15  # seconds to wait on a locked DB before raising
 
-STATUSES = ("pending", "seeded", "SCRAPED", "no_email", "failed")
+STATUSES = ("pending", "seeded", "scraped", "no_email", "failed")
+# 'scraped' = email recovered by scraping the studio site (higher provenance than
+# 'seeded', which is Steam-provided). Treated exactly like 'seeded' downstream:
+# it has an email, so it's out of the 'pending' work queue and into the mail flow.
 # outreach state; Mail_status defaults to 'Pending'. Review moves it Pending ->
 # Writing (accepted) ; the mailer later moves Writing -> Scheduled -> Sent -> Replied.
 MAIL_STATUSES = ("Pending", "Writing", "Scheduled", "Sent", "Replied")

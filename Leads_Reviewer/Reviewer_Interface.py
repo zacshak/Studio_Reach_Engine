@@ -28,8 +28,9 @@ import pipeline  # noqa: E402
 
 # media folders (screenshots + curated JSON) live inside this reviewer folder
 _HERE = os.path.dirname(os.path.abspath(__file__))
-MEDIA_DIR = os.path.join(_HERE, "Approval_Pending_Games")   # seeded leads
-NOMAIL_DIR = os.path.join(_HERE, "No_Mail_Games")           # pending (no-email) leads
+_REVIEW_DIR = os.path.join(_HERE, "Studios_To_Review")
+MEDIA_DIR = os.path.join(_REVIEW_DIR, "Approval_Pending_Games")   # seeded leads
+NOMAIL_DIR = os.path.join(_REVIEW_DIR, "No_Mail_Games")           # pending (no-email) leads
 
 
 def _folder_for(appid, base=MEDIA_DIR):
@@ -132,7 +133,7 @@ def _norm_url(u):
 def ingest_emails(items):
     """Take scraped [{"url":..,"email":..}, ..] back from the external scraper.
     For each item that HAS an email, match its url to a pending lead, write the
-    email + flip scrape_status 'pending'->'seeded', and move its media folder
+    email + flip scrape_status 'pending'->'scraped', and move its media folder
     No_Mail_Games -> Approval_Pending_Games (so it shows in Game Approval).
     Empty-email and unmatched items are left untouched. Returns a summary dict."""
     by_url = {_norm_url(w): a for a, w in pipeline.pending_leads() if w}
@@ -146,7 +147,7 @@ def ingest_emails(items):
         if appid is None:
             unmatched.append(url)
             continue
-        pipeline.write_result(appid, scrape_status="seeded", emails=email)
+        pipeline.write_result(appid, scrape_status="scraped", emails=email)
         src = _folder_for(appid, NOMAIL_DIR)       # move local data to the seeded store
         if src:
             dst = os.path.join(MEDIA_DIR, os.path.basename(src))

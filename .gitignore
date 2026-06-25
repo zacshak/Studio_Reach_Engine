@@ -3,8 +3,7 @@ __pycache__/
 .venv/
 venv/
 out/
-Approval_Pending_Games/
-No_Mail_Games/
+Studios_To_Review/
 *.sqlite
 !Claude_Lead_Discovery_Engine/cache.sqlite
 *.sqlite-wal

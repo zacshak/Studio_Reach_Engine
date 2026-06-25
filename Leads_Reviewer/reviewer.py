@@ -534,7 +534,7 @@ def _cli_ingest(argv):
     print(f"updated {len(res['updated'])}, skipped (no email) {len(res['skipped'])}, "
           f"unmatched {len(res['unmatched'])}")
     for a, e in res["updated"]:
-        print(f"  seeded {a} <- {e}  (folder -> Approval_Pending_Games)")
+        print(f"  scraped {a} <- {e}  (folder -> Approval_Pending_Games)")
     if res["unmatched"]:
         print("  unmatched urls:", res["unmatched"])
 
