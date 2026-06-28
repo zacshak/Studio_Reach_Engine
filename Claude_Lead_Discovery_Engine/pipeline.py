@@ -15,9 +15,34 @@ import os
 import sqlite3
 from contextlib import closing
 
+try:
+    import libsql                      # Turso/libSQL client (sqlite3 DBAPI drop-in)
+except ImportError:                    # not installed locally -> local sqlite path only
+    libsql = None
+
 # pipeline.py lives in the System 1 folder, alongside the DB it owns
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache.sqlite")
 TIMEOUT = 15  # seconds to wait on a locked DB before raising
+
+
+def _load_env():
+    """Pull KEY=VALUE from the repo-root .env into os.environ (local convenience;
+    in the cloud the host injects these as real env vars). Doesn't override existing."""
+    p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+    if os.path.exists(p):
+        for line in open(p, encoding="utf-8"):
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip())
+
+
+_load_env()
+# When TURSO_DATABASE_URL is set, the whole pipeline talks to the remote Turso DB
+# (cloud-shared). When it's empty, everything falls back to the local cache.sqlite —
+# byte-identical to the pre-Turso behaviour, so local dev needs no creds.
+TURSO_URL = os.environ.get("TURSO_DATABASE_URL", "")
+TURSO_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "")
 
 STATUSES = ("pending", "seeded", "scraped", "no_email", "failed")
 # 'scraped' = email recovered by scraping the studio site (higher provenance than
@@ -106,20 +131,73 @@ END
 _ensured = False  # init_tracker() runs once per process, not on every call
 
 
+class _Rows:
+    """Buffers a libsql cursor so sqlite3-style call sites keep working: libsql
+    cursors aren't directly iterable and exhaust on read, so we fetch up front."""
+    def __init__(self, cur):
+        self.rowcount = getattr(cur, "rowcount", -1)
+        try:
+            self._rows = cur.fetchall()
+        except Exception:
+            self._rows = []                # write statements have nothing to fetch
+        self._i = 0
+
+    def __iter__(self):
+        return iter(self._rows)
+
+    def fetchall(self):
+        return self._rows
+
+    def fetchone(self):
+        if self._i < len(self._rows):
+            self._i += 1
+            return self._rows[self._i - 1]
+        return None
+
+
+class _Conn:
+    """Thin libsql connection proxy: execute() returns a buffered, iterable result
+    (the only API gap vs sqlite3). commit/executescript/close pass through."""
+    def __init__(self, raw):
+        self._raw = raw
+
+    def execute(self, *a):
+        return _Rows(self._raw.execute(*a))
+
+    def __getattr__(self, n):
+        return getattr(self._raw, n)
+
+
 def _rw():
+    if TURSO_URL:
+        return _Conn(libsql.connect(TURSO_URL, auth_token=TURSO_TOKEN))
     return sqlite3.connect(DB_PATH, timeout=TIMEOUT)
 
 
 def _ro():
+    if TURSO_URL:
+        # Turso has no local mode=ro handle; the read-only contract (guarding
+        # newly_added from Hermes) is relaxed in cloud mode — Hermes runs locally.
+        return _Conn(libsql.connect(TURSO_URL, auth_token=TURSO_TOKEN))
     # read-only handle: any write raises sqlite3.OperationalError
     return sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=TIMEOUT)
+
+
+def connect():
+    """A writable connection for the discovery scripts (batch_fetch / find_new /
+    lead_discovery), so they write to the SAME store as the rest of the pipeline —
+    Turso when configured, else the local file (tests). They own newly_added /
+    known_comingsoon; this just hands them the right connection."""
+    return _rw()
 
 
 def init_tracker():
     """Create the tracker table + auto-sync trigger; enable WAL. Idempotent."""
     global _ensured
     with closing(_rw()) as conn:
-        conn.execute("PRAGMA journal_mode=WAL")  # readers don't block the writer
+        if not TURSO_URL:
+            conn.execute("PRAGMA journal_mode=WAL")  # local: readers don't block writer
+            # (Turso manages its own storage/concurrency — WAL pragma N/A there)
         conn.execute(f"CREATE TABLE IF NOT EXISTS scrape_tracker {_SCHEMA}")
         # migrate older DBs whose table predates a column (IF NOT EXISTS won't add it)
         have = {c[1] for c in conn.execute("PRAGMA table_info(scrape_tracker)")}

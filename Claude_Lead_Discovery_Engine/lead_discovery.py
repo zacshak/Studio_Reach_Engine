@@ -17,7 +17,6 @@ import argparse
 import csv
 import glob
 import os
-import sqlite3
 import sys
 from datetime import datetime
 
@@ -26,6 +25,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 import batch_fetch as bf  # reuse the cached, rate-limited fetcher
+import pipeline  # shared DB connection (Turso when configured)
 from approval_export import ApprovalExporter, NOMAIL_BASE  # background staging
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -123,7 +123,7 @@ def main():
     args = ap.parse_args()
 
     os.makedirs(bf.OUT_DIR, exist_ok=True)
-    conn = sqlite3.connect(bf.DB_PATH)
+    conn = pipeline.connect()
     bf.init_db(conn)
 
     today = datetime.now(bf.IST).date().isoformat()

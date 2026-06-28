@@ -5,7 +5,6 @@ venv/
 out/
 Studios_To_Review/
 *.sqlite
-!Claude_Lead_Discovery_Engine/cache.sqlite
 *.sqlite-wal
 *.sqlite-shm
 *.sqbpro

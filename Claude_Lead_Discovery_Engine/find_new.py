@@ -22,7 +22,6 @@ import html
 import json
 import os
 import re
-import sqlite3
 import sys
 import time
 import urllib.error
@@ -36,7 +35,9 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(HERE, "cache.sqlite")
+sys.path.insert(0, HERE)
+import pipeline  # noqa: E402  shared DB connection (Turso when configured)
+
 OUT_DIR = os.path.join(HERE, "out")
 SEARCH_URL = "https://store.steampowered.com/search/results/"
 UA = "claude-steam-search/0.4 (research; contact via project owner)"
@@ -136,7 +137,7 @@ def main():
 
     stamp = args.stamp or datetime.now(IST).strftime("%Y-%m-%d_%H%M")
     os.makedirs(OUT_DIR, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    conn = pipeline.connect()
     init_db(conn)
 
     known_before = conn.execute("SELECT COUNT(*) FROM known_comingsoon").fetchone()[0]

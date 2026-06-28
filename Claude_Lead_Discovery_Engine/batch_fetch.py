@@ -17,7 +17,6 @@ import argparse
 import csv
 import json
 import os
-import sqlite3
 import sys
 import time
 import urllib.error
@@ -28,13 +27,13 @@ from datetime import datetime, timedelta, timezone
 IST = timezone(timedelta(hours=5, minutes=30))  # India Standard Time
 
 from fetch_app import normalize  # reuse the v0.1 field extractor
+import pipeline  # shared DB connection (Turso when configured) — single source of truth
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(HERE, "cache.sqlite")
 OUT_DIR = os.path.join(HERE, "out")
 APPDETAILS = "https://store.steampowered.com/api/appdetails"
 UA = "claude-steam-search/0.2 (research; contact via project owner)"
@@ -314,7 +313,7 @@ def main():
         ap.error("give appids on the command line or via --file")
 
     os.makedirs(OUT_DIR, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    conn = pipeline.connect()
     init_db(conn)
     limiter = RateLimiter(args.min_interval, MAX_PER_WINDOW, WINDOW)
 
@@ -362,7 +361,7 @@ def main():
     print("\n" + "=" * 56)
     print(f"  done: {ok} with data, {dead} no-data, {cached} from cache")
     print(f"  CSV: {out_csv}  ({len(rows)} rows)")
-    print(f"  cache DB: {DB_PATH}")
+    print(f"  data store: {pipeline.TURSO_URL or 'local cache.sqlite'}")
     print("=" * 56)
     conn.close()
 

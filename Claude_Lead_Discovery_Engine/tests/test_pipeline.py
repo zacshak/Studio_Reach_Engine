@@ -47,6 +47,7 @@ class PipelineTest(unittest.TestCase):
     def setUp(self):
         fd, self.db = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
+        pipeline.TURSO_URL = ""             # force the local sqlite path (never prod Turso!)
         pipeline.DB_PATH = self.db          # redirect pipeline at the temp DB
         pipeline._ensured = False           # force re-init against it
         with sqlite3.connect(self.db) as c:
@@ -169,13 +170,13 @@ class PipelineTest(unittest.TestCase):
         # THE regression: INSERT OR REPLACE on newly_added must NOT reset tracker
         with self._raw() as c:
             insert_lead(c, 200, name="V1")
-        pipeline.write_result(200, scrape_status="SCRAPED", emails="e@x.com",
+        pipeline.write_result(200, scrape_status="scraped", emails="e@x.com",
                               country="Japan")
         with self._raw() as c:
             insert_lead(c, 200, name="V2", replace=True)   # re-fetch
             row = c.execute("SELECT scrape_status,emails,country FROM scrape_tracker "
                             "WHERE appid=200").fetchone()
-        self.assertEqual(row, ("SCRAPED", "e@x.com", "Japan"))
+        self.assertEqual(row, ("scraped", "e@x.com", "Japan"))
 
     # ---- seed_pending --------------------------------------------------
     def test_seed_pending_backfills_and_is_idempotent(self):
@@ -194,7 +195,7 @@ class PipelineTest(unittest.TestCase):
         with self._raw() as c:
             for a in (400, 401, 402):
                 insert_lead(c, a)
-        pipeline.write_result(401, scrape_status="SCRAPED")
+        pipeline.write_result(401, scrape_status="scraped")
         self.assertEqual(pipeline.get_pending(), [400, 402])
         self.assertEqual(pipeline.get_pending(limit=1), [400])
 
@@ -218,7 +219,7 @@ class PipelineTest(unittest.TestCase):
     def test_write_result_partial_update_preserves(self):
         with self._raw() as c:
             insert_lead(c, 600, name="Keep")
-        pipeline.write_result(600, scrape_status="SCRAPED", emails="a@b.com")
+        pipeline.write_result(600, scrape_status="scraped", emails="a@b.com")
         pipeline.write_result(600, scrape_status="no_email", country="US")  # no emails
         with self._raw() as c:
             row = c.execute("SELECT scrape_status,emails,country,game_name "
@@ -258,7 +259,7 @@ class PipelineTest(unittest.TestCase):
                               "WHERE appid=900").fetchone()[0]
         self.assertEqual(added, "t")
         # ...and write_result must NOT touch it
-        pipeline.write_result(900, scrape_status="SCRAPED")
+        pipeline.write_result(900, scrape_status="scraped")
         with self._raw() as c:
             added2 = c.execute("SELECT added_at FROM scrape_tracker "
                                "WHERE appid=900").fetchone()[0]
