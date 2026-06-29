@@ -27,11 +27,21 @@ try:
 except Exception:
     pass
 
+st.set_page_config(page_title="SRE Review", layout="centered")
+
+# Fail loud + clear if the DB secret never arrived — otherwise pipeline silently falls
+# back to an empty local SQLite and dies cryptically ("no such table: newly_added").
+if not os.environ.get("TURSO_DATABASE_URL"):
+    st.error(
+        "**Turso DB secret missing.** Add `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` "
+        "in **Manage app → Settings → Secrets** as flat top-level keys (no `[sections]`), "
+        "then **Reboot app**.")
+    st.stop()
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "Leads_Reviewer"))
 import Reviewer_Interface as review            # noqa: E402
 import streamlit.components.v1 as components    # noqa: E402
 
-st.set_page_config(page_title="SRE Review", layout="centered")
 SECTION = st.sidebar.radio("Section", ["Game Approval", "No-Mail", "Mail Approval"])
 
 # On phones, hide the Prev/Next buttons — swipe handles navigation. They stay in the
