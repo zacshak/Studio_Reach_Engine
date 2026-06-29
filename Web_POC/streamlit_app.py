@@ -39,9 +39,12 @@ st.markdown("""
 #MainMenu {visibility: hidden;}
 footer {visibility: hidden;}
 [data-testid="stToolbar"] {display: none;}
-/* trim the big default top/iframe gaps so cards sit tight */
+/* trim the big default top gap so cards sit tight */
 .block-container {padding-top: 2rem;}
-iframe {display: block;}
+/* image/swipe iframes must be transparent to touch, else a swipe over the image is
+   trapped inside its iframe and never reaches the parent-document swipe handler. We
+   don't interact with these iframes directly (display-only), so this is safe. */
+iframe {display: block; pointer-events: none;}
 </style>
 """, unsafe_allow_html=True)
 
