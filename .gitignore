@@ -12,3 +12,6 @@ Studios_To_Review/
 .env
 steam_key.txt
 HermesScraper/nul
+
+# wrangler local auth cache (Cloudflare creds) — never commit
+.wrangler/
