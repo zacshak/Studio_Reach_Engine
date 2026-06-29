@@ -39,8 +39,12 @@ st.markdown("""
 #MainMenu {visibility: hidden;}
 footer {visibility: hidden;}
 [data-testid="stToolbar"] {display: none;}
-/* trim the big default top gap so cards sit tight */
-.block-container {padding-top: 2rem;}
+/* condensed layout — fit a whole card on a phone without scrolling */
+.block-container {padding: 0.6rem 1rem 0.6rem !important; max-width: 680px;}
+[data-testid="stVerticalBlock"] {gap: 0.35rem;}
+[data-testid="stMarkdownContainer"] p {margin-bottom: 0.15rem;}
+h1, h2, h3 {margin: 0 0 .2rem 0 !important; padding: 0 !important;}
+.stCaption, [data-testid="stCaptionContainer"] {margin: 0 !important;}
 /* image/swipe iframes must be transparent to touch, else a swipe over the image is
    trapped inside its iframe and never reaches the parent-document swipe handler. We
    don't interact with these iframes directly (display-only), so this is safe. */
@@ -71,7 +75,7 @@ st.markdown(
     unsafe_allow_html=True)
 
 
-def _img(url, height=440):
+def _img(url, height=250):
     """Render an image inside a real iframe (components.html) so JS actually runs —
     Streamlit sanitizes st.markdown HTML and strips inline onload, which is why earlier
     CSS/JS spinners never showed. Here a spinner spins until the image's onload fires,
@@ -106,7 +110,7 @@ def _card(g, show_mail=False):
         # images exist in the DOM only when this is on, so a swipe pulls just the sheet.
         if st.toggle(f"All {len(g['shots'])} screenshots", key=f"all_{g['appid']}"):
             for s in g["shots"]:
-                _img(s, height=300)
+                _img(s, height=200)
     st.write(g["desc"])
     if show_mail:
         st.markdown(f"**To:** {g.get('emails') or '—'}")
