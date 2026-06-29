@@ -39,6 +39,15 @@ st.markdown("""
 #MainMenu {visibility: hidden;}
 footer {visibility: hidden;}
 [data-testid="stToolbar"] {display: none;}
+/* image container with a spinner shown until the (network) image loads */
+.sre-imgbox {position: relative; width: 100%; min-height: 220px; background: #0e1117;
+             border-radius: 8px; overflow: hidden; display: flex;
+             align-items: center; justify-content: center;}
+.sre-imgbox img {width: 100%; display: block; opacity: 0; transition: opacity .25s ease;}
+.sre-spin {position: absolute; width: 34px; height: 34px;
+           border: 3px solid rgba(255,255,255,.15); border-top-color: rgba(255,255,255,.7);
+           border-radius: 50%; animation: sre-rot .8s linear infinite;}
+@keyframes sre-rot {to {transform: rotate(360deg);}}
 </style>
 """, unsafe_allow_html=True)
 
@@ -65,6 +74,15 @@ st.markdown(
     unsafe_allow_html=True)
 
 
+def _img(url):
+    """Image with a spinner shown until it loads — so a fast swipe shows a spinner,
+    not the previous card's screenshot, while the new one downloads from R2. The img
+    starts transparent and fades in on load; the spinner sits behind it and hides."""
+    return (f'<div class="sre-imgbox"><div class="sre-spin"></div>'
+            f'<img src="{url}" onload="this.style.opacity=1;'
+            f'this.previousElementSibling.style.display=\'none\'"></div>')
+
+
 def _card(g, show_mail=False):
     st.subheader(g["name"])
     st.caption(g["meta"])
@@ -72,11 +90,11 @@ def _card(g, show_mail=False):
     sheet = next((s for s in g["shots"] if "SpriteSheet" in s),
                  g["shots"][0] if g["shots"] else None)
     if sheet:
-        st.image(sheet, use_container_width=True)
+        st.markdown(_img(sheet), unsafe_allow_html=True)
     if len(g["shots"]) > 1:
         with st.expander(f"All {len(g['shots'])} screenshots"):
             for s in g["shots"]:
-                st.image(s)
+                st.markdown(_img(s), unsafe_allow_html=True)
     st.write(g["desc"])
     if show_mail:
         st.markdown(f"**To:** {g.get('emails') or '—'}")
