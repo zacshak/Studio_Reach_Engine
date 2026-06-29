@@ -34,9 +34,29 @@ ROUTES = {
 }
 
 
+# Commands that read media/mail FILES off local disk. Before these, pull any
+# cloud-discovered leads missing locally (R2 is the shared hub; the night's batch may
+# have been produced by a cloud cron while this PC was off). DB-only commands
+# (--review-mails, --noseed-urls) and producers (--discover) are not listed.
+SYNC_BEFORE = {"--review", "--delete", "--irrelevants-list", "--send-mails"}
+
+
+def _pull_media():
+    """Best-effort R2 -> local pull. Never blocks the command if it fails (offline /
+    no creds) — the command then just runs against whatever is already local."""
+    sync = os.path.join(HERE, "sync_media.py")
+    if os.path.exists(sync):
+        try:
+            subprocess.call([sys.executable, sync, "--pull"])
+        except Exception as e:
+            print(f"(media pull skipped: {e!r})")
+
+
 def main(argv):
     if not argv or argv[0] not in ROUTES:
         sys.exit(__doc__)
+    if argv[0] in SYNC_BEFORE:
+        _pull_media()
     script, prefix = ROUTES[argv[0]]
     cmd = [sys.executable, os.path.join(HERE, *script.split("/"))] + prefix + argv[1:]
     return subprocess.call(cmd)
