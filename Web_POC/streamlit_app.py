@@ -164,7 +164,7 @@ def _run(loader, actions, show_mail=False):
 
     idx = min(max(st.session_state.get(ikey, 0), 0), len(games) - 1)
     st.session_state[ikey] = idx
-    g = games[idx]
+    g = review.hydrate(games[idx])   # fetch THIS card's media on demand (cloud); cached after
     _card(g, show_mail)
 
     # navigation: Prev / Next (swipe on mobile clicks these)

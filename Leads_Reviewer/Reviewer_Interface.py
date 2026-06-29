@@ -18,7 +18,6 @@ import os
 import re
 import shutil
 import sys
-from concurrent.futures import ThreadPoolExecutor
 
 # pipeline.py lives in the System 1 folder (the DB owner); make it importable.
 _PIPELINE_DIR = os.path.join(
@@ -119,34 +118,60 @@ def _load_mail(folder, appid):
 def games_to_review():
     """Games to show: those with Mail_status 'Pending' that still have a media
     folder. Sorted by name. Each item: {appid, name, desc, meta, shots[]}."""
-    return _queue(pipeline.mail_status_appids("Pending"), MEDIA_DIR)
+    if _CLOUD:
+        return _lazy_list(pipeline.mail_status_appids("Pending"))
+    return _local_queue(pipeline.mail_status_appids("Pending"), MEDIA_DIR)
 
 
 def nomail_games_to_review():
     """Games with no email anywhere (scrape_status 'pending') that have a staged
     folder in No_Mail_Games. Same shape as games_to_review(). Reject-only in the GUI."""
-    return _queue(pipeline.get_pending(), NOMAIL_DIR)     # scrape_status == 'pending'
-
-
-def _queue(appids, base):
-    """Build the card list for `appids` — from R2 in cloud mode, else local folders.
-    Leads with no media (no folder / no R2 manifest) are skipped."""
     if _CLOUD:
-        index = media_store.fetch_index()                   # appid -> folder, once
-        pairs = [(a, index[str(a)]) for a in appids if str(a) in index]
-        # Each card is one independent R2 HTTP fetch (no DB), so fetch them in parallel —
-        # otherwise the first load is N sequential round-trips (~tens of seconds for ~300).
-        with ThreadPoolExecutor(max_workers=32) as pool:
-            out = [item for item in pool.map(lambda p: _load_remote(*p), pairs) if item]
-    else:
-        out = []
-        for appid in appids:
-            folder = _folder_for(appid, base)
-            item = _load_folder(folder, appid) if folder else None
-            if item:
-                out.append(item)
+        return _lazy_list(pipeline.get_pending())
+    return _local_queue(pipeline.get_pending(), NOMAIL_DIR)
+
+
+def _local_queue(appids, base):
+    """Eager card list from local folders (desktop GUI / local run) — filesystem is
+    cheap, so build everything up front. Leads without a media folder are skipped."""
+    out = []
+    for appid in appids:
+        folder = _folder_for(appid, base)
+        item = _load_folder(folder, appid) if folder else None
+        if item:
+            out.append(item)
     out.sort(key=lambda g: g["name"].lower())
     return out
+
+
+def _lazy_list(appids):
+    """Cloud: an INSTANT queue built from index.json alone — NO per-card fetches. Each
+    entry is {appid, folder, name(from folder), shots:None}; hydrate() pulls the real
+    card (images/desc/mail) from R2 only when the card is actually viewed. This is what
+    makes the first paint fast instead of fetching hundreds of manifests up front."""
+    index = media_store.fetch_index()
+    out = []
+    for appid in appids:
+        folder = index.get(str(appid))
+        if folder:
+            out.append({"appid": appid, "folder": folder, "shots": None,
+                        "name": folder.rsplit("_", 1)[0] or str(appid)})  # for sort/title
+    out.sort(key=lambda g: g["name"].lower())
+    return out
+
+
+def hydrate(item):
+    """Fill a lazy item's card data from its R2 manifest, once. No-op for already-loaded
+    items (local full dicts, mail cards, or a card viewed before — all have shots set).
+    Returns the same dict, so the caller can cache it. Cloud-only work; cheap locally."""
+    if item.get("shots") is not None:
+        return item
+    full = _load_remote(item["appid"], item.get("folder"))
+    if full:
+        item.update(full)                                   # real name/desc/meta/shots/mail
+    else:
+        item.update({"shots": [], "desc": "(media unavailable)", "meta": "—"})
+    return item
 
 
 def pending_website_urls():
