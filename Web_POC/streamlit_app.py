@@ -39,6 +39,9 @@ st.markdown("""
 #MainMenu {visibility: hidden;}
 footer {visibility: hidden;}
 [data-testid="stToolbar"] {display: none;}
+/* drop the empty header bar entirely — the section switcher moved to the main area,
+   so we no longer need the header's sidebar-open control. */
+[data-testid="stHeader"], header {display: none;}
 /* condensed layout — fit a whole card on a phone without scrolling */
 .block-container {padding: 0.6rem 1rem 0.6rem !important; max-width: 680px;}
 [data-testid="stVerticalBlock"] {gap: 0.35rem;}
@@ -65,7 +68,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "Leads_Reviewer
 import Reviewer_Interface as review            # noqa: E402
 import streamlit.components.v1 as components    # noqa: E402
 
-SECTION = st.sidebar.radio("Section", ["Game Approval", "No-Mail", "Mail Approval"])
+# Section switcher in the MAIN area (not the sidebar — it collapses on mobile with no
+# easy way to reopen). Horizontal radio = always visible, one tap to switch.
+SECTION = st.radio("Section", ["Game Approval", "No-Mail", "Mail Approval"],
+                   horizontal=True, label_visibility="collapsed")
 
 # On phones, hide the Prev/Next buttons — swipe handles navigation. They stay in the
 # DOM (display:none, not removed) so the swipe script can still .click() them.
