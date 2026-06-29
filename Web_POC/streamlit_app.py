@@ -79,7 +79,7 @@ def _img(url):
     not the previous card's screenshot, while the new one downloads from R2. The img
     starts transparent and fades in on load; the spinner sits behind it and hides."""
     return (f'<div class="sre-imgbox"><div class="sre-spin"></div>'
-            f'<img src="{url}" onload="this.style.opacity=1;'
+            f'<img src="{url}" loading="lazy" onload="this.style.opacity=1;'
             f'this.previousElementSibling.style.display=\'none\'"></div>')
 
 
@@ -92,7 +92,10 @@ def _card(g, show_mail=False):
     if sheet:
         st.markdown(_img(sheet), unsafe_allow_html=True)
     if len(g["shots"]) > 1:
-        with st.expander(f"All {len(g['shots'])} screenshots"):
+        # render-on-demand (not st.expander, which renders its contents even while
+        # collapsed → the browser would download all screenshots on every card). The
+        # images exist in the DOM only when this is on, so a swipe pulls just the sheet.
+        if st.toggle(f"All {len(g['shots'])} screenshots", key=f"all_{g['appid']}"):
             for s in g["shots"]:
                 st.markdown(_img(s), unsafe_allow_html=True)
     st.write(g["desc"])
