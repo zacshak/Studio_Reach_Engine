@@ -39,17 +39,9 @@ st.markdown("""
 #MainMenu {visibility: hidden;}
 footer {visibility: hidden;}
 [data-testid="stToolbar"] {display: none;}
-/* spinner sits BEHIND the image (no JS — Streamlit strips inline onload); the image
-   paints on top and covers it once it loads. While loading, the img area is empty so
-   the spinner shows through. */
-.sre-imgbox {position: relative; width: 100%; min-height: 220px; background: #0e1117;
-             border-radius: 8px; overflow: hidden;}
-.sre-imgbox img {position: relative; z-index: 1; width: 100%; display: block;}
-.sre-spin {position: absolute; top: 50%; left: 50%; margin: -17px 0 0 -17px; z-index: 0;
-           width: 34px; height: 34px; border: 3px solid rgba(255,255,255,.15);
-           border-top-color: rgba(255,255,255,.7); border-radius: 50%;
-           animation: sre-rot .8s linear infinite;}
-@keyframes sre-rot {to {transform: rotate(360deg);}}
+/* trim the big default top/iframe gaps so cards sit tight */
+.block-container {padding-top: 2rem;}
+iframe {display: block;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -76,12 +68,25 @@ st.markdown(
     unsafe_allow_html=True)
 
 
-def _img(url):
-    """Image with a spinner shown until it loads — so a fast swipe shows a spinner,
-    not the previous card's screenshot, while the new one downloads from R2. The img
-    starts transparent and fades in on load; the spinner sits behind it and hides."""
-    return (f'<div class="sre-imgbox"><div class="sre-spin"></div>'
-            f'<img src="{url}" loading="lazy"></div>')
+def _img(url, height=440):
+    """Render an image inside a real iframe (components.html) so JS actually runs —
+    Streamlit sanitizes st.markdown HTML and strips inline onload, which is why earlier
+    CSS/JS spinners never showed. Here a spinner spins until the image's onload fires,
+    then the image fades in over it. So a fast swipe shows a spinner, never the previous
+    card's screenshot."""
+    components.html(f"""
+<div style="position:relative;height:{height}px;background:#0e1117;border-radius:8px;
+            display:flex;align-items:center;justify-content:center;overflow:hidden;">
+  <div style="position:absolute;width:36px;height:36px;border:3px solid rgba(255,255,255,.18);
+              border-top-color:rgba(255,255,255,.85);border-radius:50%;
+              animation:sresp .8s linear infinite;"></div>
+  <img src="{url}" style="position:relative;max-width:100%;max-height:100%;
+       object-fit:contain;opacity:0;transition:opacity .25s;"
+       onload="this.style.opacity=1;this.previousElementSibling.style.display='none';">
+</div>
+<style>@keyframes sresp{{to{{transform:rotate(360deg);}}}}
+body{{margin:0;}}</style>
+""", height=height)
 
 
 def _card(g, show_mail=False):
@@ -91,14 +96,14 @@ def _card(g, show_mail=False):
     sheet = next((s for s in g["shots"] if "SpriteSheet" in s),
                  g["shots"][0] if g["shots"] else None)
     if sheet:
-        st.markdown(_img(sheet), unsafe_allow_html=True)
+        _img(sheet)
     if len(g["shots"]) > 1:
         # render-on-demand (not st.expander, which renders its contents even while
         # collapsed → the browser would download all screenshots on every card). The
         # images exist in the DOM only when this is on, so a swipe pulls just the sheet.
         if st.toggle(f"All {len(g['shots'])} screenshots", key=f"all_{g['appid']}"):
             for s in g["shots"]:
-                st.markdown(_img(s), unsafe_allow_html=True)
+                _img(s, height=300)
     st.write(g["desc"])
     if show_mail:
         st.markdown(f"**To:** {g.get('emails') or '—'}")
