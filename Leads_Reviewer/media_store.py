@@ -24,6 +24,7 @@ is one HTTP GET — no DB round-trip for display.
 import json
 import os
 import re
+import urllib.parse
 import urllib.request
 
 
@@ -63,13 +64,20 @@ def read_enabled():
     return bool(PUBLIC_BASE)
 
 
+def _enc(seg):
+    # percent-encode a single path segment: game names have spaces + non-ASCII, which
+    # raw urllib won't send and r2.dev won't match without encoding.
+    return urllib.parse.quote(seg, safe="")
+
+
 def public_url(folder, filename):
-    return f"{PUBLIC_BASE}/{folder}/{filename}"
+    return f"{PUBLIC_BASE}/{_enc(folder)}/{_enc(filename)}"
 
 
-def _get_json(key):
+def _get_json(path):
+    """GET a JSON object by its already-built (encoded) object path."""
     try:
-        req = urllib.request.Request(f"{PUBLIC_BASE}/{key}", headers=_UA)
+        req = urllib.request.Request(f"{PUBLIC_BASE}/{path}", headers=_UA)
         with urllib.request.urlopen(req, timeout=10) as r:
             return json.load(r)
     except Exception:
@@ -83,7 +91,7 @@ def fetch_index():
 
 def fetch_manifest(folder):
     """The lead's manifest dict from R2 (by folder name), or None if unreachable."""
-    return _get_json(f"{folder}/manifest.json")
+    return _get_json(f"{_enc(folder)}/manifest.json")
 
 
 # -- write side (local sync only; boto3 imported lazily) ------------------
