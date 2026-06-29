@@ -48,6 +48,8 @@ footer {visibility: hidden;}
 [data-testid="stMarkdownContainer"] p {margin-bottom: 0.15rem;}
 h1, h2, h3 {margin: 0 0 .2rem 0 !important; padding: 0 !important;}
 .stCaption, [data-testid="stCaptionContainer"] {margin: 0 !important;}
+/* section switcher always on one row, centered, at any width */
+[role="radiogroup"] {flex-wrap: nowrap !important; justify-content: center; gap: .6rem;}
 /* image/swipe iframes must be transparent to touch, else a swipe over the image is
    trapped inside its iframe and never reaches the parent-document swipe handler. We
    don't interact with these iframes directly (display-only), so this is safe. */
@@ -69,9 +71,12 @@ import Reviewer_Interface as review            # noqa: E402
 import streamlit.components.v1 as components    # noqa: E402
 
 # Section switcher in the MAIN area (not the sidebar — it collapses on mobile with no
-# easy way to reopen). Horizontal radio = always visible, one tap to switch.
+# easy way to reopen). Horizontal radio, short labels + nowrap CSS so it stays one row
+# at any width; format_func keeps the long values for the logic below.
 SECTION = st.radio("Section", ["Game Approval", "No-Mail", "Mail Approval"],
-                   horizontal=True, label_visibility="collapsed")
+                   horizontal=True, label_visibility="collapsed",
+                   format_func=lambda s: {"Game Approval": "Games", "No-Mail": "No-Mail",
+                                          "Mail Approval": "Mail"}[s])
 
 # On phones, hide the Prev/Next buttons — swipe handles navigation. They stay in the
 # DOM (display:none, not removed) so the swipe script can still .click() them.
@@ -171,10 +176,6 @@ def _run(loader, actions, show_mail=False):
         st.session_state[SECTION] = loader()
     games = st.session_state[SECTION]
     ikey = f"{SECTION}:idx"
-
-    st.button("🔄 Refresh", key=f"{SECTION}:refresh",
-              on_click=lambda: (st.session_state.pop(SECTION, None),
-                                st.session_state.pop(ikey, None)))
 
     if not games:
         st.success("Nothing to review here 🎉")
