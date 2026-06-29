@@ -61,13 +61,28 @@ GUI), writing to Turso. Boots clean (health ok). Run `streamlit run Web_POC/stre
 open the printed Network URL on a phone over the same wifi to review from phone TODAY — no deploy
 needed (images served from the PC).
 
-**2b — FOLDED INTO PHASE 3** (decided 2026-06-28): deploy + media→R2 will be built with cloud
-discovery, since that's what uploads the media. Until then, local app + phone-over-wifi covers review.
-- Push repo to GitHub; deploy on Streamlit Community Cloud (free); Turso creds as app secrets.
-- Media: cloud has no local `Studios_To_Review/` (gitignored, ephemeral disk). Spritesheets must
-  go to object storage (Cloudflare R2); staging uploads them, `Reviewer_Interface` returns R2 URLs
-  in cloud mode. Build this with Phase 3 (cloud discovery is what uploads the media) to avoid
-  building the R2 plumbing twice.
+**2b — media→R2 + deploy CODED 2026-06-29** (env-gated, no-op until creds set):
+- `Leads_Reviewer/media_store.py`: R2 bridge. Read side (public_url/fetch_manifest) is plain
+  urllib — keeps the cloud app boto3-free. Write side (upload_dir) uses boto3, imported lazily.
+- `sync_media.py` (root): mirrors both local stores (`Approval_Pending_Games` + `No_Mail_Games`)
+  → R2, keyed by appid, with a self-contained `<appid>/manifest.json` (card text + image list +
+  mail draft + template id). One integration point — no R2 hooks scattered through staging/triage;
+  re-run it after each local batch (the nightly job will). `pip install boto3` (local only).
+- `Reviewer_Interface.py`: `_CLOUD` = R2 public base set AND no local media tree (true on Community
+  Cloud). In cloud, queue/cards/mail come from R2 manifests; Approve_Mail reads the template id from
+  the manifest. Desktop GUI path unchanged. ceiling: cloud queue fetches one manifest per lead at
+  section load (cached in session_state); go lazy-per-card if it drags.
+- `Web_POC/streamlit_app.py`: bridges `st.secrets` → `os.environ` BEFORE importing pipeline (which
+  reads creds at import); local no-op (.env still used).
+- Reject in cloud deletes the DB row; the R2 object is left orphaned (harmless — queue is DB-driven).
+
+**You do (free Cloudflare account), to light it up:**
+1. cloudflare.com → R2 → create bucket `sre-media` → enable public access → copy the `pub-xxxx.r2.dev` URL.
+2. R2 → API Tokens → Object Read & Write → copy Account ID + Access Key ID + Secret.
+3. Add to `.env`: `R2_PUBLIC_BASE`, `R2_BUCKET=sre-media`, `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`.
+4. `pip install boto3 && python sync_media.py`  (backfills the staged leads to R2).
+5. Deploy: push to GitHub → share.streamlit.io → New app → repo `Meshak2002/Studio_Reach_Engine`,
+   branch `master`, main file `Web_POC/streamlit_app.py` → paste the .env values into Secrets (TOML).
 
 ## Phase 3 — cloud automation
 GitHub Actions cron each morning: discover → triage (Anthropic API) → stage. Paced sender +

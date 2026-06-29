@@ -25,12 +25,18 @@ _PIPELINE_DIR = os.path.join(
     "Claude_Lead_Discovery_Engine")
 sys.path.insert(0, _PIPELINE_DIR)
 import pipeline  # noqa: E402
+import media_store  # noqa: E402  (R2 bridge; read side is boto3-free)
 
 # media folders (screenshots + curated JSON) live inside this reviewer folder
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REVIEW_DIR = os.path.join(_HERE, "Studios_To_Review")
 MEDIA_DIR = os.path.join(_REVIEW_DIR, "Approval_Pending_Games")   # seeded leads
 NOMAIL_DIR = os.path.join(_REVIEW_DIR, "No_Mail_Games")           # pending (no-email) leads
+
+# Cloud mode: serve cards from R2 when its public base is set AND there's no local
+# media tree (i.e. Streamlit Community Cloud, where the gitignored folders don't
+# exist). Locally the tree exists, so the desktop GUI keeps reading from disk.
+_CLOUD = media_store.read_enabled() and not os.path.isdir(_REVIEW_DIR)
 
 
 def _folder_for(appid, base=MEDIA_DIR):
@@ -68,6 +74,23 @@ def _load_folder(folder, appid):
     }
 
 
+def _load_remote(appid):
+    """Card data from the R2 manifest (cloud mode). Same shape as _load_folder,
+    plus 'mail' when the manifest carries a draft. None if the lead has no media
+    in R2 yet."""
+    m = media_store.fetch_manifest(appid)
+    if not m:
+        return None
+    return {
+        "appid": appid,
+        "name": m.get("name") or str(appid),
+        "desc": m.get("desc") or "(no short description)",
+        "meta": m.get("meta") or "—",
+        "shots": [media_store.public_url(appid, f) for f in m.get("images", [])],
+        "mail": m.get("mail") or "",
+    }
+
+
 def _mail_file(folder, appid):
     """First existing mail_<appid>_<N>.txt path, or None."""
     files = sorted(glob.glob(os.path.join(folder, f"mail_{appid}_*.txt")))
@@ -95,23 +118,27 @@ def _load_mail(folder, appid):
 def games_to_review():
     """Games to show: those with Mail_status 'Pending' that still have a media
     folder. Sorted by name. Each item: {appid, name, desc, meta, shots[]}."""
-    out = []
-    for appid in pipeline.mail_status_appids("Pending"):
-        folder = _folder_for(appid)
-        if folder:
-            out.append(_load_folder(folder, appid))
-    out.sort(key=lambda g: g["name"].lower())
-    return out
+    return _queue(pipeline.mail_status_appids("Pending"), MEDIA_DIR)
 
 
 def nomail_games_to_review():
     """Games with no email anywhere (scrape_status 'pending') that have a staged
     folder in No_Mail_Games. Same shape as games_to_review(). Reject-only in the GUI."""
+    return _queue(pipeline.get_pending(), NOMAIL_DIR)     # scrape_status == 'pending'
+
+
+def _queue(appids, base):
+    """Build the card list for `appids` — from R2 in cloud mode, else local folders.
+    Leads with no media (no folder / no R2 manifest) are skipped."""
     out = []
-    for appid in pipeline.get_pending():                 # scrape_status == 'pending'
-        folder = _folder_for(appid, NOMAIL_DIR)
-        if folder:
-            out.append(_load_folder(folder, appid))
+    for appid in appids:
+        if _CLOUD:
+            item = _load_remote(appid)
+        else:
+            folder = _folder_for(appid, base)
+            item = _load_folder(folder, appid) if folder else None
+        if item:
+            out.append(item)
     out.sort(key=lambda g: g["name"].lower())
     return out
 
@@ -178,12 +205,17 @@ def mails_to_review():
     as games_to_review() plus a 'mail' field (the drafted message text)."""
     out = []
     for appid in pipeline.mail_status_appids("Writing"):
-        folder = _folder_for(appid)
-        if folder:
-            item = _load_folder(folder, appid)
-            item["mail"] = _load_mail(folder, appid)
-            item["emails"] = pipeline.get_emails(appid)
-            out.append(item)
+        if _CLOUD:
+            item = _load_remote(appid)            # manifest already carries 'mail'
+        else:
+            folder = _folder_for(appid)
+            item = _load_folder(folder, appid) if folder else None
+            if item:
+                item["mail"] = _load_mail(folder, appid)
+        if not item:
+            continue
+        item["emails"] = pipeline.get_emails(appid)
+        out.append(item)
     out.sort(key=lambda g: g["name"].lower())
     return out
 
@@ -198,13 +230,15 @@ def Approve_Mail(gameId):
     """Approve the drafted mail: record the chosen template (N from the
     mail_<appid>_<N>.txt filename) and set Mail_status -> 'Scheduled'. Drops out
     of mails_to_review() (only 'Writing' renders there)."""
-    folder = _folder_for(gameId)
-    if folder:
-        path = _mail_file(folder, gameId)
-        if path:
-            tpl = _template_of(path)
-            if tpl is not None:
-                pipeline.set_mail_template(gameId, tpl)
+    if _CLOUD:
+        m = media_store.fetch_manifest(gameId)
+        tpl = m.get("mail_template") if m else None
+    else:
+        folder = _folder_for(gameId)
+        path = _mail_file(folder, gameId) if folder else None
+        tpl = _template_of(path) if path else None
+    if tpl is not None:
+        pipeline.set_mail_template(gameId, tpl)
     pipeline.set_mail_status(gameId, "Scheduled")
 
 

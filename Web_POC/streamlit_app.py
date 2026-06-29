@@ -16,10 +16,20 @@ a Reject deletes the lead + its media, same as the desktop GUI.
 import os
 import sys
 
+import streamlit as st
+
+# On Community Cloud the creds (Turso, R2) arrive via st.secrets, but pipeline.py
+# reads os.environ AT IMPORT — so bridge secrets into the env BEFORE importing it.
+# Locally there's no secrets.toml, so this is a no-op and .env is used as before.
+try:
+    for _k, _v in st.secrets.items():
+        os.environ.setdefault(_k, str(_v))
+except Exception:
+    pass
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "Leads_Reviewer"))
-import Reviewer_Interface as review        # noqa: E402
-import streamlit as st                     # noqa: E402
-import streamlit.components.v1 as components  # noqa: E402
+import Reviewer_Interface as review            # noqa: E402
+import streamlit.components.v1 as components    # noqa: E402
 
 st.set_page_config(page_title="SRE Review", layout="centered")
 SECTION = st.sidebar.radio("Section", ["Game Approval", "No-Mail", "Mail Approval"])
