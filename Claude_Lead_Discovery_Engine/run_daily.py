@@ -52,6 +52,14 @@ def main():
         print(f"\nLead discovery exited with code {rc}.")
         return rc
 
+    # Mirror the freshly-staged media to R2 so the cloud review app sees the night's
+    # batch. No-op (with a one-line note) if R2 creds aren't set. ponytail: full mirror
+    # each run — fine within R2's free tier; make it incremental if it ever drags.
+    sync = os.path.join(os.path.dirname(HERE), "sync_media.py")
+    if os.path.exists(sync):
+        print("\nMirroring media to R2 ...")
+        subprocess.call([PY, sync])
+
     xlsx = os.path.join(HERE, "out", f"leads_{stamp}.xlsx")
     if os.path.exists(xlsx):
         print(f"\nOpening {xlsx}")
