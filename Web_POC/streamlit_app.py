@@ -39,14 +39,16 @@ st.markdown("""
 #MainMenu {visibility: hidden;}
 footer {visibility: hidden;}
 [data-testid="stToolbar"] {display: none;}
-/* image container with a spinner shown until the (network) image loads */
+/* spinner sits BEHIND the image (no JS — Streamlit strips inline onload); the image
+   paints on top and covers it once it loads. While loading, the img area is empty so
+   the spinner shows through. */
 .sre-imgbox {position: relative; width: 100%; min-height: 220px; background: #0e1117;
-             border-radius: 8px; overflow: hidden; display: flex;
-             align-items: center; justify-content: center;}
-.sre-imgbox img {width: 100%; display: block; opacity: 0; transition: opacity .25s ease;}
-.sre-spin {position: absolute; width: 34px; height: 34px;
-           border: 3px solid rgba(255,255,255,.15); border-top-color: rgba(255,255,255,.7);
-           border-radius: 50%; animation: sre-rot .8s linear infinite;}
+             border-radius: 8px; overflow: hidden;}
+.sre-imgbox img {position: relative; z-index: 1; width: 100%; display: block;}
+.sre-spin {position: absolute; top: 50%; left: 50%; margin: -17px 0 0 -17px; z-index: 0;
+           width: 34px; height: 34px; border: 3px solid rgba(255,255,255,.15);
+           border-top-color: rgba(255,255,255,.7); border-radius: 50%;
+           animation: sre-rot .8s linear infinite;}
 @keyframes sre-rot {to {transform: rotate(360deg);}}
 </style>
 """, unsafe_allow_html=True)
@@ -79,8 +81,7 @@ def _img(url):
     not the previous card's screenshot, while the new one downloads from R2. The img
     starts transparent and fades in on load; the spinner sits behind it and hides."""
     return (f'<div class="sre-imgbox"><div class="sre-spin"></div>'
-            f'<img src="{url}" loading="lazy" onload="this.style.opacity=1;'
-            f'this.previousElementSibling.style.display=\'none\'"></div>')
+            f'<img src="{url}" loading="lazy"></div>')
 
 
 def _card(g, show_mail=False):
