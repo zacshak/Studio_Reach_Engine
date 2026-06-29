@@ -55,9 +55,19 @@ Phase 1 done when the GUI works with `.env` Turso vars set.
 ---
 
 ## Phase 2 — Streamlit UI
-Phone-friendly screens for the 4 reviewer sections + triage list, on top of `pipeline.py`.
-POC already at `Web_POC/streamlit_app.py`. Deploy on Streamlit Community Cloud (free), Turso creds
-as app secrets. Media (spritesheets) → object storage (Cloudflare R2) since the cloud disk is ephemeral.
+**2a DONE (2026-06-28):** full review app at `Web_POC/streamlit_app.py` — sidebar sections
+Game Approval / No-Mail / Mail Approval, reusing `Reviewer_Interface` (same actions as the Tkinter
+GUI), writing to Turso. Boots clean (health ok). Run `streamlit run Web_POC/streamlit_app.py`;
+open the printed Network URL on a phone over the same wifi to review from phone TODAY — no deploy
+needed (images served from the PC).
+
+**2b — FOLDED INTO PHASE 3** (decided 2026-06-28): deploy + media→R2 will be built with cloud
+discovery, since that's what uploads the media. Until then, local app + phone-over-wifi covers review.
+- Push repo to GitHub; deploy on Streamlit Community Cloud (free); Turso creds as app secrets.
+- Media: cloud has no local `Studios_To_Review/` (gitignored, ephemeral disk). Spritesheets must
+  go to object storage (Cloudflare R2); staging uploads them, `Reviewer_Interface` returns R2 URLs
+  in cloud mode. Build this with Phase 3 (cloud discovery is what uploads the media) to avoid
+  building the R2 plumbing twice.
 
 ## Phase 3 — cloud automation
 GitHub Actions cron each morning: discover → triage (Anthropic API) → stage. Paced sender +

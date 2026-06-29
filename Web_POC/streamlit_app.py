@@ -1,51 +1,147 @@
-"""Game-Approval screen, Streamlit POC. Pure Python — no JS, no API layer.
+"""SRE review UI — the Tkinter reviewer's three approval sections as a phone-friendly
+web app. Pure Python: imports Reviewer_Interface and calls the SAME actions the desktop
+GUI does. DB is remote Turso (set in .env / Streamlit secrets), so this works anywhere.
 
-    pip install streamlit pillow
-    streamlit run Web_POC/streamlit_app.py     # opens in browser; phone-friendly
+    pip install -r requirements.txt
+    streamlit run Web_POC/streamlit_app.py
 
-Streamlit reruns this whole script on every interaction; that's why a button just
-mutates state and the page redraws itself. DRY=True -> clicks only advance, no DB
-writes. Flip DRY=False to actually Accept/Reject (writes DB + deletes media on reject).
+Sections (sidebar):
+  Game Approval — Accept (-> 'Writing') / Reject (delete)
+  No-Mail       — Reject only (no email to reach them)
+  Mail Approval — Approve drafted mail (-> 'Scheduled') / Reject
+
+One card at a time (Tinder-style); acting reloads the shrinking queue. Real actions —
+a Reject deletes the lead + its media, same as the desktop GUI.
 """
 import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "Leads_Reviewer"))
-import Reviewer_Interface as review  # noqa: E402
-import streamlit as st               # noqa: E402
+import Reviewer_Interface as review        # noqa: E402
+import streamlit as st                     # noqa: E402
+import streamlit.components.v1 as components  # noqa: E402
 
-DRY = True   # ponytail: safe default. set False to hit the real DB.
+st.set_page_config(page_title="SRE Review", layout="centered")
+SECTION = st.sidebar.radio("Section", ["Game Approval", "No-Mail", "Mail Approval"])
 
-st.set_page_config(page_title="Game Approval", layout="centered")
-st.title("Game Approval" + ("  ·  DRY" if DRY else ""))
+# On phones, hide the Prev/Next buttons — swipe handles navigation. They stay in the
+# DOM (display:none, not removed) so the swipe script can still .click() them.
+st.markdown(
+    "<style>@media (max-width:640px){"
+    ".st-key-nav_prev,.st-key-nav_next{display:none!important}}</style>",
+    unsafe_allow_html=True)
 
-games = review.games_to_review()
-i = st.session_state.setdefault("i", 0)
-if i >= len(games):
-    st.success("Nothing left to review 🎉")
-    st.stop()
 
-g = games[i]
-st.subheader(g["name"])
-st.caption(g["meta"])
-sheet = next((s for s in g["shots"] if "SpriteSheet" in s),
-             g["shots"][0] if g["shots"] else None)
-if sheet:
-    st.image(sheet, use_container_width=True)
-st.write(g["desc"])
+def _card(g, show_mail=False):
+    st.subheader(g["name"])
+    st.caption(g["meta"])
+    st.markdown(f"🔗 [Steam page](https://store.steampowered.com/app/{g['appid']}/)")
+    sheet = next((s for s in g["shots"] if "SpriteSheet" in s),
+                 g["shots"][0] if g["shots"] else None)
+    if sheet:
+        st.image(sheet, use_container_width=True)
+    if len(g["shots"]) > 1:
+        with st.expander(f"All {len(g['shots'])} screenshots"):
+            for s in g["shots"]:
+                st.image(s)
+    st.write(g["desc"])
+    if show_mail:
+        st.markdown(f"**To:** {g.get('emails') or '—'}")
+        st.code(g.get("mail") or "(no draft found)", language=None)
 
-c1, c2 = st.columns(2)
-if c1.button("✅ Accept", use_container_width=True):
-    if not DRY:
-        review.Accept_Game(g["appid"])   # status -> 'Writing', leaves the list
-    else:
-        st.session_state.i += 1
-    st.rerun()
-if c2.button("❌ Reject", use_container_width=True):
-    if not DRY:
-        review.Reject_Game(g["appid"])   # deletes DB rows + media folder
-    else:
-        st.session_state.i += 1
-    st.rerun()
 
-st.caption(f"{len(games) - i} to go")
+def _reject(appid):
+    leftover = review.Reject_Game(appid)              # deletes DB rows + media folder
+    return ("couldn't remove: " + ", ".join(leftover)) if leftover else None
+
+
+# Touch-swipe → click the Prev/Next buttons. Streamlit has no native swipe; this
+# binds ONE listener on the parent document (survives reruns; the iframe reloads but
+# the parent doc persists) and finds the buttons by label.
+# ponytail: clicks buttons by text — fragile if Streamlit restructures the DOM, but it's
+# zero-dependency. Buttons below are the real navigation; swipe just drives them.
+_SWIPE_JS = """
+<script>
+const doc = window.parent.document;
+if (!doc.__sreSwipe) {
+  doc.__sreSwipe = true;
+  let x0 = null, y0 = null;
+  doc.addEventListener('touchstart', e => {
+    x0 = e.changedTouches[0].clientX; y0 = e.changedTouches[0].clientY;
+  }, {passive: true});
+  doc.addEventListener('touchend', e => {
+    if (x0 === null) return;
+    const dx = e.changedTouches[0].clientX - x0;
+    const dy = e.changedTouches[0].clientY - y0;
+    x0 = null;
+    if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy)) return;  // ignore taps/scrolls
+    const want = dx < 0 ? 'Next' : 'Prev';
+    const b = [...doc.querySelectorAll('button')]
+              .find(el => el.innerText.trim().includes(want) && !el.disabled);
+    if (b) b.click();
+  }, {passive: true});
+}
+</script>
+"""
+
+
+def _run(loader, actions, show_mail=False):
+    """Fetch the queue ONCE into session_state, then page through it locally.
+
+    Streamlit reruns the whole script on every click, so re-querying Turso +
+    rescanning 295 folders per click is the lag. Instead we load once and keep a
+    cursor (idx) in session_state — Prev/Next (or a swipe) just moves the cursor,
+    and acting pops the current card. No re-query per interaction.
+    'Refresh' (or reopening the page) re-pulls a fresh queue.
+    """
+    if SECTION not in st.session_state:
+        st.session_state[SECTION] = loader()
+    games = st.session_state[SECTION]
+    ikey = f"{SECTION}:idx"
+
+    st.button("🔄 Refresh", key=f"{SECTION}:refresh",
+              on_click=lambda: (st.session_state.pop(SECTION, None),
+                                st.session_state.pop(ikey, None)))
+
+    if not games:
+        st.success("Nothing to review here 🎉")
+        return
+
+    idx = min(max(st.session_state.get(ikey, 0), 0), len(games) - 1)
+    st.session_state[ikey] = idx
+    g = games[idx]
+    _card(g, show_mail)
+
+    # navigation: Prev / Next (swipe on mobile clicks these)
+    nav = st.columns(2)
+    if nav[0].button("◀ Prev", use_container_width=True, disabled=idx == 0,
+                     key="nav_prev"):
+        st.session_state[ikey] = idx - 1
+        st.rerun()
+    if nav[1].button("Next ▶", use_container_width=True, disabled=idx >= len(games) - 1,
+                     key="nav_next"):
+        st.session_state[ikey] = idx + 1
+        st.rerun()
+
+    # actions: act on the CURRENT card, then drop it (next card slides into idx)
+    for col, (label, fn) in zip(st.columns(len(actions)), actions):
+        if col.button(label, use_container_width=True, key=f"{SECTION}:{label}"):
+            warn = fn(g["appid"])           # the only remote round-trip left (~0.16s)
+            if warn:
+                st.warning(warn)
+            games.pop(idx)
+            st.session_state[ikey] = min(idx, len(games) - 1) if games else 0
+            st.rerun()
+
+    st.caption(f"{idx + 1} / {len(games)}")
+    components.html(_SWIPE_JS, height=0)
+
+
+if SECTION == "Game Approval":
+    _run(review.games_to_review,
+         [("✅ Accept", review.Accept_Game), ("❌ Reject", _reject)])
+elif SECTION == "No-Mail":
+    _run(review.nomail_games_to_review, [("❌ Reject", _reject)])
+else:
+    _run(review.mails_to_review,
+         [("✅ Approve", review.Approve_Mail), ("❌ Reject", _reject)], show_mail=True)

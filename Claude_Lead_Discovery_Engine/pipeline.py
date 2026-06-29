@@ -164,13 +164,30 @@ class _Conn:
     def execute(self, *a):
         return _Rows(self._raw.execute(*a))
 
+    def close(self):
+        pass  # shared process-wide connection (see _turso); real close is at exit.
+
     def __getattr__(self, n):
         return getattr(self._raw, n)
 
 
+# ponytail: one shared remote connection per process — a fresh libsql.connect() is a
+# ~1.1s handshake to ap-south-1, and every query paid it. Reused here instead. Ceiling:
+# single-user tool, so no thread-safety guard; make it thread-local if it ever serves
+# concurrent sessions. close() is a no-op so the closing() wrappers don't tear it down.
+_TURSO_CONN = None
+
+
+def _turso():
+    global _TURSO_CONN
+    if _TURSO_CONN is None:
+        _TURSO_CONN = _Conn(libsql.connect(TURSO_URL, auth_token=TURSO_TOKEN))
+    return _TURSO_CONN
+
+
 def _rw():
     if TURSO_URL:
-        return _Conn(libsql.connect(TURSO_URL, auth_token=TURSO_TOKEN))
+        return _turso()
     return sqlite3.connect(DB_PATH, timeout=TIMEOUT)
 
 
@@ -178,7 +195,7 @@ def _ro():
     if TURSO_URL:
         # Turso has no local mode=ro handle; the read-only contract (guarding
         # newly_added from Hermes) is relaxed in cloud mode — Hermes runs locally.
-        return _Conn(libsql.connect(TURSO_URL, auth_token=TURSO_TOKEN))
+        return _turso()
     # read-only handle: any write raises sqlite3.OperationalError
     return sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=TIMEOUT)
 
