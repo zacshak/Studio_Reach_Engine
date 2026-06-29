@@ -64,6 +64,9 @@ def main(argv):
     only = {int(a) for a in argv} or None
     client = media_store._client()        # reuse one client for the whole run
     done = failed = 0
+    # Always build the FULL appid->folder index from local folders (cheap, no upload),
+    # even on a single-appid run, so the index never goes stale/partial.
+    index = {str(appid): os.path.basename(folder) for appid, folder in _lead_folders()}
     for appid, folder in _lead_folders(only):
         jpath = os.path.join(folder, f"{appid}.json")
         if not os.path.exists(jpath):
@@ -77,7 +80,9 @@ def main(argv):
         except Exception as e:               # one bad lead shouldn't stop the mirror
             failed += 1
             print(f"  FAILED {appid}: {e!r}")
+    media_store.write_index(index, client=client)
     print(f"\ndone: {done} lead(s) mirrored to R2 bucket '{media_store.BUCKET}'"
+          f"; index has {len(index)} lead(s)"
           + (f", {failed} failed" if failed else ""))
     return 1 if failed else 0
 

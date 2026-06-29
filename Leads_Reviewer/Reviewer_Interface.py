@@ -74,11 +74,11 @@ def _load_folder(folder, appid):
     }
 
 
-def _load_remote(appid):
-    """Card data from the R2 manifest (cloud mode). Same shape as _load_folder,
-    plus 'mail' when the manifest carries a draft. None if the lead has no media
-    in R2 yet."""
-    m = media_store.fetch_manifest(appid)
+def _load_remote(appid, folder):
+    """Card data from the R2 manifest (cloud mode), looked up by `folder` (the
+    '<GameName>_<appid>' prefix from the index). Same shape as _load_folder, plus
+    'mail'. None if the lead has no media in R2 yet."""
+    m = media_store.fetch_manifest(folder)
     if not m:
         return None
     return {
@@ -86,7 +86,7 @@ def _load_remote(appid):
         "name": m.get("name") or str(appid),
         "desc": m.get("desc") or "(no short description)",
         "meta": m.get("meta") or "—",
-        "shots": [media_store.public_url(appid, f) for f in m.get("images", [])],
+        "shots": [media_store.public_url(folder, f) for f in m.get("images", [])],
         "mail": m.get("mail") or "",
     }
 
@@ -130,10 +130,12 @@ def nomail_games_to_review():
 def _queue(appids, base):
     """Build the card list for `appids` — from R2 in cloud mode, else local folders.
     Leads with no media (no folder / no R2 manifest) are skipped."""
+    index = media_store.fetch_index() if _CLOUD else None   # appid -> folder, once
     out = []
     for appid in appids:
         if _CLOUD:
-            item = _load_remote(appid)
+            folder = index.get(str(appid))
+            item = _load_remote(appid, folder) if folder else None
         else:
             folder = _folder_for(appid, base)
             item = _load_folder(folder, appid) if folder else None
@@ -203,10 +205,12 @@ def leads_by_appids(appids):
 def mails_to_review():
     """Games with Mail_status 'Writing' that still have a media folder. Same shape
     as games_to_review() plus a 'mail' field (the drafted message text)."""
+    index = media_store.fetch_index() if _CLOUD else None
     out = []
     for appid in pipeline.mail_status_appids("Writing"):
         if _CLOUD:
-            item = _load_remote(appid)            # manifest already carries 'mail'
+            folder = index.get(str(appid))
+            item = _load_remote(appid, folder) if folder else None   # manifest carries 'mail'
         else:
             folder = _folder_for(appid)
             item = _load_folder(folder, appid) if folder else None
@@ -231,7 +235,8 @@ def Approve_Mail(gameId):
     mail_<appid>_<N>.txt filename) and set Mail_status -> 'Scheduled'. Drops out
     of mails_to_review() (only 'Writing' renders there)."""
     if _CLOUD:
-        m = media_store.fetch_manifest(gameId)
+        folder = media_store.fetch_index().get(str(gameId))
+        m = media_store.fetch_manifest(folder) if folder else None
         tpl = m.get("mail_template") if m else None
     else:
         folder = _folder_for(gameId)

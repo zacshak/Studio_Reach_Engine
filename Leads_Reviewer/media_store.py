@@ -50,27 +50,40 @@ _SECRET = os.environ.get("R2_SECRET_ACCESS_KEY", "")
 _IMG_EXT = (".jpg", ".jpeg", ".png")
 
 
+# Objects are keyed by the local folder basename ("<GameName>_<appid>/") to mirror
+# the on-disk layout. The cloud app only knows the appid, so a root index.json maps
+# appid -> folder; it resolves there before fetching a lead's manifest.
+INDEX_KEY = "index.json"
+_UA = {"User-Agent": "Mozilla/5.0"}   # r2.dev 403s default urllib (CF bot block, err 1010)
+
+
 # -- read side (cloud app) ------------------------------------------------
 def read_enabled():
     """True if cards can be served from R2 (public base configured)."""
     return bool(PUBLIC_BASE)
 
 
-def public_url(appid, filename):
-    return f"{PUBLIC_BASE}/{appid}/{filename}"
+def public_url(folder, filename):
+    return f"{PUBLIC_BASE}/{folder}/{filename}"
 
 
-def fetch_manifest(appid):
-    """The lead's manifest dict from R2, or None if absent/unreachable.
-    A browser-ish User-Agent is required — r2.dev's edge 403s default urllib (CF
-    error 1010, bot-signature block)."""
+def _get_json(key):
     try:
-        req = urllib.request.Request(public_url(appid, "manifest.json"),
-                                     headers={"User-Agent": "Mozilla/5.0"})
+        req = urllib.request.Request(f"{PUBLIC_BASE}/{key}", headers=_UA)
         with urllib.request.urlopen(req, timeout=10) as r:
             return json.load(r)
     except Exception:
         return None
+
+
+def fetch_index():
+    """{ '<appid>': '<GameName>_<appid>' } — appid→folder map, or {} if absent."""
+    return _get_json(INDEX_KEY) or {}
+
+
+def fetch_manifest(folder):
+    """The lead's manifest dict from R2 (by folder name), or None if unreachable."""
+    return _get_json(f"{folder}/manifest.json")
 
 
 # -- write side (local sync only; boto3 imported lazily) ------------------
@@ -105,17 +118,27 @@ def build_manifest(folder, appid, card):
 
 
 def upload_dir(folder, appid, card, client=None):
-    """Mirror one lead folder to R2: every image + a fresh manifest.json.
-    Idempotent-ish — re-uploads overwrite (cheap; R2 has no per-PUT charge worth
-    optimizing for a few hundred small files). Returns the manifest."""
+    """Mirror one lead folder to R2 under its basename ('<GameName>_<appid>/'):
+    every image + a fresh manifest.json. Idempotent — re-uploads overwrite.
+    Returns the R2 folder prefix used (so the caller can index appid -> folder)."""
     cli = client or _client()
+    prefix = os.path.basename(folder.rstrip("/\\"))      # "Boompaw_4889770"
     manifest = build_manifest(folder, appid, card)
     for name in manifest["images"]:
         ctype = "image/png" if name.lower().endswith(".png") else "image/jpeg"
         with open(os.path.join(folder, name), "rb") as fh:
-            cli.put_object(Bucket=BUCKET, Key=f"{appid}/{name}", Body=fh.read(),
+            cli.put_object(Bucket=BUCKET, Key=f"{prefix}/{name}", Body=fh.read(),
                            ContentType=ctype)
-    cli.put_object(Bucket=BUCKET, Key=f"{appid}/manifest.json",
+    cli.put_object(Bucket=BUCKET, Key=f"{prefix}/manifest.json",
                    Body=json.dumps(manifest, ensure_ascii=False).encode("utf-8"),
                    ContentType="application/json")
-    return manifest
+    return prefix
+
+
+def write_index(mapping, client=None):
+    """Upload the appid->folder map to the bucket root so the cloud app can resolve
+    a lead's folder from its appid."""
+    cli = client or _client()
+    cli.put_object(Bucket=BUCKET, Key=INDEX_KEY,
+                   Body=json.dumps(mapping, ensure_ascii=False).encode("utf-8"),
+                   ContentType="application/json")
