@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 # pipeline.py lives in the System 1 folder (the DB owner); make it importable.
 _PIPELINE_DIR = os.path.join(
@@ -130,17 +131,20 @@ def nomail_games_to_review():
 def _queue(appids, base):
     """Build the card list for `appids` — from R2 in cloud mode, else local folders.
     Leads with no media (no folder / no R2 manifest) are skipped."""
-    index = media_store.fetch_index() if _CLOUD else None   # appid -> folder, once
-    out = []
-    for appid in appids:
-        if _CLOUD:
-            folder = index.get(str(appid))
-            item = _load_remote(appid, folder) if folder else None
-        else:
+    if _CLOUD:
+        index = media_store.fetch_index()                   # appid -> folder, once
+        pairs = [(a, index[str(a)]) for a in appids if str(a) in index]
+        # Each card is one independent R2 HTTP fetch (no DB), so fetch them in parallel —
+        # otherwise the first load is N sequential round-trips (~tens of seconds for ~300).
+        with ThreadPoolExecutor(max_workers=32) as pool:
+            out = [item for item in pool.map(lambda p: _load_remote(*p), pairs) if item]
+    else:
+        out = []
+        for appid in appids:
             folder = _folder_for(appid, base)
             item = _load_folder(folder, appid) if folder else None
-        if item:
-            out.append(item)
+            if item:
+                out.append(item)
     out.sort(key=lambda g: g["name"].lower())
     return out
 
