@@ -1,0 +1,6 @@
+[client]
+# hide the developer toolbar (Deploy / ⋮) for viewers
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false

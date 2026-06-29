@@ -29,6 +29,19 @@ except Exception:
 
 st.set_page_config(page_title="SRE Review", layout="centered")
 
+# Hide Streamlit's own chrome (hamburger menu + "Made with Streamlit" footer) for a
+# cleaner review screen. We deliberately KEEP the header element — hiding it would also
+# hide the sidebar-expand control on mobile, trapping you in one Section. The Community
+# Cloud owner overlay ("Manage app"/Share) is platform chrome shown only to you as
+# owner — viewers don't see it and it isn't in this DOM, so it can't be hidden here.
+st.markdown("""
+<style>
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+[data-testid="stToolbar"] {display: none;}
+</style>
+""", unsafe_allow_html=True)
+
 # Fail loud + clear if the DB secret never arrived — otherwise pipeline silently falls
 # back to an empty local SQLite and dies cryptically ("no such table: newly_added").
 if not os.environ.get("TURSO_DATABASE_URL"):
