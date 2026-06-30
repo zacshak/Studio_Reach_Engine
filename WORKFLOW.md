@@ -1,79 +1,124 @@
-# Steam SRE — Studio Reach Engine: daily workflow
+# Steam SRE — Studio Reach Engine: workflow
 
-All steps run through the one launcher at repo root: `python SRE.py <command>`.
+The pipeline now runs **in the cloud**. Discovery + triage happen on a nightly GitHub
+Actions schedule; you review and drive the rest from the phone-friendly web app
+(**https://studioreachengine.streamlit.app**), which fires the heavy steps (scrape, draft,
+send) as on-demand GitHub Actions runs. Your PC no longer needs to be on.
+
+All local/manual commands still exist through the one launcher: `python SRE.py <command>`.
+
+```
+                 ┌─────────── nightly (GitHub Actions cron) ───────────┐
+ discover.yml →  SRE --discover  →  triage_cloud.py  →  Turso + R2 (+ irrelevant.json)
+                 └─────────────────────────────────────────────────────┘
+                                        │
+                         Web app (Streamlit) — review on your phone
+                                        │
+  Triage gate → Game Approval → No-Mail ──(🔎 Hermes button)──► emails found
+                     │                                              │
+                     ▼ Accept                                       ▼
+                 Mail Approval ◄──(✍️ Draft button)── Gemini drafts ─┘
+                     │
+                     ▼ Approve  →  (📨 Send button)  →  send.yml  →  Sent
+                                                                      │
+                              review-mails.yml (nightly cron) ──► Replied
+```
 
 ---
 
-### 1. Discover — `SRE --discover`
-Runs the discovery engine (`run_daily.py`):
-- Poll Steam for all games, diff against the previous `known_comingsoon`, store the new
-  appids in a txt file, and update `known_comingsoon` with the full current set.
-- Fetch details for every game in the new txt file and store them in the `newly_added` table.
+## State model (Turso `scrape_tracker`)
 
-Side effects:
-- `scrape_tracker` table is updated and seeded (`seeded` if Steam gave an email, else `pending`).
-- `Approval_Pending_Games/` (seeded) and `No_Mail_Games/` (pending) folders are filled with
-  each game's data + screenshots + a 2×2 sprite sheet.
+- **`scrape_status`**: `pending` (no email yet) · `seeded` (Steam listed one) · `scraped`
+  (Hermes found one) · `no_email` · `failed`.
+- **`Mail_status`**: `Pending` → `Writing` → `Scheduled` → `Sent` → `Replied`.
 
-### 2. Triage with a Coding Agent
-Use a coding agent to scan the game folders and return a list of irrelevant game appids.
--open a claude code instance in path "A:\Game_Job_Research\Leads_Reviewer\Studios_To_Review"
--prompt to inject =
-{
-Leads Reviewer
-context : 
-The only folders u will access to are  No_Mail_Games and Approval_Pending_Games.
-I'm looking for good games to pitch my game programming skill as a freelance/contract service.  Act as a Games Reviewer/filterer. 
- The folders No_Mail_Games and Approval_Pending_Games contain many games data. I want you to review all the subfolders , JSON files and all the 
- Spritesheet png image files(!!Important,  Spritesheet png Image gives the best context of a game so analyzing all Spritesheet image per game  is a MUST), after each 
- review put the game in either allowed or reject bucket. 
-- Reject bucket is games that are desktop apps/utilities, games that comes under Dating Sim / Romance , Visual Novel / Interactive Fiction , 2d games ,
- games which can be built by a single developer and AI slops.  
--  Allowed bucket : Is all other games who might benefit from hiring a developer.
--At last  I want you to return the rejected games appid in a list. The output format must be like this  : Rejected Games = [4858620, 4819850...]  
-}
+Media (screenshots, sprite sheet, manifest with the drafted mail) lives in **Cloudflare
+R2**, keyed by appid via `index.json`. The app and the cloud jobs read/write there; the
+runner keeps no state between runs.
 
+---
 
-### 3. Review-before-delete — `SRE --delete [1231,1321,..]`
-Opens a GUI showing only the appids you listed. Review each, then delete — removes the
-rows from both tables and the media folder in whichever store it lives.
+## 1. Discover + Triage — automatic, nightly (`discover.yml`)
+Cron `0 1 * * *` (01:00 UTC ≈ 06:30 IST). Runs `SRE --discover` then
+`Claude_Lead_Discovery_Engine/triage_cloud.py`:
+- Diff Steam's app list vs `known_comingsoon`, fetch details for the new appids into
+  `newly_added`, seed `scrape_tracker` (`seeded` if Steam gave an email, else `pending`),
+  and mirror each lead's media to R2.
+- A **vision model** (Gemini) reviews each staged game's sprite sheet + JSON and writes the
+  appids it judges irrelevant to R2 `irrelevant.json`. Non-destructive — it only flags.
 
-### 4. Game-Approval review — `SRE --review`
-Opens the reviewer GUI. In the **Game-Approval** section, manually review games:
-- Accept → `mail_status = 'writing'`
-- Reject → deleted
+## 2. Review — the web app
+One card at a time, swipe to page. Sections appear in order; you clear each on the phone.
 
-### 5. No-Mail review — `SRE --review`
-Same GUI, **No-Mail** section. Reject-only (no email to send to):
-- Reject → deleted
+### Triage gate
+While `irrelevant.json` is non-empty the app shows ONLY the flagged leads:
+- **Keep** — the AI was wrong; unflag, lead rejoins the normal queue.
+- **Reject** — confirm irrelevant; purge the lead everywhere (Turso + R2).
 
-### 6. List no-seed websites — `SRE --noseed-urls`
-Prints the website URLs of games with `scrape_status == 'pending'` that have a website —
-the sites to scrape for an email.
+### Game Approval (`Mail_status = Pending`)
+- **Accept** → `Mail_status = Writing` (queues it for a draft).
+- **Reject** → deleted (rows + R2 media).
 
-### 7. Scrape + ingest emails — `SRE --ingest-mailids '...'`
-Use a coding agent to scrape those sites and fetch the email, then feed the results back:
+### No-Mail (`scrape_status = pending`)
+Leads with no email anywhere on their Steam page.
+- **🔎 Scrape emails (run Hermes)** button → fires `hermes.yml`. Hermes (headless Playwright
+  + Gemini) walks every `pending` lead, scrapes the studio's site (DuckDuckGo search when
+  there's no website) and extracts the best recruiting email. A hit flips the lead to
+  `scraped` — it leaves No-Mail and appears in Game Approval. No hit → `no_email`.
+- **Reject** → deleted.
+
+### Mail Approval (`Mail_status = Writing`)
+- **✍️ Draft pending** button → fires `draft.yml`. Gemini drafts a cold mail for each
+  accepted lead missing one, picking templates in sequence (1,2,3,4,1…) and personalising
+  the critique from the sprite sheet, and writes it into the lead's R2 manifest. Idempotent.
+- **Approve** → `Mail_status = Scheduled`.
+- **Reject** → deleted.
+
+## 3. Send — on demand (`send.yml`)
+**📨 Send approved** button (Mail Approval) → fires `send.yml`. Sends every `Scheduled`
+lead from Gmail, paced 2–4 min apart, capped at **50 / UTC day**. Reads each draft from its
+R2 manifest, flips `Scheduled → Sent`, and purges the lead's R2 media. No schedule — a human
+presses the button, so outbound always has a gate.
+
+## 4. Review replies — automatic, nightly (`review-mails.yml`)
+Cron `0 2 * * *`. Read-only IMAP scan of the Gmail inbox: any `Sent` lead whose address
+replied flips `Sent → Replied`. No mail is sent.
+
+---
+
+## Cold-mail templates (in R2)
+The 4 templates are the drafter's source of truth at R2 key `cold_mails.txt`. Edit and push:
 ```
-python SRE.py --ingest-mailids '{"url": "eleosgames.ca", "email": "support@eleosgames.com"}, {"url": "www.ki-nodes.com/games", "email": "n@gmail.com"}'
+python SRE.py --sync-templates                          # push the tracked templates file
+python SRE.py --sync-templates path\to\Cold_Mails.txt   # or push a specific file
 ```
-Only items with a filled email are applied: writes the email, flips `pending → seeded`, and
-moves the folder `No_Mail_Games → Approval_Pending_Games`.
+No redeploy needed — the next draft run reads the new templates.
 
-### 8. Draft cold mails with a Coding Agent
-Use a coding agent to scan the game data in `Approval_Pending_Games/` and write a cold mail
-for each game from the 4 predefined templates (txt file).
+---
 
-### 9. Mail-Approval review — `SRE --review`
-Same GUI, **Mail-Approval** section. Manually review the drafted mails:
-- Accept → `mail_status = 'scheduled'`
-- Reject → deleted
+## Launcher reference (`python SRE.py <command>`)
+| Command | Does |
+|---|---|
+| `--discover` | discovery → stage to Turso + R2 (the nightly job's first step) |
+| `--draft-mails` | AI-draft cold mails for `Writing` leads → R2 manifests (`draft.yml`) |
+| `--send-mails` | send `Scheduled` mails (`send.yml`); `--dry-run`, `--limit N` locally |
+| `--review-mails` | check `Sent` leads for replies → `Replied` (`review-mails.yml`) |
+| `--sync-templates` | push cold-mail templates → R2 |
+| `--sync-media` | mirror local staged media → R2 |
+| `--snap-db` | dump live Turso DB → `last_cache.sqlite` (DB Browser) |
+| `--review` | local Tkinter reviewer (Game / No-Mail / Mail approval) |
+| `--delete [ids]` | local GUI review-before-delete those appids |
+| `--noseed-urls` / `--ingest-mailids` | manual local email-scrape contract (superseded by Hermes in the cloud) |
 
-### 10. Send — `SRE --send-mails`
-Sends the scheduled mails with a randomized time interval between each. On every successful
-send the status flips to `'sent'` and the local media data is deleted.
-(`--dry-run` to preview, `--limit N` to cap the batch.)
+---
 
-### 11. Review replies — `SRE --review-mails`
-Checks every `Sent` lead against your Gmail inbox (IMAP, same App Password as sending). If a
-reply from that lead's address is found, its status flips `sent → replied`. Read-only on
-Gmail; only the DB status changes. Safe to re-run anytime.
+## Secrets
+**GitHub repo → Settings → Secrets → Actions** (the workflows):
+`TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `R2_PUBLIC_BASE`, `R2_BUCKET`, `R2_ACCOUNT_ID`,
+`R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `TRIAGE_BASE_URL`, `TRIAGE_MODEL`,
+`TRIAGE_API_KEY`, `GMAIL_USER`, `GMAIL_APP_PASSWORD`.
+
+**Streamlit app → Manage app → Settings → Secrets** (the review app + its buttons):
+the same `TURSO_*` and `R2_*` (R2 **write** keys too — triage Reject, Hermes/draft/send
+buttons need them), plus `GH_REPO` (= `Meshak2002/Studio_Reach_Engine`) and `GH_PAT` (a
+fine-grained token, **Actions: write**) so the buttons can dispatch the workflows.
