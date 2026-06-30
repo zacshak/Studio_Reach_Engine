@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 # pipeline.py lives in the System 1 folder (the DB owner); make it importable.
 _PIPELINE_DIR = os.path.join(
@@ -322,8 +323,13 @@ def Keep_Irrelevant(appid):
 
 
 def Reject_Irrelevant(appid):
-    """Confirm irrelevant — purge it: unflag, delete its R2 media + index entry, and
-    delete its rows from newly_added + scrape_tracker."""
-    _drop_irrelevant(appid)
-    media_store.delete_lead_media(appid)
+    """Confirm irrelevant — purge it everywhere. The two R2 purges (unflag in
+    irrelevant.json, delete media+index) are independent and use the thread-safe boto3
+    client, so run them CONCURRENTLY. The Turso delete stays on this thread — the shared
+    libSQL connection is thread-bound."""
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        futs = [ex.submit(_drop_irrelevant, appid),
+                ex.submit(media_store.delete_lead_media, appid)]
+        for f in futs:
+            f.result()      # surface any error
     pipeline.delete_lead(appid)

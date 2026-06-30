@@ -109,15 +109,23 @@ def write_enabled():
     return bool(BUCKET and _ACCOUNT and _KEY and _SECRET)
 
 
+_CLIENT = None
+
+
 def _client():
-    import boto3  # lazy
-    return boto3.client(
-        "s3",
-        endpoint_url=f"https://{_ACCOUNT}.r2.cloudflarestorage.com",
-        aws_access_key_id=_KEY,
-        aws_secret_access_key=_SECRET,
-        region_name="auto",
-    )
+    """One cached, thread-safe S3 client per process — recreating it per call cost
+    real time. botocore clients are safe to share across threads."""
+    global _CLIENT
+    if _CLIENT is None:
+        import boto3  # lazy
+        _CLIENT = boto3.client(
+            "s3",
+            endpoint_url=f"https://{_ACCOUNT}.r2.cloudflarestorage.com",
+            aws_access_key_id=_KEY,
+            aws_secret_access_key=_SECRET,
+            region_name="auto",
+        )
+    return _CLIENT
 
 
 def build_manifest(folder, appid, card):
