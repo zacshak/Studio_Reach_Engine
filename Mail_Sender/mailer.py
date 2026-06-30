@@ -47,7 +47,7 @@ _CLOUD = media_store.read_enabled() and not os.path.isdir(MEDIA_DIR)
 SENDER_NAME = "Meshak"              # the From display name
 SMTP_HOST, SMTP_PORT = "smtp.gmail.com", 587
 IMAP_HOST = "imap.gmail.com"
-DAILY_CAP = 40                     # never send more than this per (UTC) day
+DAILY_CAP = 50                     # never send more than this per (UTC) day
 MIN_GAP, MAX_GAP = 120, 240        # 2–4 min between sends, randomized
 
 
