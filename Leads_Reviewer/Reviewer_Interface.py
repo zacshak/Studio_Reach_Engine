@@ -175,6 +175,12 @@ def hydrate(item):
     return item
 
 
+def has_pending_drafts():
+    """True if any accepted lead is still awaiting a cold-mail draft (Mail_status
+    'Writing'). One cheap Turso query — used to gate the app's Draft button."""
+    return bool(pipeline.mail_status_appids("Writing"))
+
+
 def pending_website_urls():
     """Array of website URLs for leads with scrape_status=='pending' that have a
     website — the sites to scrape for an email."""

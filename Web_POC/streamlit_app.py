@@ -166,6 +166,23 @@ def _dispatch(workflow):
         return f"Dispatch failed: {e}"
 
 
+def _gha_button(label, workflow, key):
+    """A workflow-dispatch button that disables itself for the rest of THIS session once
+    fired — a cheap spam guard (the jobs have no other throttle). A refresh clears the
+    flag and re-enables it, which is fine. Full-width."""
+    flag = f"gha_fired:{key}"
+    if st.button(label, use_container_width=True, key=f"gha_btn:{key}",
+                 disabled=st.session_state.get(flag, False)):
+        err = _dispatch(workflow)
+        if err:
+            st.warning(err)
+        else:
+            st.session_state[flag] = True             # lock it for this session
+            st.rerun()                                # re-render the now-disabled button
+    if st.session_state.get(flag):
+        st.caption("✓ started in GitHub Actions (this session)")
+
+
 # Touch-swipe → click the Prev/Next buttons. Streamlit has no native swipe; this
 # binds ONE listener on the parent document (survives reruns; the iframe reloads but
 # the parent doc persists) and finds the buttons by label.
@@ -275,33 +292,16 @@ SECTION = SECTION or _SECTIONS[0]
 if SECTION == "Game Approval":
     _run(SECTION, review.games_to_review,
          [("✅ Accept", review.Accept_Game), ("❌ Reject", _reject)])
+    # Draft only once this queue is fully worked AND there are accepted leads (Mail_status
+    # 'Writing') waiting on a mail — so you accept everything first, then draft the batch.
+    if not st.session_state.get(SECTION) and review.has_pending_drafts():
+        _gha_button("✍️ Draft pending mails", "draft.yml", "draft")
 elif SECTION == "No-Mail":
-    # Kick off cloud email-scraping (Hermes in GHA) for the whole pending backlog. Fire-
-    # and-forget: the job runs for minutes in the background, flips the leads it finds out
-    # of this section. Refresh later to see them gone.
-    if st.button("🔎 Scrape emails for these (run Hermes)", use_container_width=True):
-        err = _dispatch("hermes.yml")
-        if err:
-            st.warning(err)
-        else:
-            st.success("Hermes started — leads with a found email will leave this "
-                       "section once it finishes.")
+    # Kick off cloud email-scraping (Hermes in GHA) for the whole pending backlog. The job
+    # runs for minutes; leads it finds an email for leave this section. Refresh later.
+    _gha_button("🔎 Scrape emails for these (run Hermes)", "hermes.yml", "hermes")
     _run(SECTION, review.nomail_games_to_review, [("❌ Reject", _reject)])
 else:
-    # Draft (AI) any accepted leads still missing a mail, then send the approved backlog —
-    # both on demand. Drafting fills the manifest; refresh to see drafts appear.
-    dcol, scol = st.columns(2)
-    if dcol.button("✍️ Draft pending", use_container_width=True):
-        err = _dispatch("draft.yml")
-        if err:
-            st.warning(err)
-        else:
-            st.success("Drafting started — refresh shortly to review the generated mails.")
-    if scol.button("📨 Send approved", use_container_width=True):
-        err = _dispatch("send.yml")
-        if err:
-            st.warning(err)
-        else:
-            st.success("Send started — approved mails go out paced; they'll flip to Sent.")
+    _gha_button("📨 Send approved mails", "send.yml", "send")
     _run(SECTION, review.mails_to_review,
          [("✅ Approve", review.Approve_Mail), ("❌ Reject", _reject)], show_mail=True)
