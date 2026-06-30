@@ -15,9 +15,9 @@ concurrency:
 jobs:
   discover:
     runs-on: ubuntu-latest
-    timeout-minutes: 120     # find_new scans all of Steam (~10m); a big backlog batch
-                             # adds ~11s/lead. Nightly deltas finish in ~15m; the 6h cap
-                             # is the ceiling, so 120 is safe headroom.
+    timeout-minutes: 350     # near GitHub's 6h hard cap. Normal runs finish in ~15m;
+                             # this only matters if triage is patiently waiting out a
+                             # rate-limited free key. A safety ceiling, not the runtime.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -72,8 +72,23 @@ def _sheet(folder):
     return None
 
 
-RETRIES = 6          # a free key can be slow / rate-limited (429) / flaky (503)
+RETRIES = 10         # patient: a free key gets rate-limited (429) / slow / flaky
 TIMEOUT = 120        # per request; free tier can be slow under load
+
+
+def _backoff(e, attempt):
+    """How long to wait before the next retry. Honor a Retry-After header if the API
+    sends one; on a 429 wait out the per-minute window (free-tier RPM resets each
+    minute); otherwise exponential backoff with jitter."""
+    resp = getattr(e, "response", None)
+    if resp is not None:
+        try:
+            return float(resp.headers.get("retry-after")) + random.uniform(0, 3)
+        except (TypeError, ValueError, AttributeError):
+            pass
+    if getattr(e, "status_code", None) == 429:
+        return 62 + random.uniform(0, 10)            # let the RPM window reset
+    return min(120, 2 ** attempt + random.uniform(0, 3))
 
 
 def _ask(client, model, batch):
@@ -99,7 +114,7 @@ def _ask(client, model, batch):
         except Exception as e:
             if attempt == RETRIES - 1:
                 raise
-            wait = min(90, 2 ** attempt + random.uniform(0, 3))   # 1,2,4,8,16,32… capped 90s
+            wait = _backoff(e, attempt)
             print(f"    api error ({type(e).__name__}), retry {attempt + 1}/{RETRIES} "
                   f"in {wait:.0f}s", file=sys.stderr)
             time.sleep(wait)
