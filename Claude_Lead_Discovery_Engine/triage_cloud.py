@@ -12,8 +12,10 @@ Plus the R2 write creds (so it can write irrelevant.json). See media_store.py.
 import base64
 import json
 import os
+import random
 import re
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "Leads_Reviewer"))
@@ -70,8 +72,14 @@ def _sheet(folder):
     return None
 
 
+RETRIES = 6          # a free key can be slow / rate-limited (429) / flaky (503)
+TIMEOUT = 120        # per request; free tier can be slow under load
+
+
 def _ask(client, model, batch):
-    """One vision call over `batch` ([(appid, folder)]); return rejected appids (set)."""
+    """One vision call over `batch` ([(appid, folder)]); return rejected appids (set).
+    Retries with exponential backoff + jitter on any API error (rate-limit, timeout,
+    5xx). Raises only after RETRIES exhausted — the caller fail-opens that batch."""
     ids = [a for a, _ in batch]
     content = [{"type": "text", "text": RUBRIC.format(ids=ids)}]
     for appid, folder in batch:
@@ -81,11 +89,20 @@ def _ask(client, model, batch):
             b64 = base64.b64encode(open(sheet, "rb").read()).decode()
             content.append({"type": "image_url",
                             "image_url": {"url": f"data:image/png;base64,{b64}"}})
-    resp = client.chat.completions.create(
-        model=model, max_tokens=400,
-        messages=[{"role": "user", "content": content}])
-    tail = (resp.choices[0].message.content or "").split("Rejected Games")[-1]
-    return {int(n) for n in re.findall(r"\d+", tail)}
+    msgs = [{"role": "user", "content": content}]
+    for attempt in range(RETRIES):
+        try:
+            resp = client.chat.completions.create(
+                model=model, max_tokens=400, timeout=TIMEOUT, messages=msgs)
+            tail = (resp.choices[0].message.content or "").split("Rejected Games")[-1]
+            return {int(n) for n in re.findall(r"\d+", tail)}
+        except Exception as e:
+            if attempt == RETRIES - 1:
+                raise
+            wait = min(90, 2 ** attempt + random.uniform(0, 3))   # 1,2,4,8,16,32… capped 90s
+            print(f"    api error ({type(e).__name__}), retry {attempt + 1}/{RETRIES} "
+                  f"in {wait:.0f}s", file=sys.stderr)
+            time.sleep(wait)
 
 
 def main():
@@ -95,7 +112,7 @@ def main():
     if not (base and key and model):
         sys.exit("set TRIAGE_BASE_URL / TRIAGE_API_KEY / TRIAGE_MODEL")
     from openai import OpenAI
-    client = OpenAI(base_url=base, api_key=key)
+    client = OpenAI(base_url=base, api_key=key, timeout=TIMEOUT, max_retries=0)  # we retry
 
     games = _games()
     if not games:
@@ -104,18 +121,27 @@ def main():
             media_store.write_irrelevant([])
         return 0
 
-    rejected = []
+    rejected, skipped = [], 0
     for i in range(0, len(games), BATCH):
         batch = games[i:i + BATCH]
         ids = {a for a, _ in batch}
         print(f"  triaging {i + 1}-{i + len(batch)} of {len(games)}...", file=sys.stderr)
+        if i:
+            time.sleep(3)            # polite spacing to stay under the free-tier RPM
         try:
             rejected += sorted(_ask(client, model, batch) & ids)   # keep only real batch ids
         except Exception as e:
-            print(f"  (batch failed, left as ALLOWED: {e!r})", file=sys.stderr)
+            # exhausted retries — fail OPEN: leave these as ALLOWED so they fall through to
+            # your normal review (never wrongly drop a lead because the API was down).
+            skipped += len(batch)
+            print(f"  batch left for MANUAL review after {RETRIES} retries: "
+                  f"{type(e).__name__}", file=sys.stderr)
     rejected = sorted(set(rejected))
 
     print(f"Rejected Games = {rejected}")
+    if skipped:
+        print(f"NOTE: {skipped} game(s) couldn't be triaged (API) — left ALLOWED "
+              f"for manual review.")
     if media_store.write_enabled():
         media_store.write_irrelevant(rejected)
         print(f"wrote {len(rejected)} flagged appid(s) -> R2 irrelevant.json")
