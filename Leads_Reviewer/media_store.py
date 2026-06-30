@@ -125,52 +125,22 @@ def build_manifest(folder, appid, card):
     return {**card, "images": images, "mail": mail, "mail_template": template}
 
 
-_CTYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-           ".json": "application/json", ".txt": "text/plain; charset=utf-8"}
-
-
-def _ctype(name):
-    return _CTYPES.get(os.path.splitext(name)[1].lower(), "application/octet-stream")
-
-
-def upload_dir(folder, appid, card, store, client=None):
-    """Mirror an ENTIRE lead folder to R2 under its basename ('<GameName>_<appid>/'):
-    every file (curated JSON, images, mail draft) verbatim — so a pull can restore it
-    faithfully — plus a derived manifest.json the cloud app reads. `store` (the parent
-    dir name) is recorded in the manifest so a pull knows which store to restore into.
-    Idempotent — re-uploads overwrite. Returns the R2 folder prefix used."""
+def upload_dir(folder, appid, card, client=None):
+    """Mirror one lead folder to R2 under its basename ('<GameName>_<appid>/'): the
+    images + a derived manifest.json (card text + image list + mail draft) the cloud
+    app reads. Idempotent — re-uploads overwrite. Returns the R2 folder prefix used."""
     cli = client or _client()
     prefix = os.path.basename(folder.rstrip("/\\"))      # "Boompaw_4889770"
     manifest = build_manifest(folder, appid, card)
-    manifest["store"] = store
-    for name in os.listdir(folder):
-        fp = os.path.join(folder, name)
-        if os.path.isfile(fp):
-            with open(fp, "rb") as fh:
-                cli.put_object(Bucket=BUCKET, Key=f"{prefix}/{name}", Body=fh.read(),
-                               ContentType=_ctype(name))
+    for name in manifest["images"]:
+        ctype = "image/png" if name.lower().endswith(".png") else "image/jpeg"
+        with open(os.path.join(folder, name), "rb") as fh:
+            cli.put_object(Bucket=BUCKET, Key=f"{prefix}/{name}", Body=fh.read(),
+                           ContentType=ctype)
     cli.put_object(Bucket=BUCKET, Key=f"{prefix}/manifest.json",
                    Body=json.dumps(manifest, ensure_ascii=False).encode("utf-8"),
                    ContentType="application/json")
     return prefix
-
-
-def download_dir(prefix, dest_folder, client=None):
-    """Download every object under '<prefix>/' into dest_folder (skipping the R2-only
-    manifest.json) — restores a cloud-discovered lead's folder locally. Returns count."""
-    cli = client or _client()
-    os.makedirs(dest_folder, exist_ok=True)
-    n = 0
-    for page in cli.get_paginator("list_objects_v2").paginate(Bucket=BUCKET, Prefix=f"{prefix}/"):
-        for o in page.get("Contents", []):
-            name = o["Key"][len(prefix) + 1:]
-            if not name or name == "manifest.json":
-                continue
-            body = cli.get_object(Bucket=BUCKET, Key=o["Key"])["Body"].read()
-            with open(os.path.join(dest_folder, name), "wb") as f:
-                f.write(body)
-            n += 1
-    return n
 
 
 def write_index(mapping, client=None):
