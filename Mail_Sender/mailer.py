@@ -35,15 +35,20 @@ from email.message import EmailMessage
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, "Claude_Lead_Discovery_Engine"))
-import pipeline  # noqa: E402
+sys.path.insert(0, os.path.join(ROOT, "Leads_Reviewer"))
+import pipeline      # noqa: E402
+import media_store   # noqa: E402  (cloud send: draft from R2 manifest, media purge in R2)
 
 MEDIA_DIR = os.path.join(ROOT, "Leads_Reviewer", "Studios_To_Review", "Approval_Pending_Games")
+# Cloud (GHA send job): no local media folders — drafts + media live in R2. Same test
+# the reviewer uses: R2 readable AND the staged dir absent.
+_CLOUD = media_store.read_enabled() and not os.path.isdir(MEDIA_DIR)
 
 SENDER_NAME = "Meshak"              # the From display name
 SMTP_HOST, SMTP_PORT = "smtp.gmail.com", 587
 IMAP_HOST = "imap.gmail.com"
 DAILY_CAP = 40                     # never send more than this per (UTC) day
-MIN_GAP, MAX_GAP = 180, 480        # 3–8 min between sends, randomized
+MIN_GAP, MAX_GAP = 120, 240        # 2–4 min between sends, randomized
 
 
 # -- env -------------------------------------------------------------------
@@ -71,8 +76,11 @@ def _folder_for(appid):
 
 
 def _delete_media(appid):
-    """Remove a lead's media folder (mail + screenshots + json). The DB row stays
-    (it tracks Sent status + sent_at). Returns True if a folder was removed."""
+    """Remove a lead's media (mail + screenshots + json) after a send. The DB row stays
+    (it tracks Sent status + sent_at). Cloud: purge from R2; local: rmtree the folder.
+    Returns True if something was removed."""
+    if _CLOUD:
+        return bool(media_store.delete_lead_media(appid))
     folder = _folder_for(appid)
     if folder:
         shutil.rmtree(folder, ignore_errors=True)
@@ -96,7 +104,18 @@ def _split_subject(text):
 
 def _load_mail(appid):
     """(subject, body, path) for a lead, using its approved template, else the
-    first variant. Returns (None, None, None) if no mail file exists."""
+    first variant. Returns (None, None, None) if no mail file exists.
+
+    Cloud: the chosen draft already lives in the lead's R2 manifest ('mail'), written at
+    sync time — no local folder to read, so pull it from there."""
+    if _CLOUD:
+        folder = media_store.fetch_index().get(str(appid))
+        man = media_store.fetch_manifest(folder) if folder else None
+        text = (man or {}).get("mail")
+        if not text:
+            return None, None, None
+        subject, body = _split_subject(text)
+        return subject, body, f"R2:{folder}"
     folder = _folder_for(appid)
     if not folder:
         return None, None, None

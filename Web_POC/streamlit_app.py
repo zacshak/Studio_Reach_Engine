@@ -144,8 +144,8 @@ def _bg(fn, appid):
               file=sys.stderr)
 
 
-def _dispatch_hermes():
-    """Fire the Hermes scrape workflow via GitHub's workflow_dispatch API. Needs a
+def _dispatch(workflow):
+    """Fire a workflow_dispatch on a GHA workflow file (e.g. 'hermes.yml'). Needs a
     fine-grained PAT (Actions: write) + the repo in this app's Secrets. Returns None on
     success, else an error string to show the user."""
     import json
@@ -154,7 +154,7 @@ def _dispatch_hermes():
     pat = os.environ.get("GH_PAT")
     if not (repo and pat):
         return "Set `GH_REPO` (owner/repo) and `GH_PAT` (fine-grained token, Actions: write) in Secrets."
-    url = f"https://api.github.com/repos/{repo}/actions/workflows/hermes.yml/dispatches"
+    url = f"https://api.github.com/repos/{repo}/actions/workflows/{workflow}/dispatches"
     body = json.dumps({"ref": os.environ.get("GH_REF", "master")}).encode()
     req = urllib.request.Request(url, data=body, method="POST", headers={
         "Authorization": f"Bearer {pat}", "Accept": "application/vnd.github+json",
@@ -280,7 +280,7 @@ elif SECTION == "No-Mail":
     # and-forget: the job runs for minutes in the background, flips the leads it finds out
     # of this section. Refresh later to see them gone.
     if st.button("🔎 Scrape emails for these (run Hermes)", use_container_width=True):
-        err = _dispatch_hermes()
+        err = _dispatch("hermes.yml")
         if err:
             st.warning(err)
         else:
@@ -288,5 +288,13 @@ elif SECTION == "No-Mail":
                        "section once it finishes.")
     _run(SECTION, review.nomail_games_to_review, [("❌ Reject", _reject)])
 else:
+    # Send the approved (Scheduled) backlog from the cloud, on demand — a human gate on
+    # outbound cold mail. The send job paces itself; leads leave once sent.
+    if st.button("📨 Send approved mails", use_container_width=True):
+        err = _dispatch("send.yml")
+        if err:
+            st.warning(err)
+        else:
+            st.success("Send started — approved mails go out paced; they'll flip to Sent.")
     _run(SECTION, review.mails_to_review,
          [("✅ Approve", review.Approve_Mail), ("❌ Reject", _reject)], show_mail=True)

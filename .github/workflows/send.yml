@@ -1,0 +1,36 @@
+name: Send mails
+
+# Sends the approved (Mail_status='Scheduled') cold mails from Gmail, paced 2-4 min apart,
+# capped per UTC day. NOT scheduled — fired on demand by the app's "Send approved mails"
+# button (Mail-Approval section) so outbound always has a human gate. Cloud send reads each
+# draft from its R2 manifest and purges the lead's R2 media after a successful send.
+on:
+  workflow_dispatch: {}
+
+concurrency:
+  group: send                  # never overlap two send runs (they share the daily cap)
+  cancel-in-progress: false
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350         # safety ceiling — a full paced batch can run a while.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install --quiet libsql boto3
+      - name: Send scheduled mails
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          R2_PUBLIC_BASE: ${{ secrets.R2_PUBLIC_BASE }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: python SRE.py --send-mails

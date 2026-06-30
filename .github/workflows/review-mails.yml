@@ -1,0 +1,32 @@
+name: Review replies
+
+# Nightly: check every 'Sent' lead's address against the Gmail inbox (IMAP, read-only) and
+# flip the ones who replied to 'Replied'. Cheap and safe — only the DB status changes, no
+# mail is sent. Also fireable on demand.
+on:
+  schedule:
+    - cron: "0 2 * * *"        # 02:00 UTC daily, after the nightly discovery
+  workflow_dispatch: {}
+
+concurrency:
+  group: review-mails
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install --quiet libsql
+      - name: Check Sent leads for replies
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: python SRE.py --review-mails
