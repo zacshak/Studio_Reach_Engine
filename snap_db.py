@@ -23,11 +23,15 @@ OUT = os.path.join(HERE, "last_cache.sqlite")
 def main():
     if not pipeline.TURSO_URL:
         sys.exit("TURSO not configured in .env — nothing remote to snapshot.")
-    if os.path.exists(OUT):
-        os.remove(OUT)
+
+    # Build into a temp file, then place it — so we never touch OUT until the snapshot
+    # is complete (and so a DB-Browser lock on OUT can't abort the dump).
+    tmp = OUT + ".new"
+    if os.path.exists(tmp):
+        os.remove(tmp)
 
     src = pipeline._rw()                      # shared Turso connection (read-only use here)
-    dst = sqlite3.connect(OUT)
+    dst = sqlite3.connect(tmp)
 
     # All schema objects with their DDL; tables first so data can load before
     # indexes/triggers/views are recreated.
@@ -60,7 +64,19 @@ def main():
     dst.commit()
     dst.close()
 
-    print(f"snapshot -> {OUT}  ({os.path.getsize(OUT) // 1024} KB)")
+    # Place the finished snapshot. If OUT is locked (open in DB Browser), Windows won't
+    # let us replace it — fall back to a dated copy so the dump isn't wasted.
+    dest = OUT
+    try:
+        os.replace(tmp, OUT)
+    except PermissionError:
+        from datetime import datetime
+        dest = OUT.replace(".sqlite", datetime.now().strftime("_%Y%m%d_%H%M%S.sqlite"))
+        os.replace(tmp, dest)
+        print(f"NOTE: {os.path.basename(OUT)} is open (DB Browser?) — wrote to "
+              f"{os.path.basename(dest)} instead. Close it to refresh the main file.")
+
+    print(f"snapshot -> {dest}  ({os.path.getsize(dest) // 1024} KB)")
     for t in tables:
         print(f"  {t:<24} {counts.get(t, 0):>7} rows")
     print("\nopen it in DB Browser for SQLite.")
