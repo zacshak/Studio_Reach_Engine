@@ -13,6 +13,7 @@ scraped results, so it is self-contained for export.
 import json
 import os
 import sqlite3
+import threading
 from contextlib import closing
 
 try:
@@ -171,18 +172,21 @@ class _Conn:
         return getattr(self._raw, n)
 
 
-# ponytail: one shared remote connection per process — a fresh libsql.connect() is a
-# ~1.1s handshake to ap-south-1, and every query paid it. Reused here instead. Ceiling:
-# single-user tool, so no thread-safety guard; make it thread-local if it ever serves
-# concurrent sessions. close() is a no-op so the closing() wrappers don't tear it down.
-_TURSO_CONN = None
+# ponytail: one cached remote connection PER THREAD — a fresh libsql.connect() is a
+# ~1.1s handshake to ap-south-1, and every query paid it. libsql connections are
+# thread-bound (can't be used off the thread that opened them), so the web app's
+# optimistic-UI background threads each need their own. thread-local gives that: the
+# main script thread reuses one, each daemon worker lazily opens its own. close() is a
+# no-op so the closing() wrappers don't tear it down.
+_TLS = threading.local()
 
 
 def _turso():
-    global _TURSO_CONN
-    if _TURSO_CONN is None:
-        _TURSO_CONN = _Conn(libsql.connect(TURSO_URL, auth_token=TURSO_TOKEN))
-    return _TURSO_CONN
+    conn = getattr(_TLS, "conn", None)
+    if conn is None:
+        conn = _Conn(libsql.connect(TURSO_URL, auth_token=TURSO_TOKEN))
+        _TLS.conn = conn
+    return conn
 
 
 def _rw():

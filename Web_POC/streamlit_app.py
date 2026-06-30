@@ -15,6 +15,7 @@ a Reject deletes the lead + its media, same as the desktop GUI.
 """
 import os
 import sys
+import threading
 
 import streamlit as st
 
@@ -133,6 +134,16 @@ def _reject(appid):
     return ("couldn't remove: " + ", ".join(leftover)) if leftover else None
 
 
+def _bg(fn, appid):
+    """Run an action off the render thread (optimistic UI). Swallows + logs errors —
+    the card already left the queue, so there's no UI left to surface them to."""
+    try:
+        fn(appid)
+    except Exception as e:                            # noqa: BLE001 — fire-and-forget
+        print(f"[optimistic] {getattr(fn, '__name__', fn)}({appid}) failed: {e}",
+              file=sys.stderr)
+
+
 # Touch-swipe → click the Prev/Next buttons. Streamlit has no native swipe; this
 # binds ONE listener on the parent document (survives reruns; the iframe reloads but
 # the parent doc persists) and finds the buttons by label.
@@ -195,12 +206,15 @@ def _run(key, loader, actions, show_mail=False):
         st.session_state[ikey] = idx + 1
         st.rerun()
 
-    # actions: act on the CURRENT card, then drop it (next card slides into idx)
+    # actions: act on the CURRENT card, then drop it (next card slides into idx).
+    # OPTIMISTIC — fire the backend work (Turso delete + R2 writes, all I/O, no st.*) on a
+    # daemon thread and advance the UI immediately, so the click feels instant instead of
+    # waiting out a cross-region round-trip. pipeline's connection is thread-local, so the
+    # worker gets its own libSQL handle. Tradeoff: a failed action is silent (logged to the
+    # server console only) — the queue already advanced.
     for col, (label, fn) in zip(st.columns(len(actions)), actions):
         if col.button(label, use_container_width=True, key=f"{key}:{label}"):
-            warn = fn(g["appid"])
-            if warn:
-                st.warning(warn)
+            threading.Thread(target=_bg, args=(fn, g["appid"]), daemon=True).start()
             games.pop(idx)
             st.session_state[ikey] = min(idx, len(games) - 1) if games else 0
             st.rerun()
