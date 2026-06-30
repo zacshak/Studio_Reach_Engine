@@ -1,0 +1,75 @@
+#Cold Mail - 1
+
+Subject : <game>, almost there
+
+hey <developer/studio name>,
+
+ <Make a hook by making a critical critique on their game and slowly move towards constructive feedback on how it can be improved to hit the charts in 2 lines >
+
+I understand you'd be busy building ur game so I'll convey what I like to offer in 3 points :
+
+	-I'd like to help you with all your game programming needs end to end, freeing you up to focus on design.
+
+	-I've more than 4 years of experitise and built multiple games across various titles and genres.
+
+	-worked on 20+ projects for indies and small studios
+
+if you're currently looking for an extra set of hands to hit your next milestone, I'd love to connect. Open to a quick intro call this week ?
+
+Best regards,
+Meshak A
+
+-----------------------------------------------------------------------------------------------------------------------------------------------------
+
+#Cold Mail - 2
+
+Subject: quick one about <game name>
+
+hey <developer/studio name>,
+
+<one specific thing you noticed about the game in their steam page, a mechanic, the atmosphere, a rough edge>. that's the kind of detail i can't leave alone.
+
+I'm a game programmer, 4+ years in. did 30+ freelance projects for small studios, then spent the last year and a half on an xbox funded AAA doing whole gameplay systems. also built my own directx12 renderer on the side, mostly because i'm that kind of nerd. solid in unreal, unity, C# and lovely C++
+
+short version, i'm the hire that covers a lot so you don't need three people. figured that might be handy for a small team.
+
+not gonna write you an essay. if you're after another programmer, reply and i'll send my portfolio.
+
+thanks,
+Meshak A
+
+-----------------------------------------------------------------------------------------------------------------------------------------------------
+
+#Cold Mail - 3
+
+Subject:  helping with <game name> ?
+
+hey <developer/studio name>,
+
+<critique/observation, 1-2 lines — a mechanic you liked or a sharp detail>. that's the kind of thing i'd want to be building.
+
+I'm Meshak, a professional Game Programmer with 4+ years of experience. I've worked across gameplay and graphics programming, building games and systems using Unreal Engine, C++, DirectX 12, OpenGL, Unity, and C#.
+
+Having professional work experience on both AAA and indie titles, I deliver industry-standard quality and have also helped 30+ clients through freelance projects on Fiverr and LinkedIn.
+
+Whether you need a gameplay mechanic, prototype, or complete game system, I'm here to deliver high-quality, production-ready solutions.
+Just reply with what u r working on and where do u need help.
+
+thanks,
+Meshak
+
+-----------------------------------------------------------------------------------------------------------------------------------------------------
+
+#Cold Mail - 4
+
+Subject: quick one about <game name>
+
+hey <developer/studio name>,
+
+<one specific thing you noticed from the steam page, a mechanic, the art, a rough edge>. nice work.
+
+game programmer, 4+ years. 30+ indie projects and a year and a half on an xbox funded AAA. unreal, unity, c++, C#
+
+need an extra set of hands for the next milestone? reply and i'll send my portfolio.
+
+meshak

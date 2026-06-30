@@ -170,6 +170,16 @@ def write_index(mapping, client=None):
                    ContentType="application/json")
 
 
+def write_manifest(folder, manifest, client=None):
+    """Overwrite a lead's manifest.json in R2 (by folder name). Used by the cloud mail
+    drafter to write the generated 'mail' + 'mail_template' back into the manifest the
+    review app and the sender both read."""
+    cli = client or _client()
+    cli.put_object(Bucket=BUCKET, Key=f"{os.path.basename(folder.rstrip('/'))}/manifest.json",
+                   Body=json.dumps(manifest, ensure_ascii=False).encode("utf-8"),
+                   ContentType="application/json")
+
+
 def write_irrelevant(appids, client=None):
     """Write the triage-flagged appid list to irrelevant.json at the bucket root."""
     cli = client or _client()

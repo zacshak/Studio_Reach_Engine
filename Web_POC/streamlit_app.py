@@ -288,9 +288,16 @@ elif SECTION == "No-Mail":
                        "section once it finishes.")
     _run(SECTION, review.nomail_games_to_review, [("❌ Reject", _reject)])
 else:
-    # Send the approved (Scheduled) backlog from the cloud, on demand — a human gate on
-    # outbound cold mail. The send job paces itself; leads leave once sent.
-    if st.button("📨 Send approved mails", use_container_width=True):
+    # Draft (AI) any accepted leads still missing a mail, then send the approved backlog —
+    # both on demand. Drafting fills the manifest; refresh to see drafts appear.
+    dcol, scol = st.columns(2)
+    if dcol.button("✍️ Draft pending", use_container_width=True):
+        err = _dispatch("draft.yml")
+        if err:
+            st.warning(err)
+        else:
+            st.success("Drafting started — refresh shortly to review the generated mails.")
+    if scol.button("📨 Send approved", use_container_width=True):
         err = _dispatch("send.yml")
         if err:
             st.warning(err)
