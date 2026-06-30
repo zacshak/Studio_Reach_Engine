@@ -64,9 +64,7 @@ def main(argv):
     only = {int(a) for a in argv} or None
     client = media_store._client()        # reuse one client for the whole run
     done = failed = 0
-    # Build the FULL appid->folder index from local folders, even on a single-appid run,
-    # so the index never goes stale/partial.
-    index = {str(appid): os.path.basename(folder) for appid, folder in _lead_folders()}
+    local = {str(appid): os.path.basename(folder) for appid, folder in _lead_folders()}
     for appid, folder in _lead_folders(only):
         jpath = os.path.join(folder, f"{appid}.json")
         if not os.path.exists(jpath):
@@ -80,6 +78,11 @@ def main(argv):
         except Exception as e:               # one bad lead shouldn't stop the mirror
             failed += 1
             print(f"  FAILED {appid}: {e!r}")
+    # MERGE into the existing R2 index, don't overwrite. On the PC (full local set) this
+    # equals a rebuild; on an ephemeral cloud runner (only the night's new leads) it adds
+    # them without wiping the rest. Stale entries are harmless — the queue is DB-driven.
+    index = media_store.fetch_index()
+    index.update(local)
     media_store.write_index(index, client=client)
     print(f"\ndone: {done} lead(s) -> R2 bucket '{media_store.BUCKET}'; index {len(index)}"
           + (f", {failed} failed" if failed else ""))
