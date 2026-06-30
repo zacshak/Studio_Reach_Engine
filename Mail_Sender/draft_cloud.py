@@ -12,7 +12,6 @@ API_KEY (reused Gemini creds; the model must be vision-capable for the sheet).
 """
 import base64
 import os
-import random
 import re
 import sys
 import time
@@ -28,36 +27,50 @@ import media_store   # noqa: E402
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-TEMPLATES_FILE = os.path.join(HERE, "cold_mail_templates.txt")
+TEMPLATES_FILE = os.path.join(HERE, "cold_mail_templates.txt")   # local fallback / seed
 RETRIES = 6
 _UA = {"User-Agent": "Mozilla/5.0"}
 
 
-def _templates():
-    """The 4 templates as a list of (n, text), split on the '#Cold Mail - N' headers."""
-    raw = open(TEMPLATES_FILE, encoding="utf-8").read()
+def _parse_templates(raw):
+    """The templates as a list of (n, text), split on the '#Cold Mail - N' headers,
+    in ascending number order (so selection cycles 1,2,3,4,1,...)."""
     out = []
     for block in re.split(r"#Cold Mail\s*-\s*(\d+)", raw)[1:]:
         if out and out[-1][1] is None:
             out[-1] = (out[-1][0], block.strip().strip("-").strip())
         else:
             out.append((int(block), None))
-    return [(n, t) for n, t in out if t]
+    return sorted([(n, t) for n, t in out if t])
 
 
-PROMPT = """You are drafting a cold outreach email for Meshak, a freelance game programmer
-pitching his services to the studio behind the game "{game}" (studio/devs: {devs}).
-Game blurb: {desc}
+def _load_templates():
+    """Templates from R2 (the persistent source of truth); fall back to the tracked file."""
+    raw = media_store.fetch_templates()
+    if not raw:
+        raw = open(TEMPLATES_FILE, encoding="utf-8").read()
+    return _parse_templates(raw)
 
-Fill in THIS template exactly — keep its tone, structure, and the "Subject:" line. Replace
-<game>/<game name> with the game's name, <developer/studio name> with the studio, and write
-the <...> critique/observation slot yourself: ONE or TWO genuine, specific lines based on the
-attached sprite-sheet image and the blurb (a real mechanic, the art, the atmosphere, a rough
-edge) — never generic flattery, never invented facts. Output ONLY the finished email, nothing
-else.
+
+PROMPT = """You are a Cold Mail writer. I pitch my game programming skills as a freelance/
+contract service. Analyse ONE game and write a cold email to its studio.
+
+Game: "{game}"  |  studio/devs: {devs}
+
+The MOST IMPORTANT context is the attached sprite-sheet screenshot image — study it; it gives
+the best read on the game. Fill in the placeholders of THIS template for this specific game:
 
 TEMPLATE:
-{template}"""
+{template}
+
+Rules:
+- Replace <game>/<game name> with the game's name and <developer/studio name> with the studio.
+- Write the <...> critique/observation slot yourself.
+- EVERY concrete claim in the mail must come from what is ACTUALLY VISIBLE in the sprite sheet.
+  Never state store-page features as if you saw them. If the screenshot shows no flaw, critique
+  only what is on screen, or do not critique at all. Never invent facts.
+- Do NOT use the '-' character anywhere in what you write; it screams AI written. Reword instead.
+- Keep the "Subject:" line and the template's tone. Output ONLY the finished email, nothing else."""
 
 
 def _sheet_b64(folder, images):
@@ -77,7 +90,6 @@ def _draft(client, model, manifest, folder):
     """One Gemini call -> the finished mail text for this lead."""
     content = [{"type": "text", "text": PROMPT.format(
         game=manifest.get("name", ""), devs=manifest.get("meta", ""),
-        desc=(manifest.get("desc") or "")[:600],
         template=manifest["__template"])}]
     b64 = _sheet_b64(folder, manifest.get("images", []))
     if b64:
@@ -108,12 +120,13 @@ def main():
     from openai import OpenAI
     client = OpenAI(base_url=base, api_key=key, max_retries=0)
 
-    templates = _templates()
+    templates = _load_templates()
     index = media_store.fetch_index()
     queue = pipeline.mail_status_appids("Writing")
-    print(f"{len(queue)} lead(s) in 'Writing'")
+    print(f"{len(queue)} lead(s) in 'Writing'; {len(templates)} templates")
 
     drafted = skipped = 0
+    tally = {n: 0 for n, _ in templates}
     for appid in queue:
         folder = index.get(str(appid))
         manifest = media_store.fetch_manifest(folder) if folder else None
@@ -123,7 +136,8 @@ def main():
         if (manifest.get("mail") or "").strip():     # already drafted — idempotent
             skipped += 1
             continue
-        n, template = random.choice(templates)
+        # pick templates in sequence (1,2,3,4,1,...) by how many we've drafted so far
+        n, template = templates[drafted % len(templates)]
         manifest["__template"] = template
         try:
             mail = _draft(client, model, manifest, folder)
@@ -136,9 +150,11 @@ def main():
         manifest["mail_template"] = n
         media_store.write_manifest(folder, manifest)
         drafted += 1
+        tally[n] += 1
         print(f"  {appid} {manifest.get('name', '')!r:.40} -> drafted (template {n})")
 
     print(f"done: {drafted} drafted, {skipped} skipped")
+    print(", ".join(f"cold_mail_{n}: {tally[n]}" for n in sorted(tally)))
     return 0
 
 

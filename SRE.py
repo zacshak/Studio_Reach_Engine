@@ -11,6 +11,7 @@ the single front door so you don't memorise six script paths.
     python SRE.py --noseed-urls               # print websites of pending (no-email) leads
     python SRE.py --ingest-mailids '{"url":..,"email":..}, ..'   # feed scraped emails back
     python SRE.py --draft-mails               # AI-draft cold mails for 'Writing' leads -> R2
+    python SRE.py --sync-templates            # push cold-mail templates -> R2 (drafter source)
     python SRE.py --send-mails                # send scheduled cold mails (--dry-run, --limit N)
     python SRE.py --review-mails              # check Sent leads for replies -> mark 'Replied'
     python SRE.py --sync-media                # mirror staged media -> R2 (cloud review app)
@@ -31,6 +32,7 @@ ROUTES = {
     "--noseed-urls":   ("Leads_Reviewer/reviewer.py", ["--pending-urls"]),
     "--ingest-mailids": ("Leads_Reviewer/reviewer.py", ["--ingest-mailids"]),
     "--draft-mails":   ("Mail_Sender/draft_cloud.py", []),
+    "--sync-templates": ("Mail_Sender/sync_templates.py", []),
     "--send-mails":    ("Mail_Sender/mailer.py", []),
     "--review-mails":  ("Mail_Sender/mailer.py", ["--review"]),
     "--sync-media":    ("sync_media.py", []),

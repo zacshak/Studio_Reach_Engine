@@ -57,6 +57,8 @@ _IMG_EXT = (".jpg", ".jpeg", ".png")
 INDEX_KEY = "index.json"
 IRRELEVANT_KEY = "irrelevant.json"    # appids the cloud triage flagged as irrelevant —
                                       # the app gates on this list before normal review
+TEMPLATES_KEY = "cold_mails.txt"      # the cold-mail templates, persisted in R2 so they
+                                      # can be edited without a redeploy (the drafter reads here)
 _UA = {"User-Agent": "Mozilla/5.0"}   # r2.dev 403s default urllib (CF bot block, err 1010)
 
 
@@ -86,9 +88,24 @@ def _get_json(path):
         return None
 
 
+def _get_text(key):
+    """GET a plain-text object from R2 (UTF-8), or None if unreachable."""
+    try:
+        req = urllib.request.Request(f"{PUBLIC_BASE}/{key}", headers=_UA)
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.read().decode("utf-8")
+    except Exception:
+        return None
+
+
 def fetch_index():
     """{ '<appid>': '<GameName>_<appid>' } — appid→folder map, or {} if absent."""
     return _get_json(INDEX_KEY) or {}
+
+
+def fetch_templates():
+    """The cold-mail templates text stored in R2, or None if not uploaded yet."""
+    return _get_text(TEMPLATES_KEY)
 
 
 def fetch_manifest(folder):
@@ -178,6 +195,13 @@ def write_manifest(folder, manifest, client=None):
     cli.put_object(Bucket=BUCKET, Key=f"{os.path.basename(folder.rstrip('/'))}/manifest.json",
                    Body=json.dumps(manifest, ensure_ascii=False).encode("utf-8"),
                    ContentType="application/json")
+
+
+def write_templates(text, client=None):
+    """Upload the cold-mail templates text to R2 (the drafter's source of truth)."""
+    cli = client or _client()
+    cli.put_object(Bucket=BUCKET, Key=TEMPLATES_KEY, Body=text.encode("utf-8"),
+                   ContentType="text/plain; charset=utf-8")
 
 
 def write_irrelevant(appids, client=None):
