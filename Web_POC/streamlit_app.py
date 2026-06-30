@@ -281,8 +281,11 @@ elif SECTION == "No-Mail":
     # of this section. Refresh later to see them gone.
     if st.button("🔎 Scrape emails for these (run Hermes)", use_container_width=True):
         err = _dispatch_hermes()
-        st.warning(err) if err else st.success("Hermes started — leads with a found email "
-                                               "will leave this section once it finishes.")
+        if err:
+            st.warning(err)
+        else:
+            st.success("Hermes started — leads with a found email will leave this "
+                       "section once it finishes.")
     _run(SECTION, review.nomail_games_to_review, [("❌ Reject", _reject)])
 else:
     _run(SECTION, review.mails_to_review,
