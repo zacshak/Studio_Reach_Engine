@@ -24,7 +24,7 @@ jobs:
         with:
           python-version: "3.12"   # libsql ships Linux wheels for 3.12
       - name: Install deps
-        run: pip install --quiet openpyxl Pillow libsql boto3
+        run: pip install --quiet openpyxl Pillow libsql boto3 openai
       - name: Discover -> stage -> mirror to R2
         env:
           TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
@@ -35,3 +35,16 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: python SRE.py --discover
+      - name: Triage -> flag irrelevant into R2 (vision model)
+        # folders from the previous step are still on the runner disk. Provider-agnostic:
+        # set TRIAGE_BASE_URL/MODEL/API_KEY to a VISION-capable OpenAI-compatible endpoint.
+        env:
+          TRIAGE_BASE_URL: ${{ secrets.TRIAGE_BASE_URL }}
+          TRIAGE_MODEL: ${{ secrets.TRIAGE_MODEL }}
+          TRIAGE_API_KEY: ${{ secrets.TRIAGE_API_KEY }}
+          R2_PUBLIC_BASE: ${{ secrets.R2_PUBLIC_BASE }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: python Claude_Lead_Discovery_Engine/triage_cloud.py

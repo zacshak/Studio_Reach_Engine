@@ -72,15 +72,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "Leads_Reviewer
 import Reviewer_Interface as review            # noqa: E402
 import streamlit.components.v1 as components    # noqa: E402
 
-# Section switcher in the MAIN area (not the sidebar — it collapses on mobile with no
-# easy way to reopen). Segmented control = full-label toggle buttons in one compact row;
-# fall back to a horizontal radio on older Streamlit.
+# Section list — the switcher itself is rendered below, AFTER the triage gate, so it's
+# hidden while there are flagged leads to clear. (Main area, not the sidebar, which
+# collapses on mobile. Segmented control with a radio fallback on older Streamlit.)
 _SECTIONS = ["Game Approval", "No-Mail", "Mail Approval"]
-if hasattr(st, "segmented_control"):
-    SECTION = st.segmented_control("Section", _SECTIONS, default=_SECTIONS[0],
-                                   label_visibility="collapsed") or _SECTIONS[0]
-else:
-    SECTION = st.radio("Section", _SECTIONS, horizontal=True, label_visibility="collapsed")
 
 # On phones, hide the Prev/Next buttons — swipe handles navigation. They stay in the
 # DOM (display:none, not removed) so the swipe script can still .click() them.
@@ -167,19 +162,17 @@ if (!doc.__sreSwipe) {
 """
 
 
-def _run(loader, actions, show_mail=False):
-    """Fetch the queue ONCE into session_state, then page through it locally.
+def _run(key, loader, actions, show_mail=False):
+    """Fetch the queue ONCE into session_state[key], then page through it locally.
 
-    Streamlit reruns the whole script on every click, so re-querying Turso +
-    rescanning 295 folders per click is the lag. Instead we load once and keep a
-    cursor (idx) in session_state — Prev/Next (or a swipe) just moves the cursor,
-    and acting pops the current card. No re-query per interaction.
-    'Refresh' (or reopening the page) re-pulls a fresh queue.
+    Streamlit reruns the whole script on every click, so re-querying per click is the
+    lag. Instead we load once and keep a cursor (idx) in session_state — Prev/Next (or a
+    swipe) just moves it, and acting pops the current card. Reopening re-pulls.
     """
-    if SECTION not in st.session_state:
-        st.session_state[SECTION] = loader()
-    games = st.session_state[SECTION]
-    ikey = f"{SECTION}:idx"
+    if key not in st.session_state:
+        st.session_state[key] = loader()
+    games = st.session_state[key]
+    ikey = f"{key}:idx"
 
     if not games:
         st.success("Nothing to review here 🎉")
@@ -203,8 +196,8 @@ def _run(loader, actions, show_mail=False):
 
     # actions: act on the CURRENT card, then drop it (next card slides into idx)
     for col, (label, fn) in zip(st.columns(len(actions)), actions):
-        if col.button(label, use_container_width=True, key=f"{SECTION}:{label}"):
-            warn = fn(g["appid"])           # the only remote round-trip left (~0.16s)
+        if col.button(label, use_container_width=True, key=f"{key}:{label}"):
+            warn = fn(g["appid"])
             if warn:
                 st.warning(warn)
             games.pop(idx)
@@ -215,11 +208,32 @@ def _run(loader, actions, show_mail=False):
     components.html(_SWIPE_JS, height=0)
 
 
+# --- Triage gate: while R2's irrelevant.json has flagged leads, review THOSE first
+# (Keep = AI was wrong; Reject = purge). Only when it's clear do the normal sections show.
+_TKEY = "__triage__"
+if _TKEY not in st.session_state:
+    st.session_state[_TKEY] = review.irrelevant_to_review()
+
+if st.session_state[_TKEY]:
+    st.markdown("### 🔍 Triage review")
+    st.caption("AI flagged these as likely irrelevant. **Keep** if it's wrong, **Reject** "
+               "to delete the lead everywhere. Clear them to reach your normal queue.")
+    _run(_TKEY, None,
+         [("✅ Keep", review.Keep_Irrelevant), ("🗑️ Reject", review.Reject_Irrelevant)])
+    st.stop()
+
+# --- Normal review (only when nothing is flagged) ---
+SECTION = st.segmented_control(
+    "Section", _SECTIONS, default=_SECTIONS[0], label_visibility="collapsed") if \
+    hasattr(st, "segmented_control") else \
+    st.radio("Section", _SECTIONS, horizontal=True, label_visibility="collapsed")
+SECTION = SECTION or _SECTIONS[0]
+
 if SECTION == "Game Approval":
-    _run(review.games_to_review,
+    _run(SECTION, review.games_to_review,
          [("✅ Accept", review.Accept_Game), ("❌ Reject", _reject)])
 elif SECTION == "No-Mail":
-    _run(review.nomail_games_to_review, [("❌ Reject", _reject)])
+    _run(SECTION, review.nomail_games_to_review, [("❌ Reject", _reject)])
 else:
-    _run(review.mails_to_review,
+    _run(SECTION, review.mails_to_review,
          [("✅ Approve", review.Approve_Mail), ("❌ Reject", _reject)], show_mail=True)

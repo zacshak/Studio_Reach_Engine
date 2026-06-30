@@ -290,3 +290,40 @@ def Reject_Game(gameId):
             if os.path.exists(folder):        # rmtree swallowed a lock/permission error
                 leftover.append(folder)
     return leftover
+
+
+# -- cloud triage review (the irrelevant.json gate) -----------------------
+def irrelevant_to_review():
+    """Lightweight queue of triage-flagged leads (cloud), built from R2's irrelevant.json
+    + the index. [] when nothing's flagged. Cards hydrate on view like the normal queue."""
+    appids = media_store.fetch_irrelevant()
+    if not appids:
+        return []
+    index = media_store.fetch_index()
+    out = []
+    for appid in appids:
+        folder = index.get(str(appid))
+        if folder:
+            out.append({"appid": appid, "folder": folder, "shots": None,
+                        "name": folder.rsplit("_", 1)[0] or str(appid)})
+    out.sort(key=lambda g: g["name"].lower())
+    return out
+
+
+def _drop_irrelevant(appid):
+    """Remove one appid from R2's irrelevant.json."""
+    keep = [a for a in media_store.fetch_irrelevant() if int(a) != int(appid)]
+    media_store.write_irrelevant(keep)
+
+
+def Keep_Irrelevant(appid):
+    """The AI was wrong — keep the lead: just unflag it. It rejoins the normal queue."""
+    _drop_irrelevant(appid)
+
+
+def Reject_Irrelevant(appid):
+    """Confirm irrelevant — purge it: unflag, delete its R2 media + index entry, and
+    delete its rows from newly_added + scrape_tracker."""
+    _drop_irrelevant(appid)
+    media_store.delete_lead_media(appid)
+    pipeline.delete_lead(appid)

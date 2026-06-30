@@ -55,6 +55,8 @@ _IMG_EXT = (".jpg", ".jpeg", ".png")
 # the on-disk layout. The cloud app only knows the appid, so a root index.json maps
 # appid -> folder; it resolves there before fetching a lead's manifest.
 INDEX_KEY = "index.json"
+IRRELEVANT_KEY = "irrelevant.json"    # appids the cloud triage flagged as irrelevant —
+                                      # the app gates on this list before normal review
 _UA = {"User-Agent": "Mozilla/5.0"}   # r2.dev 403s default urllib (CF bot block, err 1010)
 
 
@@ -94,13 +96,21 @@ def fetch_manifest(folder):
     return _get_json(f"{_enc(folder)}/manifest.json")
 
 
-# -- write side (local sync only; boto3 imported lazily) ------------------
+def fetch_irrelevant():
+    """List of appids the cloud triage flagged as irrelevant, or [] if none/absent.
+    The app shows a reject-review gate while this is non-empty."""
+    return _get_json(IRRELEVANT_KEY) or []
+
+
+# -- write side (boto3, imported lazily) ----------------------------------
+# Used by sync_media (local push) AND by the cloud app's triage-review actions
+# (write_irrelevant / delete_lead_media), so the deployed app needs boto3 + R2 keys.
 def write_enabled():
     return bool(BUCKET and _ACCOUNT and _KEY and _SECRET)
 
 
 def _client():
-    import boto3  # lazy: keeps the cloud app boto3-free
+    import boto3  # lazy
     return boto3.client(
         "s3",
         endpoint_url=f"https://{_ACCOUNT}.r2.cloudflarestorage.com",
@@ -150,3 +160,28 @@ def write_index(mapping, client=None):
     cli.put_object(Bucket=BUCKET, Key=INDEX_KEY,
                    Body=json.dumps(mapping, ensure_ascii=False).encode("utf-8"),
                    ContentType="application/json")
+
+
+def write_irrelevant(appids, client=None):
+    """Write the triage-flagged appid list to irrelevant.json at the bucket root."""
+    cli = client or _client()
+    cli.put_object(Bucket=BUCKET, Key=IRRELEVANT_KEY,
+                   Body=json.dumps(list(appids)).encode("utf-8"),
+                   ContentType="application/json")
+
+
+def delete_lead_media(appid, client=None):
+    """Purge one lead's media from R2: delete every object under its folder and drop it
+    from the index. Used by the app's Reject. No-op if the appid isn't indexed."""
+    cli = client or _client()
+    index = fetch_index()
+    folder = index.pop(str(appid), None)
+    if folder:
+        keys = [o["Key"] for page in cli.get_paginator("list_objects_v2")
+                .paginate(Bucket=BUCKET, Prefix=f"{folder}/")
+                for o in page.get("Contents", [])]
+        for i in range(0, len(keys), 1000):
+            cli.delete_objects(Bucket=BUCKET,
+                               Delete={"Objects": [{"Key": k} for k in keys[i:i + 1000]]})
+        write_index(index, client=cli)
+    return bool(folder)
