@@ -144,6 +144,28 @@ def _bg(fn, appid):
               file=sys.stderr)
 
 
+def _dispatch_hermes():
+    """Fire the Hermes scrape workflow via GitHub's workflow_dispatch API. Needs a
+    fine-grained PAT (Actions: write) + the repo in this app's Secrets. Returns None on
+    success, else an error string to show the user."""
+    import json
+    import urllib.request
+    repo = os.environ.get("GH_REPO")
+    pat = os.environ.get("GH_PAT")
+    if not (repo and pat):
+        return "Set `GH_REPO` (owner/repo) and `GH_PAT` (fine-grained token, Actions: write) in Secrets."
+    url = f"https://api.github.com/repos/{repo}/actions/workflows/hermes.yml/dispatches"
+    body = json.dumps({"ref": os.environ.get("GH_REF", "master")}).encode()
+    req = urllib.request.Request(url, data=body, method="POST", headers={
+        "Authorization": f"Bearer {pat}", "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "SRE-app"})
+    try:
+        urllib.request.urlopen(req, timeout=15)        # 204 No Content on success
+        return None
+    except Exception as e:                             # urllib raises HTTPError on 4xx
+        return f"Dispatch failed: {e}"
+
+
 # Touch-swipe → click the Prev/Next buttons. Streamlit has no native swipe; this
 # binds ONE listener on the parent document (survives reruns; the iframe reloads but
 # the parent doc persists) and finds the buttons by label.
@@ -254,6 +276,13 @@ if SECTION == "Game Approval":
     _run(SECTION, review.games_to_review,
          [("✅ Accept", review.Accept_Game), ("❌ Reject", _reject)])
 elif SECTION == "No-Mail":
+    # Kick off cloud email-scraping (Hermes in GHA) for the whole pending backlog. Fire-
+    # and-forget: the job runs for minutes in the background, flips the leads it finds out
+    # of this section. Refresh later to see them gone.
+    if st.button("🔎 Scrape emails for these (run Hermes)", use_container_width=True):
+        err = _dispatch_hermes()
+        st.warning(err) if err else st.success("Hermes started — leads with a found email "
+                                               "will leave this section once it finishes.")
     _run(SECTION, review.nomail_games_to_review, [("❌ Reject", _reject)])
 else:
     _run(SECTION, review.mails_to_review,

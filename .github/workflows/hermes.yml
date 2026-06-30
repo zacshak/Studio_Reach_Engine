@@ -1,0 +1,35 @@
+name: Hermes scrape
+
+# On-demand email scraping for the No-Mail backlog. NOT scheduled — fired by the app's
+# "Scrape emails" button (No-Mail section) via the workflow_dispatch API, or the manual
+# "Run workflow" button here. Walks every scrape_tracker lead with status 'pending',
+# scrapes for an email (Playwright + Gemini), and flips the ones it finds out of No-Mail.
+on:
+  workflow_dispatch: {}
+
+concurrency:
+  group: hermes                 # never overlap two scrape runs (they share the queue)
+  cancel-in-progress: false
+
+jobs:
+  hermes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350         # safety ceiling, not runtime — a big backlog with a
+                                 # rate-limited free key can wait; most runs finish fast.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          pip install --quiet libsql openai playwright
+          playwright install --with-deps chromium
+      - name: Scrape pending leads -> emails
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          TRIAGE_BASE_URL: ${{ secrets.TRIAGE_BASE_URL }}
+          TRIAGE_MODEL: ${{ secrets.TRIAGE_MODEL }}
+          TRIAGE_API_KEY: ${{ secrets.TRIAGE_API_KEY }}
+        run: python HermesScraper/hermes.py
