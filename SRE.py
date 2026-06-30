@@ -13,6 +13,7 @@ the single front door so you don't memorise six script paths.
     python SRE.py --send-mails                # send scheduled cold mails (--dry-run, --limit N)
     python SRE.py --review-mails              # check Sent leads for replies -> mark 'Replied'
     python SRE.py --sync-media                # mirror staged media -> R2 (cloud review app)
+    python SRE.py --snap-db                   # dump live Turso DB -> last_cache.sqlite (DB Browser)
 """
 import os
 import subprocess
@@ -31,6 +32,7 @@ ROUTES = {
     "--send-mails":    ("Mail_Sender/mailer.py", []),
     "--review-mails":  ("Mail_Sender/mailer.py", ["--review"]),
     "--sync-media":    ("sync_media.py", []),
+    "--snap-db":       ("snap_db.py", []),
 }
 
 
