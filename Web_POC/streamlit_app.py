@@ -70,6 +70,7 @@ if not os.environ.get("TURSO_DATABASE_URL"):
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "Leads_Reviewer"))
 import Reviewer_Interface as review            # noqa: E402
+import media_store                             # noqa: E402  (R2 write for triage actions)
 import streamlit.components.v1 as components    # noqa: E402
 
 # Section list — the switcher itself is rendered below, AFTER the triage gate, so it's
@@ -216,6 +217,12 @@ if _TKEY not in st.session_state:
 
 if st.session_state[_TKEY]:
     st.markdown("### 🔍 Triage review")
+    # Keep/Reject WRITE to R2 (rewrite irrelevant.json, delete media) — needs the R2 write
+    # creds in this app's Secrets, not just R2_PUBLIC_BASE. Fail clear, not with a boto3 crash.
+    if not media_store.write_enabled():
+        st.error("Triage review needs R2 **write** access. Add `R2_BUCKET`, `R2_ACCOUNT_ID`, "
+                 "`R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` to this app's Secrets, then reboot.")
+        st.stop()
     st.caption("AI flagged these as likely irrelevant. **Keep** if it's wrong, **Reject** "
                "to delete the lead everywhere. Clear them to reach your normal queue.")
     _run(_TKEY, None,
