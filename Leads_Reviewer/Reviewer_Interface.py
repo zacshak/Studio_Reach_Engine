@@ -147,18 +147,22 @@ def _local_queue(appids, base):
     return out
 
 
-def _lazy_list(appids):
+def _lazy_list(appids, with_email=False):
     """Cloud: an INSTANT queue built from index.json alone — NO per-card fetches. Each
     entry is {appid, folder, name(from folder), shots:None}; hydrate() pulls the real
     card (images/desc/mail) from R2 only when the card is actually viewed. This is what
-    makes the first paint fast instead of fetching hundreds of manifests up front."""
+    makes the first paint fast instead of fetching hundreds of manifests up front.
+    with_email tags mail cards so hydrate() also attaches the recipient (a Turso query)."""
     index = media_store.fetch_index()
     out = []
     for appid in appids:
         folder = index.get(str(appid))
         if folder:
-            out.append({"appid": appid, "folder": folder, "shots": None,
-                        "name": folder.rsplit("_", 1)[0] or str(appid)})  # for sort/title
+            item = {"appid": appid, "folder": folder, "shots": None,
+                    "name": folder.rsplit("_", 1)[0] or str(appid)}   # for sort/title
+            if with_email:
+                item["_email"] = True
+            out.append(item)
     out.sort(key=lambda g: g["name"].lower())
     return out
 
@@ -174,6 +178,8 @@ def hydrate(item):
         item.update(full)                                   # real name/desc/meta/shots/mail
     else:
         item.update({"shots": [], "desc": "(media unavailable)", "meta": "—"})
+    if item.get("_email"):                                  # mail card — attach recipient now
+        item["emails"] = pipeline.get_emails(item["appid"])
     return item
 
 
@@ -181,6 +187,12 @@ def has_pending_drafts():
     """True if any accepted lead is still awaiting a cold-mail draft (Mail_status
     'Writing'). One cheap Turso query — used to gate the app's Draft button."""
     return bool(pipeline.mail_status_appids("Writing"))
+
+
+def has_scheduled():
+    """True if any lead is approved and awaiting send (Mail_status 'Scheduled').
+    One cheap Turso query — gates the app's Send button."""
+    return bool(pipeline.mail_status_appids("Scheduled"))
 
 
 def pending_website_urls():
@@ -241,21 +253,19 @@ def leads_by_appids(appids):
 
 
 def mails_to_review():
-    """Games with Mail_status 'Writing' that still have a media folder. Same shape
-    as games_to_review() plus a 'mail' field (the drafted message text)."""
-    index = media_store.fetch_index() if _CLOUD else None
+    """Games with Mail_status 'Writing'. Same shape as games_to_review() plus 'mail' (the
+    drafted message) and 'emails' (recipient). Cloud: lazy like the other views — instant
+    from index.json, with hydrate() pulling the manifest + recipient on view."""
+    if _CLOUD:
+        return _lazy_list(pipeline.mail_status_appids("Writing"), with_email=True)
+    # local: filesystem is cheap, so build eagerly
     out = []
     for appid in pipeline.mail_status_appids("Writing"):
-        if _CLOUD:
-            folder = index.get(str(appid))
-            item = _load_remote(appid, folder) if folder else None   # manifest carries 'mail'
-        else:
-            folder = _folder_for(appid)
-            item = _load_folder(folder, appid) if folder else None
-            if item:
-                item["mail"] = _load_mail(folder, appid)
+        folder = _folder_for(appid)
+        item = _load_folder(folder, appid) if folder else None
         if not item:
             continue
+        item["mail"] = _load_mail(folder, appid)
         item["emails"] = pipeline.get_emails(appid)
         out.append(item)
     out.sort(key=lambda g: g["name"].lower())

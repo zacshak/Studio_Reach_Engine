@@ -371,6 +371,9 @@ elif SECTION == "No-Mail":
     # after each discovery run (kimchi.yml). Leads it finds an email for leave this section.
     _run(SECTION, review.nomail_games_to_review, [("❌ Reject", _reject)])
 else:
-    _gha_button("📨 Send approved mails", "send.yml", "send")
+    # Send button only when something's actually approved-and-waiting (Mail_status
+    # 'Scheduled'); otherwise there's nothing to send.
+    if review.has_scheduled():
+        _gha_button("📨 Send scheduled mails", "send.yml", "send")
     _run(SECTION, review.mails_to_review,
          [("✅ Approve", review.Approve_Mail), ("❌ Reject", _reject)], show_mail=True)
