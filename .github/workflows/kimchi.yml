@@ -1,0 +1,46 @@
+name: Kimchi scrape
+
+# Same job as Hermes (find one recruiting email per pending studio) but done by the kimchi
+# CLI (getkimchi/kimchi) as a FULLY-AGENTIC scraper: it drives Playwright itself and records
+# results through KimchiScraper/kimchi_db.py. Standalone (KimchiScraper/) — shares no code
+# with Hermes, so either can be deleted wholesale after the A/B evaluation.
+#
+# Trigger: AUTOMATIC after "Nightly discovery" succeeds (no button). Manual run also here.
+on:
+  workflow_run:
+    workflows: ["Nightly discovery"]
+    types: [completed]
+  workflow_dispatch: {}
+
+concurrency:
+  group: kimchi                  # never overlap two kimchi runs (they share the queue)
+  cancel-in-progress: false
+
+permissions:
+  contents: read                 # only checks out the repo; all DB writes go to Turso
+
+jobs:
+  kimchi:
+    # after discovery: only if it succeeded; the manual button always runs
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 350         # safety ceiling, not runtime.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install kimchi CLI + Playwright (headless Chromium) + DB deps
+        run: |
+          curl -fsSL https://github.com/getkimchi/kimchi/releases/latest/download/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"   # ensure the kimchi binary is on PATH
+          pip install --quiet libsql playwright
+          playwright install --with-deps chromium
+      - name: Run kimchi agent over the pending queue
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
+        # -p one-shot & exit · --auto run freely but keep the classifier guard (no dangerous
+        # ops) · --no-session ephemeral · --model pins minimax-m3.
+        run: kimchi -p --auto --no-session --model minimax-m3 "$(cat KimchiScraper/kimchi_task.md)"
