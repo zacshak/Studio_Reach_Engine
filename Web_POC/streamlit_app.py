@@ -377,3 +377,22 @@ else:
         _gha_button("📨 Send scheduled mails", "send.yml", "send")
     _run(SECTION, review.mails_to_review,
          [("✅ Approve", review.Approve_Mail), ("❌ Reject", _reject)], show_mail=True)
+    # Approve-all: shortcut, shown only while the queue has cards. Approving is non-
+    # destructive (just Writing -> Scheduled; sending stays behind the Send button), so no
+    # confirm. Runs on a daemon thread while the queue clears; the list is emptied in place
+    # (set to [], not popped) so it isn't re-queried while the thread is still approving.
+    _mail_q = st.session_state.get(SECTION)
+    if _mail_q:
+        if st.button("✅ Approve all", use_container_width=True, key="approve_all"):
+            _ids = [g["appid"] for g in _mail_q]
+
+            def _approve(ids=_ids):
+                for a in ids:
+                    try:
+                        review.Approve_Mail(a)
+                    except Exception as e:            # noqa: BLE001 — fire-and-forget
+                        print(f"[approve-all] {a} failed: {e}", file=sys.stderr)
+            threading.Thread(target=_approve, daemon=True).start()
+            st.session_state[SECTION] = []
+            st.session_state.pop(f"{SECTION}:idx", None)
+            st.rerun()
