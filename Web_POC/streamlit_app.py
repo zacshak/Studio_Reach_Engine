@@ -327,9 +327,8 @@ if SECTION == "Game Approval":
     if not st.session_state.get(SECTION) and review.has_pending_drafts():
         _gha_button("✍️ Draft pending mails", "draft.yml", "draft")
 elif SECTION == "No-Mail":
-    # Kick off cloud email-scraping (Hermes in GHA) for the whole pending backlog. The job
-    # runs for minutes; leads it finds an email for leave this section. Refresh later.
-    _gha_button("🔎 Scrape emails for these (run Hermes)", "hermes.yml", "hermes")
+    # No scrape button here anymore — Kimchi scrapes the pending backlog automatically
+    # after each discovery run (kimchi.yml). Leads it finds an email for leave this section.
     _run(SECTION, review.nomail_games_to_review, [("❌ Reject", _reject)])
 else:
     _gha_button("📨 Send approved mails", "send.yml", "send")
