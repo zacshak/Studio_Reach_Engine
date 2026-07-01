@@ -278,6 +278,36 @@ if st.session_state[_TKEY]:
         st.stop()
     st.caption("AI flagged these as likely irrelevant. **Keep** if it's wrong, **Reject** "
                "to delete the lead everywhere. Clear them to reach your normal queue.")
+
+    # Reject-all: purge every flagged lead at once when you're in a hurry. Two-tap confirm
+    # because it's irreversible. The purge runs on a daemon thread (each Reject_Irrelevant
+    # is cross-region I/O) while the UI clears instantly and falls through to the queue.
+    _n = len(st.session_state[_TKEY])
+    _armkey = "triage_reject_all_armed"
+    if not st.session_state.get(_armkey):
+        if st.button(f"🗑️ Reject all {_n}", use_container_width=True):
+            st.session_state[_armkey] = True
+            st.rerun()
+    else:
+        if st.button(f"⚠️ Tap again to purge all {_n} — can't be undone",
+                     use_container_width=True, type="primary"):
+            _appids = [it["appid"] for it in st.session_state[_TKEY]]
+
+            def _purge(ids=_appids):
+                for a in ids:
+                    try:
+                        review.Reject_Irrelevant(a)
+                    except Exception as e:                 # noqa: BLE001 — fire-and-forget
+                        print(f"[triage reject-all] {a} failed: {e}", file=sys.stderr)
+            threading.Thread(target=_purge, daemon=True).start()
+            st.session_state[_TKEY] = []
+            st.session_state.pop(f"{_TKEY}:idx", None)
+            st.session_state.pop(_armkey, None)
+            st.rerun()
+        if st.button("Cancel", use_container_width=True):
+            st.session_state.pop(_armkey, None)
+            st.rerun()
+
     _run(_TKEY, None,
          [("✅ Keep", review.Keep_Irrelevant), ("🗑️ Reject", review.Reject_Irrelevant)])
     st.stop()
