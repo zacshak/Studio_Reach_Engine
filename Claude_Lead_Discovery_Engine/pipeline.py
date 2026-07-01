@@ -102,7 +102,7 @@ _TRIGGER_NEEDS = ("name", "short_description", "website", "support_info",
 # A lead whose support_info already carries an email is born 'seeded' with that
 # email pre-filled, so Hermes never has to scrape it. The rest start 'pending'.
 _TRIGGER_SQL = """
-CREATE TRIGGER trg_sync_scrape_tracker
+CREATE TRIGGER IF NOT EXISTS trg_sync_scrape_tracker
 AFTER INSERT ON newly_added
 BEGIN
   INSERT INTO scrape_tracker
@@ -270,8 +270,12 @@ def init_tracker():
             for col in _TRIGGER_NEEDS:
                 if col not in na:
                     conn.execute(f'ALTER TABLE newly_added ADD COLUMN "{col}" TEXT')
-        # recreate the trigger so the latest definition always wins
+        # recreate the trigger so the latest definition always wins. COMMIT the DROP before
+        # the CREATE: on some libsql clients the two share an uncommitted implicit tx and the
+        # CREATE runs while the trigger still exists server-side -> "trigger already exists".
+        # CREATE ... IF NOT EXISTS is a further guard so this can never abort the run.
         conn.execute("DROP TRIGGER IF EXISTS trg_sync_scrape_tracker")
+        conn.commit()
         conn.execute(_TRIGGER_SQL)
         conn.commit()
     _ensured = True
