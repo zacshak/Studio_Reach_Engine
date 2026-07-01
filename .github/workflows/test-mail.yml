@@ -1,0 +1,29 @@
+name: Test mail (spam check)
+
+# One-off manual test: send a single cold-mail-style message to a test inbox through the
+# real Gmail SMTP path (from a GitHub runner, so it reflects the runner IP's reputation).
+# Use it to check whether outreach lands in inbox vs spam. Manual only.
+on:
+  workflow_dispatch:
+    inputs:
+      to:
+        description: "Recipient inbox"
+        required: false
+        default: "recipient@example.com"
+
+permissions:
+  contents: read
+
+jobs:
+  test-mail:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Send one test mail
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: python Mail_Sender/test_send.py "${{ inputs.to }}"
