@@ -144,6 +144,36 @@ def _bg(fn, appid):
               file=sys.stderr)
 
 
+# Fragments (Streamlit >=1.33) let a click rerun just the card instead of the whole
+# script. Feature-detect so an old runtime still works (falls back to full reruns).
+_HAS_FRAGMENT = hasattr(st, "fragment")
+
+
+def _rerun():
+    """Rerun only the card fragment when supported (fast), else the whole script."""
+    if _HAS_FRAGMENT:
+        st.rerun(scope="fragment")
+    else:
+        st.rerun()
+
+
+def _bg_hydrate(item):
+    """Warm one card's R2 media in the background (fire-and-forget)."""
+    try:
+        review.hydrate(item)
+    except Exception as e:                            # noqa: BLE001 — fire-and-forget
+        print(f"[prefetch] hydrate({item.get('appid')}) failed: {e}", file=sys.stderr)
+
+
+def _prefetch(games, idx):
+    """Kick off background fetches of the neighbours (next first, then prev) so a
+    Next/Accept lands on already-hydrated media instead of blocking on a cross-region
+    R2 GET. hydrate() caches in-place, so a warmed card is an instant cache hit."""
+    for j in (idx + 1, idx - 1):
+        if 0 <= j < len(games) and games[j].get("shots") is None:
+            threading.Thread(target=_bg_hydrate, args=(games[j],), daemon=True).start()
+
+
 def _dispatch(workflow):
     """Fire a workflow_dispatch on a GHA workflow file (e.g. 'hermes.yml'). Needs a
     fine-grained PAT (Actions: write) + the repo in this app's Secrets. Returns None on
@@ -222,44 +252,54 @@ def _run(key, loader, actions, show_mail=False):
     """
     if key not in st.session_state:
         st.session_state[key] = loader()
-    games = st.session_state[key]
-    ikey = f"{key}:idx"
-
-    if not games:
+    if not st.session_state[key]:
         st.success("Nothing to review here 🎉")
         return
 
-    idx = min(max(st.session_state.get(ikey, 0), 0), len(games) - 1)
-    st.session_state[ikey] = idx
-    g = review.hydrate(games[idx])   # fetch THIS card's media on demand (cloud); cached after
-    _card(g, show_mail)
+    ikey = f"{key}:idx"
 
-    # navigation: Prev / Next (swipe on mobile clicks these)
-    nav = st.columns(2)
-    if nav[0].button("◀ Prev", use_container_width=True, disabled=idx == 0,
-                     key="nav_prev"):
-        st.session_state[ikey] = idx - 1
-        st.rerun()
-    if nav[1].button("Next ▶", use_container_width=True, disabled=idx >= len(games) - 1,
-                     key="nav_next"):
-        st.session_state[ikey] = idx + 1
-        st.rerun()
+    # The card + nav + actions live in a fragment: a click reruns ONLY this, not the whole
+    # 300-line script (triage gate, section wiring, …). Combined with _prefetch warming the
+    # next card, an Accept/Reject/Next is a local pop with no blocking R2 fetch.
+    def _render():
+        games = st.session_state[key]
+        if not games:
+            st.rerun()                       # emptied → full rerun so outer UI refreshes
+        idx = min(max(st.session_state.get(ikey, 0), 0), len(games) - 1)
+        st.session_state[ikey] = idx
+        g = review.hydrate(games[idx])       # this card (instant if _prefetch warmed it)
+        _prefetch(games, idx)                # warm the neighbours for the next click
+        _card(g, show_mail)
 
-    # actions: act on the CURRENT card, then drop it (next card slides into idx).
-    # OPTIMISTIC — fire the backend work (Turso delete + R2 writes, all I/O, no st.*) on a
-    # daemon thread and advance the UI immediately, so the click feels instant instead of
-    # waiting out a cross-region round-trip. pipeline's connection is thread-local, so the
-    # worker gets its own libSQL handle. Tradeoff: a failed action is silent (logged to the
-    # server console only) — the queue already advanced.
-    for col, (label, fn) in zip(st.columns(len(actions)), actions):
-        if col.button(label, use_container_width=True, key=f"{key}:{label}"):
-            threading.Thread(target=_bg, args=(fn, g["appid"]), daemon=True).start()
-            games.pop(idx)
-            st.session_state[ikey] = min(idx, len(games) - 1) if games else 0
-            st.rerun()
+        # navigation: Prev / Next (swipe on mobile clicks these — keys drive the CSS hide)
+        nav = st.columns(2)
+        if nav[0].button("◀ Prev", use_container_width=True, disabled=idx == 0,
+                         key="nav_prev"):
+            st.session_state[ikey] = idx - 1
+            _rerun()
+        if nav[1].button("Next ▶", use_container_width=True, disabled=idx >= len(games) - 1,
+                         key="nav_next"):
+            st.session_state[ikey] = idx + 1
+            _rerun()
 
-    st.caption(f"{idx + 1} / {len(games)}")
-    components.html(_SWIPE_JS, height=0)
+        # actions: act on the CURRENT card, then drop it (next card slides into idx).
+        # OPTIMISTIC — fire the backend work (Turso delete + R2 writes, all I/O, no st.*) on
+        # a daemon thread and advance immediately. pipeline's connection is thread-local, so
+        # the worker gets its own libSQL handle. A failed action is silent (server log only).
+        for col, (label, fn) in zip(st.columns(len(actions)), actions):
+            if col.button(label, use_container_width=True, key=f"{key}:{label}"):
+                threading.Thread(target=_bg, args=(fn, g["appid"]), daemon=True).start()
+                games.pop(idx)
+                st.session_state[ikey] = min(idx, len(games) - 1) if games else 0
+                if games:
+                    _rerun()                 # fast: only the card re-renders
+                else:
+                    st.rerun()               # last card gone → full rerun to refresh outer UI
+
+        st.caption(f"{idx + 1} / {len(games)}")
+        components.html(_SWIPE_JS, height=0)
+
+    st.fragment(_render)() if _HAS_FRAGMENT else _render()
 
 
 # --- Triage gate: while R2's irrelevant.json has flagged leads, review THOSE first
