@@ -125,11 +125,13 @@ def games_to_review():
 
 
 def nomail_games_to_review():
-    """Games with no email anywhere (scrape_status 'pending') that have a staged
-    folder in No_Mail_Games. Same shape as games_to_review(). Reject-only in the GUI."""
+    """Un-mailable leads: scraping found no email ('no_email') or errored ('failed').
+    Kimchi runs right after discovery and drains 'pending', so what lands here is the
+    settled set. Same shape as games_to_review(). Reject-only in the GUI."""
+    statuses = ("no_email", "failed")
     if _CLOUD:
-        return _lazy_list(pipeline.get_pending())
-    return _local_queue(pipeline.get_pending(), NOMAIL_DIR)
+        return _lazy_list(pipeline.scrape_status_appids(*statuses))
+    return _local_queue(pipeline.scrape_status_appids(*statuses), NOMAIL_DIR)
 
 
 def _local_queue(appids, base):

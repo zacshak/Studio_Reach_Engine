@@ -347,6 +347,19 @@ def get_pending(limit=None):
     return [r[0] for r in rows]
 
 
+def scrape_status_appids(*statuses):
+    """Appids at any of the given scrape_status values ('pending'|'seeded'|'scraped'|
+    'no_email'|'failed'). The No-Mail review view passes ('no_email','failed') — leads
+    scraping found no email for, plus ones it errored on (both un-mailable)."""
+    _ensure()
+    placeholders = ",".join("?" * len(statuses))
+    with closing(_ro()) as conn:
+        rows = conn.execute(
+            f"SELECT appid FROM scrape_tracker WHERE scrape_status IN ({placeholders}) "
+            "ORDER BY appid", statuses).fetchall()
+    return [r[0] for r in rows]
+
+
 def pending_websites():
     """Website URLs of every 'pending' lead that actually has one (non-empty),
     as a flat list. The scrape target list for fishing emails off studio sites."""
