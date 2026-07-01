@@ -5,7 +5,7 @@ name: Review replies
 # mail is sent. Also fireable on demand.
 on:
   schedule:
-    - cron: "0 2 * * *"        # 02:00 UTC daily, after the nightly discovery
+    - cron: "30 18 * * *"      # 18:30 UTC = 00:00 IST daily (GitHub cron is UTC)
   workflow_dispatch: {}
 
 concurrency:

@@ -5,7 +5,7 @@ name: Nightly discovery
 # Turso (DB) and R2 (media); nothing on the runner survives.
 on:
   schedule:
-    - cron: "0 1 * * *"      # 01:00 UTC ≈ 06:30 IST daily (GitHub cron is UTC)
+    - cron: "30 22 * * *"    # 22:30 UTC = 04:00 IST daily (GitHub cron is UTC)
   workflow_dispatch: {}        # manual "Run workflow" button — use this to test first
 
 concurrency:
