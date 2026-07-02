@@ -1,0 +1,21 @@
+// SRE review app — deploy config. From this folder:
+//
+//   npx wrangler login                       (once)
+//   npx wrangler secret put TURSO_URL        (libsql://your-db.turso.io)
+//   npx wrangler secret put TURSO_TOKEN      (the Turso JWT)
+//   npx wrangler secret put AUTH_SECRET      (any passphrase — the page asks for it once)
+//   npx wrangler secret put GH_PAT           (GitHub PAT with actions:write, for the
+//                                             "Send scheduled mails" / draft buttons)
+//   npx wrangler deploy
+//
+// Static page (public/) is served by Workers Assets; /api/* and /media/* hit worker.js.
+{
+  "name": "sre-review",
+  "main": "worker.js",
+  "compatibility_date": "2026-06-01",
+  "assets": { "directory": "./public" },
+  "r2_buckets": [
+    { "binding": "MEDIA", "bucket_name": "sre-media" }
+  ],
+  "observability": { "enabled": true }
+}

@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<!-- SRE review app — the whole frontend. Vanilla JS, no build step.
+     Clicks are OPTIMISTIC: the card flips instantly from local state and the API
+     write fires in the background; failures pile into a banner with a Retry.
+     Keyboard: ←/→ navigate · A = accept/approve/keep · R = reject. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SRE — Studio Reach Engine</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #0e1117; color: #e6e6e6;
+         font: 15px/1.45 system-ui, "Segoe UI", sans-serif; }
+  header { display: flex; gap: .4rem; align-items: center; flex-wrap: wrap;
+           padding: .6rem 1rem; border-bottom: 1px solid #262b36;
+           position: sticky; top: 0; background: #0e1117; z-index: 2; }
+  header h1 { font-size: 1rem; margin: 0 1rem 0 0; color: #9aa4b2; font-weight: 600; }
+  .tab { background: none; border: 1px solid #262b36; color: #9aa4b2; padding: .35rem .8rem;
+         border-radius: 999px; cursor: pointer; font-size: .9rem; }
+  .tab.on { background: #1b2330; color: #fff; border-color: #3b82f6; }
+  .tab b { color: #3b82f6; }
+  main { max-width: 860px; margin: 0 auto; padding: 1rem; }
+  .banner { background: #7f1d1d; color: #fecaca; padding: .5rem .8rem; border-radius: 8px;
+            margin-bottom: .8rem; display: flex; justify-content: space-between; align-items: center; }
+  .banner button { background: #fecaca; border: 0; border-radius: 6px; padding: .2rem .6rem; cursor: pointer; }
+  .empty { text-align: center; color: #6b7280; padding: 4rem 0; }
+  .card h2 { margin: .2rem 0 .1rem; font-size: 1.3rem; }
+  .meta { color: #9aa4b2; font-size: .85rem; margin-bottom: .5rem; }
+  .desc { margin: .5rem 0 .8rem; white-space: pre-wrap; }
+  .hero { width: 100%; border-radius: 10px; background: #161b26; min-height: 200px;
+          object-fit: cover; display: block; }
+  .thumbs { display: flex; gap: .4rem; margin-top: .4rem; overflow-x: auto; }
+  .thumbs img { height: 52px; border-radius: 6px; cursor: pointer; opacity: .55; }
+  .thumbs img.on { opacity: 1; outline: 2px solid #3b82f6; }
+  .mail { background: #161b26; border: 1px solid #262b36; border-radius: 10px;
+          padding: .8rem; margin: .8rem 0; white-space: pre-wrap; font-size: .92rem; }
+  .mail .to { color: #34d399; font-size: .85rem; margin-bottom: .5rem; }
+  .nav { display: flex; align-items: center; justify-content: center; gap: 1rem; margin: .8rem 0; }
+  .nav button { background: #1b2330; color: #e6e6e6; border: 1px solid #262b36;
+                border-radius: 8px; padding: .35rem .9rem; cursor: pointer; }
+  .nav span { color: #6b7280; font-size: .85rem; min-width: 70px; text-align: center; }
+  .actions { display: flex; gap: .6rem; }
+  .actions button { flex: 1; padding: .7rem; border: 0; border-radius: 10px;
+                    font-size: 1rem; cursor: pointer; font-weight: 600; }
+  .ok  { background: #14532d; color: #bbf7d0; }
+  .bad { background: #7f1d1d; color: #fecaca; }
+  .bulk { display: flex; gap: .6rem; margin-top: .8rem; }
+  .bulk button { flex: 1; padding: .5rem; border-radius: 8px; border: 1px solid #262b36;
+                 background: #161b26; color: #9aa4b2; cursor: pointer; }
+  .bulk button.armed { background: #7f1d1d; color: #fecaca; border-color: #ef4444; }
+</style>
+</head>
+<body>
+<header>
+  <h1>SRE review</h1>
+  <button class="tab" data-tab="triage">🗑 Triage <b></b></button>
+  <button class="tab" data-tab="approval">🎮 Approval <b></b></button>
+  <button class="tab" data-tab="mail">📧 Mail <b></b></button>
+  <button class="tab" data-tab="nomail">🚫 No-Mail <b></b></button>
+</header>
+<main>
+  <div id="banner" class="banner" hidden>
+    <span id="bannerText"></span><button onclick="retryFailed()">Retry</button>
+  </div>
+  <div id="view"></div>
+</main>
+
+<script>
+"use strict";
+// ---- auth (single shared secret; stored once) ----
+let AUTH = localStorage.getItem("sre_auth") || "";
+function ensureAuth() {
+  while (!AUTH) { AUTH = (prompt("Access key:") || "").trim(); }
+  localStorage.setItem("sre_auth", AUTH);
+}
+ensureAuth();
+
+const enc = encodeURIComponent;
+const $ = (s) => document.querySelector(s);
+
+// ---- optimistic write engine ----
+const failed = [];                    // actions whose background write errored
+function showBanner() {
+  $("#banner").hidden = failed.length === 0;
+  $("#bannerText").textContent = `${failed.length} write(s) failed — data may be out of sync.`;
+}
+async function api(action, extra = {}) {
+  try {
+    const r = await fetch("/api/act", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-auth": AUTH },
+      body: JSON.stringify({ action, ...extra }),
+    });
+    if (r.status === 401) { localStorage.removeItem("sre_auth"); AUTH = ""; ensureAuth(); throw new Error("auth"); }
+    if (!r.ok) throw new Error((await r.json()).error || r.status);
+  } catch (e) {
+    console.error(action, extra, e);
+    failed.push([action, extra]);
+    showBanner();
+  }
+}
+async function retryFailed() {
+  const batch = failed.splice(0);
+  showBanner();
+  for (const [action, extra] of batch) await api(action, extra);
+}
+
+// ---- state ----
+let S = null;                          // /api/state payload
+let tab = "triage";
+const idx = { triage: 0, approval: 0, mail: 0, nomail: 0 };
+const manifests = new Map();           // folder -> manifest (or null while loading)
+let shot = 0;                          // selected screenshot on current card
+let armed = null;                      // two-tap confirm for bulk buttons
+
+function queues() {
+  const mk = (ids) => ids.map((a) => ({ appid: a, folder: S.index[String(a)] }))
+                         .filter((c) => c.folder)
+                         .sort((x, y) => x.folder.toLowerCase() < y.folder.toLowerCase() ? -1 : 1);
+  return {
+    triage: mk(S.triage),
+    approval: mk(S.approval),
+    mail: mk(S.mail.map((m) => m.appid)),
+    nomail: mk(S.nomail),
+  };
+}
+let Q = null;
+const emailsOf = (appid) => (S.mail.find((m) => m.appid === appid) || {}).emails || "";
+
+async function load() {
+  $("#view").innerHTML = '<div class="empty">Loading…</div>';
+  const r = await fetch("/api/state", { headers: { "x-auth": AUTH } });
+  if (r.status === 401) { localStorage.removeItem("sre_auth"); AUTH = ""; ensureAuth(); return load(); }
+  S = await r.json();
+  Q = queues();
+  if (!Q[tab].length) tab = ["triage", "approval", "mail", "nomail"].find((t) => Q[t].length) || tab;
+  render();
+}
+
+// ---- manifests: fetch on view, prefetch the next card ----
+async function manifest(folder) {
+  if (!manifests.has(folder)) {
+    manifests.set(folder, null);
+    try {
+      const r = await fetch(`/media/${enc(folder)}/manifest.json`);
+      manifests.set(folder, r.ok ? await r.json() : { missing: true });
+    } catch { manifests.set(folder, { missing: true }); }
+    render();                          // repaint when the awaited card arrives
+  }
+  return manifests.get(folder);
+}
+function prefetch(list, i) {
+  for (const j of [i + 1, i - 1]) {
+    const c = list[j];
+    if (!c || manifests.has(c.folder)) continue;
+    manifest(c.folder).then((m) => {
+      if (m && m.images && m.images[0])
+        new Image().src = `/media/${enc(c.folder)}/${enc(m.images[0])}`;
+    });
+  }
+}
+
+// ---- render ----
+function render() {
+  document.querySelectorAll(".tab").forEach((b) => {
+    const t = b.dataset.tab;
+    b.classList.toggle("on", t === tab);
+    b.querySelector("b").textContent = Q[t].length;
+  });
+  const list = Q[tab];
+  const view = $("#view");
+  if (!list.length) { view.innerHTML = '<div class="empty">Nothing to review 🎉</div>'; return; }
+
+  idx[tab] = Math.min(idx[tab], list.length - 1);
+  const i = idx[tab];
+  const card = list[i];
+  const m = manifests.get(card.folder);
+  if (m === undefined) manifest(card.folder);     // kick off fetch; rerenders when done
+  prefetch(list, i);
+
+  const name = (m && m.name) || card.folder.split("_").slice(0, -1).join("_") || card.appid;
+  const imgs = (m && m.images) || [];
+  shot = Math.min(shot, Math.max(imgs.length - 1, 0));
+  const img = imgs.length
+    ? `<img class="hero" src="/media/${enc(card.folder)}/${enc(imgs[shot])}" alt="">`
+    : `<div class="hero"></div>`;
+  const thumbs = imgs.length > 1
+    ? `<div class="thumbs">${imgs.map((f, k) =>
+        `<img src="/media/${enc(card.folder)}/${enc(f)}" class="${k === shot ? "on" : ""}"
+              onclick="shot=${k};render()">`).join("")}</div>` : "";
+  const mail = tab === "mail"
+    ? `<div class="mail"><div class="to">To: ${emailsOf(card.appid) || "(no recipient!)"}</div>${
+        (m && m.mail) ? escapeHtml(m.mail) : "<i>(not drafted yet)</i>"}</div>` : "";
+
+  const A = { triage: ["✅ Keep", "keep"], approval: ["✅ Accept", "accept"],
+              mail: ["✅ Approve", "approve"], nomail: [null, null] }[tab];
+  const R = tab === "triage" ? "reject_irrelevant" : "reject";
+  const bulk =
+    (tab === "triage"
+      ? `<button id="bulkR" onclick="bulkReject()">🗑 Reject all (${list.length})</button>` : "") +
+    (tab === "mail"
+      ? `<button onclick="approveAll()">✅ Approve all (${list.length})</button>` +
+        (S.scheduled ? `<button onclick="api('trigger',{workflow:'send'});this.disabled=true;this.textContent='📨 triggered'">📨 Send scheduled mails</button>` : "")
+      : "");
+
+  view.innerHTML = `
+    <div class="card">
+      <h2>${escapeHtml(String(name))}</h2>
+      <div class="meta">${escapeHtml((m && m.meta) || "")} · appid ${card.appid}</div>
+      ${img}${thumbs}
+      <div class="desc">${m ? escapeHtml(m.desc || "") : "Loading…"}</div>
+      ${mail}
+      <div class="nav">
+        <button onclick="move(-1)">←</button><span>${i + 1} / ${list.length}</span><button onclick="move(1)">→</button>
+      </div>
+      <div class="actions">
+        ${A[0] ? `<button class="ok" onclick="doAct('${A[1]}')">${A[0]}</button>` : ""}
+        <button class="bad" onclick="doAct('${R}')">❌ Reject</button>
+      </div>
+      ${bulk ? `<div class="bulk">${bulk}</div>` : ""}
+    </div>`;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+function move(d) {
+  const n = Q[tab].length;
+  idx[tab] = (idx[tab] + d + n) % n;
+  shot = 0; armed = null;
+  render();
+}
+
+// ---- optimistic actions: mutate local state NOW, write in background ----
+function doAct(action) {
+  const card = Q[tab][idx[tab]];
+  Q[tab].splice(idx[tab], 1);
+  if (action === "approve") S.scheduled = true;
+  shot = 0; armed = null;
+  render();
+  api(action, { appid: card.appid });
+}
+function approveAll() {
+  const ids = Q.mail.map((c) => c.appid);
+  Q.mail = []; S.scheduled = true;
+  render();
+  api("approve_all", { appids: ids });
+}
+function bulkReject() {                 // two-tap confirm, like the Streamlit version
+  if (armed !== "bulkR") {
+    armed = "bulkR";
+    const b = $("#bulkR"); b.classList.add("armed"); b.textContent = "⚠️ Tap again to reject ALL";
+    return;
+  }
+  const ids = Q.triage.map((c) => c.appid);
+  Q.triage = []; armed = null;
+  render();
+  api("reject_all_irrelevant", { appids: ids });
+}
+
+// ---- tabs + keyboard ----
+document.querySelectorAll(".tab").forEach((b) =>
+  b.addEventListener("click", () => { tab = b.dataset.tab; shot = 0; armed = null; render(); }));
+document.addEventListener("keydown", (e) => {
+  if (!Q || !Q[tab].length) return;
+  if (e.key === "ArrowLeft") move(-1);
+  else if (e.key === "ArrowRight") move(1);
+  else if (e.key.toLowerCase() === "a" && tab !== "nomail")
+    doAct({ triage: "keep", approval: "accept", mail: "approve" }[tab]);
+  else if (e.key.toLowerCase() === "r") doAct(tab === "triage" ? "reject_irrelevant" : "reject");
+});
+
+load();
+</script>
+</body>
+</html>
