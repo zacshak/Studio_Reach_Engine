@@ -34,3 +34,10 @@ through the whole queue, then stop.
   no_email, or failed.
 - Don't touch the database except through `kimchi_db.py`. Don't edit repo files.
 - Be economical with steps; a slow or dead site is `failed`, move on.
+
+## Terminating (important — this runs unattended in CI)
+- Run every Playwright script as a short one-shot `python` invocation that CLOSES the
+  browser (`browser.close()`) and exits. Never leave a browser, REPL, or server running.
+- After the last lead's `write`, kill any leftover chromium (`pkill -f chromium || true`),
+  print `QUEUE DRAINED`, and end the session immediately. Do not wait, watch, poll, or
+  re-check the queue in a loop — an empty queue means you are finished.
