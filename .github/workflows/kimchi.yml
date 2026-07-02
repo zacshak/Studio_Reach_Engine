@@ -24,7 +24,7 @@ jobs:
     # after discovery: only if it succeeded; the manual button always runs
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45          # job ceiling; the agent step below has its own 30-min cap
+    timeout-minutes: 75          # job ceiling; the agent step below has its own 60-min cap
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -42,11 +42,12 @@ jobs:
           pip install --quiet libsql playwright
           playwright install --with-deps chromium
       - name: Run kimchi agent over the pending queue
-        # Hard cap: on 2026-07-02 the agent finished the whole queue in well under 30 min
-        # but the process never exited (likely an orphaned headless-Chromium child) and
-        # idled ~4h toward the old 350-min ceiling. Writes are incremental (one DB write
-        # per appid as it goes), so killing a hung run loses nothing.
-        timeout-minutes: 30
+        # Hard cap: on 2026-07-02 the agent drained the queue but never exited and idled
+        # ~4h toward the old 350-min ceiling. 60 min is generous for a nightly queue
+        # (~15-30 leads); and a timeout loses nothing anyway — writes are incremental
+        # (one per appid as it goes) and unfinished leads stay 'pending', so the next
+        # night's run resumes exactly where this one stopped.
+        timeout-minutes: 60
         env:
           TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
