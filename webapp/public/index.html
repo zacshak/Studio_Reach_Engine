@@ -52,6 +52,8 @@
   .bulk button { flex: 1; padding: .5rem; border-radius: 8px; border: 1px solid #262b36;
                  background: #161b26; color: #9aa4b2; cursor: pointer; }
   .bulk button.armed { background: #7f1d1d; color: #fecaca; border-color: #ef4444; }
+  .bulk.top { margin: 0 0 .8rem; }
+  .shotsall img { width: 100%; border-radius: 10px; margin-top: .4rem; display: block; }
 </style>
 </head>
 <body>
@@ -116,6 +118,7 @@ const idx = { triage: 0, approval: 0, mail: 0, nomail: 0 };
 const manifests = new Map();           // folder -> manifest (or null while loading)
 let shot = 0;                          // selected screenshot on current card
 let armed = null;                      // two-tap confirm for bulk buttons
+let showAll = false;                   // "All N screenshots" toggle on current card
 
 function queues() {
   const mk = (ids) => ids.map((a) => ({ appid: a, folder: S.index[String(a)] }))
@@ -194,8 +197,8 @@ function render() {
       ? ghaBtn("✍️ Draft pending mails", "draft") : "") +
     (tab === "mail" && S.scheduled ? ghaBtn("📨 Send scheduled mails", "send") : "");
   if (!list.length) {
-    view.innerHTML = `<div class="empty">Nothing to review 🎉</div>` +
-                     (gha ? `<div class="bulk">${gha}</div>` : "");
+    view.innerHTML = (gha ? `<div class="bulk top">${gha}</div>` : "") +
+                     `<div class="empty">Nothing to review 🎉</div>`;
     return;
   }
 
@@ -218,6 +221,13 @@ function render() {
     ? `<div class="thumbs">${imgs.map((f, k) =>
         `<img src="/media/${enc(card.folder)}/${enc(f)}" class="${k === shot ? "on" : ""}"
               onclick="shot=${k};render()">`).join("")}</div>` : "";
+  // "All N screenshots" toggle from the Streamlit card — stacks every image full-width
+  const shotsCtl = imgs.length > 1
+    ? `<div class="bulk"><button onclick="showAll=!showAll;render()">${
+        showAll ? "🖼 Hide screenshots" : `🖼 All ${imgs.length} screenshots`}</button></div>` : "";
+  const allShots = showAll
+    ? `<div class="shotsall">${imgs.map((f) =>
+        `<img loading="lazy" src="/media/${enc(card.folder)}/${enc(f)}">`).join("")}</div>` : "";
   const mail = tab === "mail"
     ? `<div class="mail"><div class="to">To: ${emailsOf(card.appid) || "(no recipient!)"}</div>${
         (m && m.mail) ? escapeHtml(m.mail) : "<i>(not drafted yet)</i>"}</div>` : "";
@@ -225,18 +235,23 @@ function render() {
   const A = { triage: ["✅ Keep", "keep"], approval: ["✅ Accept", "accept"],
               mail: ["✅ Approve", "approve"], nomail: [null, null] }[tab];
   const R = tab === "triage" ? "reject_irrelevant" : "reject";
-  const bulk =
-    (tab === "triage"
-      ? `<button id="bulkR" onclick="bulkReject()">🗑 Reject all (${list.length})</button>` : "") +
+  // two-tap Reject-all with an explicit Cancel, exactly like the Streamlit gate
+  const bulkTriage = tab !== "triage" ? "" : armed === "bulkR"
+    ? `<button class="armed" onclick="bulkReject()">⚠️ Tap again to purge all ${list.length} — can't be undone</button>
+       <button onclick="armed=null;render()">Cancel</button>`
+    : `<button onclick="bulkReject()">🗑 Reject all (${list.length})</button>`;
+  const bulk = bulkTriage +
     (tab === "mail" ? `<button onclick="approveAll()">✅ Approve all (${list.length})</button>` : "") +
     gha;
 
+  // bulk/GHA controls render ABOVE the card — that's where the Streamlit app kept them
   view.innerHTML = `
+    ${bulk ? `<div class="bulk top">${bulk}</div>` : ""}
     <div class="card">
       <h2>${escapeHtml(String(name))}</h2>
       <div class="meta">${escapeHtml((m && m.meta) || "")} · appid ${card.appid} ·
         <a href="https://store.steampowered.com/app/${card.appid}/" target="_blank" rel="noopener">Steam page 🔗</a></div>
-      ${img}${thumbs}
+      ${img}${thumbs}${shotsCtl}${allShots}
       <div class="desc">${m ? escapeHtml(m.desc || "") : "Loading…"}</div>
       ${mail}
       <div class="nav">
@@ -246,7 +261,6 @@ function render() {
         ${A[0] ? `<button class="ok" onclick="doAct('${A[1]}')">${A[0]}</button>` : ""}
         <button class="bad" onclick="doAct('${R}')">❌ Reject</button>
       </div>
-      ${bulk ? `<div class="bulk">${bulk}</div>` : ""}
     </div>`;
 }
 
@@ -257,31 +271,39 @@ function escapeHtml(s) {
 function move(d) {
   const n = Q[tab].length;
   idx[tab] = (idx[tab] + d + n) % n;
-  shot = 0; armed = null;
+  shot = 0; armed = null; showAll = false;
   render();
 }
 
 // ---- optimistic actions: mutate local state NOW, write in background ----
+// Local state also propagates across tabs so conditional buttons appear without a
+// reload: accept grows the Writing set (the Draft button's condition), keep returns
+// the card to the Approval queue — same as the Streamlit sections re-querying.
 function doAct(action) {
   const card = Q[tab][idx[tab]];
   Q[tab].splice(idx[tab], 1);
-  if (action === "approve") S.scheduled = true;
-  shot = 0; armed = null;
+  if (action === "approve") {
+    S.scheduled = true;
+    S.mail = S.mail.filter((x) => x.appid !== card.appid);
+  } else if (action === "accept") {
+    S.mail.push({ appid: card.appid, emails: "" });
+    Q.mail.push(card);
+  } else if (action === "keep") {
+    Q.approval.push(card);
+    Q.approval.sort((x, y) => (x.folder.toLowerCase() < y.folder.toLowerCase() ? -1 : 1));
+  }
+  shot = 0; armed = null; showAll = false;
   render();
   api(action, { appid: card.appid });
 }
 function approveAll() {
   const ids = Q.mail.map((c) => c.appid);
-  Q.mail = []; S.scheduled = true;
+  Q.mail = []; S.mail = []; S.scheduled = true;
   render();
   api("approve_all", { appids: ids });
 }
-function bulkReject() {                 // two-tap confirm, like the Streamlit version
-  if (armed !== "bulkR") {
-    armed = "bulkR";
-    const b = $("#bulkR"); b.classList.add("armed"); b.textContent = "⚠️ Tap again to reject ALL";
-    return;
-  }
+function bulkReject() {                 // two-tap confirm + Cancel, like the Streamlit gate
+  if (armed !== "bulkR") { armed = "bulkR"; render(); return; }
   const ids = Q.triage.map((c) => c.appid);
   Q.triage = []; armed = null;
   render();
@@ -305,7 +327,7 @@ document.addEventListener("touchend", (e) => {
 
 // ---- tabs + keyboard ----
 document.querySelectorAll(".tab").forEach((b) =>
-  b.addEventListener("click", () => { tab = b.dataset.tab; shot = 0; armed = null; render(); }));
+  b.addEventListener("click", () => { tab = b.dataset.tab; shot = 0; armed = null; showAll = false; render(); }));
 document.addEventListener("keydown", (e) => {
   if (!Q || !Q[tab].length) return;
   if (e.key === "ArrowLeft") move(-1);
