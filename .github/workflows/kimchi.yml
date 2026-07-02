@@ -31,6 +31,11 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install kimchi CLI + Playwright (headless Chromium) + DB deps
+        env:
+          # Force bin+data under $HOME. The runner CAN write /usr/local/bin, so the installer
+          # picks it — but its paired /usr/local/share is root-owned, so the data-dir move dies
+          # with "Permission denied". Pinning the dir keeps both halves writable.
+          KIMCHI_INSTALL_DIR: /home/runner/.local/bin
         run: |
           curl -fsSL https://github.com/getkimchi/kimchi/releases/latest/download/install.sh | bash
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"   # ensure the kimchi binary is on PATH
