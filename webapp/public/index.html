@@ -27,6 +27,7 @@
   .banner[hidden] { display: none; }   /* display:flex above beats the hidden attr without this */
   .banner button { background: #fecaca; border: 0; border-radius: 6px; padding: .2rem .6rem; cursor: pointer; }
   .empty { text-align: center; color: #6b7280; padding: 4rem 0; }
+  a { color: #3b82f6; text-decoration: none; }
   .card h2 { margin: .2rem 0 .1rem; font-size: 1.3rem; }
   .meta { color: #9aa4b2; font-size: .85rem; margin-bottom: .5rem; }
   .desc { margin: .5rem 0 .8rem; white-space: pre-wrap; }
@@ -164,6 +165,21 @@ function prefetch(list, i) {
 }
 
 // ---- render ----
+// GHA buttons live outside the card so they also show when a queue is empty —
+// Draft appears exactly then (queue cleared, accepted leads awaiting drafts), and
+// Send must survive Approve-all emptying the list. `fired` = per-session spam guard.
+const fired = {};
+function ghaBtn(label, wf) {
+  return fired[wf]
+    ? `<button disabled>✓ ${label} — started</button>`
+    : `<button onclick="fireGha('${wf}')">${label}</button>`;
+}
+function fireGha(wf) {
+  fired[wf] = true;
+  render();
+  api("trigger", { workflow: wf });
+}
+
 function render() {
   document.querySelectorAll(".tab").forEach((b) => {
     const t = b.dataset.tab;
@@ -172,7 +188,16 @@ function render() {
   });
   const list = Q[tab];
   const view = $("#view");
-  if (!list.length) { view.innerHTML = '<div class="empty">Nothing to review 🎉</div>'; return; }
+  // drafts are pending when accepted leads ('Writing') have no draft text yet
+  const gha =
+    (tab === "approval" && !list.length && S.mail.length
+      ? ghaBtn("✍️ Draft pending mails", "draft") : "") +
+    (tab === "mail" && S.scheduled ? ghaBtn("📨 Send scheduled mails", "send") : "");
+  if (!list.length) {
+    view.innerHTML = `<div class="empty">Nothing to review 🎉</div>` +
+                     (gha ? `<div class="bulk">${gha}</div>` : "");
+    return;
+  }
 
   idx[tab] = Math.min(idx[tab], list.length - 1);
   const i = idx[tab];
@@ -182,7 +207,9 @@ function render() {
   prefetch(list, i);
 
   const name = (m && m.name) || card.folder.split("_").slice(0, -1).join("_") || card.appid;
-  const imgs = (m && m.images) || [];
+  let imgs = (m && m.images) || [];
+  // sprite sheet first — same preference as the Streamlit card
+  imgs = [...imgs].sort((a, b) => b.includes("SpriteSheet") - a.includes("SpriteSheet"));
   shot = Math.min(shot, Math.max(imgs.length - 1, 0));
   const img = imgs.length
     ? `<img class="hero" src="/media/${enc(card.folder)}/${enc(imgs[shot])}" alt="">`
@@ -201,15 +228,14 @@ function render() {
   const bulk =
     (tab === "triage"
       ? `<button id="bulkR" onclick="bulkReject()">🗑 Reject all (${list.length})</button>` : "") +
-    (tab === "mail"
-      ? `<button onclick="approveAll()">✅ Approve all (${list.length})</button>` +
-        (S.scheduled ? `<button onclick="api('trigger',{workflow:'send'});this.disabled=true;this.textContent='📨 triggered'">📨 Send scheduled mails</button>` : "")
-      : "");
+    (tab === "mail" ? `<button onclick="approveAll()">✅ Approve all (${list.length})</button>` : "") +
+    gha;
 
   view.innerHTML = `
     <div class="card">
       <h2>${escapeHtml(String(name))}</h2>
-      <div class="meta">${escapeHtml((m && m.meta) || "")} · appid ${card.appid}</div>
+      <div class="meta">${escapeHtml((m && m.meta) || "")} · appid ${card.appid} ·
+        <a href="https://store.steampowered.com/app/${card.appid}/" target="_blank" rel="noopener">Steam page 🔗</a></div>
       ${img}${thumbs}
       <div class="desc">${m ? escapeHtml(m.desc || "") : "Loading…"}</div>
       ${mail}
@@ -261,6 +287,21 @@ function bulkReject() {                 // two-tap confirm, like the Streamlit v
   render();
   api("reject_all_irrelevant", { appids: ids });
 }
+
+// ---- touch swipe (phone navigation, like the Streamlit app) ----
+let tx = null, ty = null;
+document.addEventListener("touchstart", (e) => {
+  tx = e.changedTouches[0].clientX; ty = e.changedTouches[0].clientY;
+}, { passive: true });
+document.addEventListener("touchend", (e) => {
+  if (tx === null || !Q || !Q[tab].length) return;
+  const dx = e.changedTouches[0].clientX - tx;
+  const dy = e.changedTouches[0].clientY - ty;
+  tx = null;
+  if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy)) return;   // tap or scroll
+  if (e.target.closest(".thumbs")) return;                        // that strip scrolls sideways
+  move(dx < 0 ? 1 : -1);
+}, { passive: true });
 
 // ---- tabs + keyboard ----
 document.querySelectorAll(".tab").forEach((b) =>
