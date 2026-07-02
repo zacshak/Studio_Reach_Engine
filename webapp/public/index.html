@@ -24,6 +24,7 @@
   main { max-width: 860px; margin: 0 auto; padding: 1rem; }
   .banner { background: #7f1d1d; color: #fecaca; padding: .5rem .8rem; border-radius: 8px;
             margin-bottom: .8rem; display: flex; justify-content: space-between; align-items: center; }
+  .banner[hidden] { display: none; }   /* display:flex above beats the hidden attr without this */
   .banner button { background: #fecaca; border: 0; border-radius: 6px; padding: .2rem .6rem; cursor: pointer; }
   .empty { text-align: center; color: #6b7280; padding: 4rem 0; }
   .card h2 { margin: .2rem 0 .1rem; font-size: 1.3rem; }
