@@ -193,7 +193,7 @@ function render() {
   const view = $("#view");
   // drafts are pending when accepted leads ('Writing') have no draft text yet
   const gha =
-    (tab === "approval" && !list.length && S.mail.length
+    (tab === "approval" && !list.length && S.pendingDrafts
       ? ghaBtn("✍️ Draft pending mails", "draft") : "") +
     (tab === "mail" && S.scheduled ? ghaBtn("📨 Send scheduled mails", "send") : "");
   if (!list.length) {
@@ -277,8 +277,10 @@ function move(d) {
 
 // ---- optimistic actions: mutate local state NOW, write in background ----
 // Local state also propagates across tabs so conditional buttons appear without a
-// reload: accept grows the Writing set (the Draft button's condition), keep returns
-// the card to the Approval queue — same as the Streamlit sections re-querying.
+// reload: accept flags pendingDrafts (the Draft button's condition — the card itself
+// only reaches the Mail Approval queue once the drafter actually writes the mail and
+// a state refresh picks up its 'Drafted' row), keep returns the card to the Approval
+// queue — same as the Streamlit sections re-querying.
 function doAct(action) {
   const card = Q[tab][idx[tab]];
   Q[tab].splice(idx[tab], 1);
@@ -286,8 +288,7 @@ function doAct(action) {
     S.scheduled = true;
     S.mail = S.mail.filter((x) => x.appid !== card.appid);
   } else if (action === "accept") {
-    S.mail.push({ appid: card.appid, emails: "" });
-    Q.mail.push(card);
+    S.pendingDrafts = true;
   } else if (action === "keep") {
     Q.approval.push(card);
     Q.approval.sort((x, y) => (x.folder.toLowerCase() < y.folder.toLowerCase() ? -1 : 1));

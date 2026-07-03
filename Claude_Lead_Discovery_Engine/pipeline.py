@@ -50,8 +50,9 @@ STATUSES = ("pending", "seeded", "scraped", "no_email", "failed")
 # 'seeded', which is Steam-provided). Treated exactly like 'seeded' downstream:
 # it has an email, so it's out of the 'pending' work queue and into the mail flow.
 # outreach state; Mail_status defaults to 'Pending'. Review moves it Pending ->
-# Writing (accepted) ; the mailer later moves Writing -> Scheduled -> Sent -> Replied.
-MAIL_STATUSES = ("Pending", "Writing", "Scheduled", "Sent", "Replied")
+# Writing (accepted) ; the drafter moves Writing -> Drafted once the mail text is
+# written; the mailer later moves Drafted -> Scheduled -> Sent -> Replied.
+MAIL_STATUSES = ("Pending", "Writing", "Drafted", "Scheduled", "Sent", "Replied")
 
 # Canonical scrape_tracker schema — ONE definition, used both for fresh DBs and
 # for the rebuild migration below (SQLite's ALTER can only append a column, so
@@ -423,6 +424,18 @@ def mail_status_appids(status):
         return [r[0] for r in conn.execute(
             "SELECT appid FROM scrape_tracker WHERE Mail_status=? ORDER BY appid",
             (status,))]
+
+
+def approval_ready_appids():
+    """Appids ready for Game Approval: Mail_status still 'Pending' AND scrape_status
+    has an actual email ('seeded' or 'scraped'). A bare Mail_status='Pending' check
+    also matched 'no_email'/'failed'/still-'pending' leads (they never move Mail_status
+    on their own), which leaked them into Approval alongside No-Mail."""
+    _ensure()
+    with closing(_ro()) as conn:
+        return [r[0] for r in conn.execute(
+            "SELECT appid FROM scrape_tracker WHERE Mail_status='Pending' "
+            "AND scrape_status IN ('seeded','scraped') ORDER BY appid")]
 
 
 def set_mail_status(appid, status):

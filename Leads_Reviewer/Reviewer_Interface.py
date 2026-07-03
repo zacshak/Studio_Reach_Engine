@@ -7,7 +7,7 @@ pipeline.py.
 
     import Reviewer_Interface as review
 
-    for g in review.games_to_review():   # Mail_status == 'Pending' AND has media
+    for g in review.games_to_review():   # Mail_status == 'Pending' AND has email AND media
         ...
     review.Accept_Game(appid)            # Mail_status -> 'Writing', leaves the list
     review.Reject_Game(appid)            # row deleted + media folder removed
@@ -117,11 +117,12 @@ def _load_mail(folder, appid):
 
 
 def games_to_review():
-    """Games to show: those with Mail_status 'Pending' that still have a media
-    folder. Sorted by name. Each item: {appid, name, desc, meta, shots[]}."""
+    """Games to show: those with Mail_status 'Pending' AND an actual email on file
+    (scrape_status 'seeded'/'scraped') that still have a media folder. Sorted by
+    name. Each item: {appid, name, desc, meta, shots[]}."""
     if _CLOUD:
-        return _lazy_list(pipeline.mail_status_appids("Pending"))
-    return _local_queue(pipeline.mail_status_appids("Pending"), MEDIA_DIR)
+        return _lazy_list(pipeline.approval_ready_appids())
+    return _local_queue(pipeline.approval_ready_appids(), MEDIA_DIR)
 
 
 def nomail_games_to_review():
@@ -253,14 +254,16 @@ def leads_by_appids(appids):
 
 
 def mails_to_review():
-    """Games with Mail_status 'Writing'. Same shape as games_to_review() plus 'mail' (the
-    drafted message) and 'emails' (recipient). Cloud: lazy like the other views — instant
-    from index.json, with hydrate() pulling the manifest + recipient on view."""
+    """Games with Mail_status 'Drafted' (accepted AND the drafter has actually written
+    the mail — 'Writing' alone means still awaiting a draft). Same shape as
+    games_to_review() plus 'mail' (the drafted message) and 'emails' (recipient).
+    Cloud: lazy like the other views — instant from index.json, with hydrate()
+    pulling the manifest + recipient on view."""
     if _CLOUD:
-        return _lazy_list(pipeline.mail_status_appids("Writing"), with_email=True)
+        return _lazy_list(pipeline.mail_status_appids("Drafted"), with_email=True)
     # local: filesystem is cheap, so build eagerly
     out = []
-    for appid in pipeline.mail_status_appids("Writing"):
+    for appid in pipeline.mail_status_appids("Drafted"):
         folder = _folder_for(appid)
         item = _load_folder(folder, appid) if folder else None
         if not item:
@@ -281,7 +284,7 @@ def Accept_Game(gameId):
 def Approve_Mail(gameId):
     """Approve the drafted mail: record the chosen template (N from the
     mail_<appid>_<N>.txt filename) and set Mail_status -> 'Scheduled'. Drops out
-    of mails_to_review() (only 'Writing' renders there)."""
+    of mails_to_review() (only 'Drafted' renders there)."""
     if _CLOUD:
         folder = media_store.fetch_index().get(str(gameId))
         m = media_store.fetch_manifest(folder) if folder else None

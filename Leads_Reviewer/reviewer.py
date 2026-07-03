@@ -1,7 +1,7 @@
 """Leads Reviewer — review staged game leads as individual containers.
 
-Renders one card per game that is still awaiting review (Mail_status == 'Pending'
-and has a media folder). Each card shows the game's screenshots and short
+Renders one card per game that is still awaiting review (Mail_status == 'Pending',
+has an email on file, and has a media folder). Each card shows the game's screenshots and short
 description with two actions:
 
   • Allow  -> Mail_status becomes 'Writing'; the card leaves the view.

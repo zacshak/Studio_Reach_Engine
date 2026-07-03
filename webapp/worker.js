@@ -94,22 +94,27 @@ async function state(env) {
     getJSON(env, "index.json"),
     getJSON(env, "irrelevant.json"),
     sql(env, [
-      ["SELECT appid FROM scrape_tracker WHERE Mail_status='Pending' ORDER BY appid"],
-      ["SELECT appid, emails FROM scrape_tracker WHERE Mail_status='Writing' ORDER BY appid"],
+      // has-email states only ('pending'/'no_email'/'failed' belong in No-Mail or
+      // nowhere yet — a bare Mail_status check let those leak in here too, GH-bug).
+      ["SELECT appid FROM scrape_tracker WHERE Mail_status='Pending' AND scrape_status IN ('seeded','scraped') ORDER BY appid"],
+      ["SELECT appid, emails FROM scrape_tracker WHERE Mail_status='Drafted' ORDER BY appid"],
       ["SELECT appid FROM scrape_tracker WHERE scrape_status IN ('no_email','failed') ORDER BY appid"],
       ["SELECT EXISTS(SELECT 1 FROM scrape_tracker WHERE Mail_status='Scheduled')"],
+      // accepted but the drafter hasn't written the mail yet — gates the Draft button
+      ["SELECT EXISTS(SELECT 1 FROM scrape_tracker WHERE Mail_status='Writing')"],
     ]),
   ]);
-  const [pending, writing, nomail, sched] = db;
+  const [pending, drafted, nomail, sched, writing] = db;
   const triage = (irrelevant || []).map(Number);
   const flagged = new Set(triage);
   return {
     index: index || {},
     triage,
     approval: pending.map((r) => Number(r[0])).filter((a) => !flagged.has(a)),
-    mail: writing.map((r) => ({ appid: Number(r[0]), emails: r[1] || "" })),
+    mail: drafted.map((r) => ({ appid: Number(r[0]), emails: r[1] || "" })),
     nomail: nomail.map((r) => Number(r[0])).filter((a) => !flagged.has(a)),
     scheduled: Number(sched[0]?.[0]) === 1,
+    pendingDrafts: Number(writing[0]?.[0]) === 1,
   };
 }
 

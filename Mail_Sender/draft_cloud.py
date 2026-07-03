@@ -1,8 +1,9 @@
 """Cloud cold-mail drafter: for every accepted lead awaiting a draft (Mail_status
 'Writing') that has no mail yet, Gemini fills one of the 4 templates — personalising the
 critique/observation slot from the game's sprite sheet + blurb — and the finished mail is
-written into the lead's R2 manifest ('mail' + 'mail_template'). The review app's
-Mail-Approval section then shows it; Approve -> Scheduled -> the send job mails it.
+written into the lead's R2 manifest ('mail' + 'mail_template'), then Mail_status flips to
+'Drafted'. The review app's Mail-Approval section only shows 'Drafted' leads; Approve ->
+Scheduled -> the send job mails it.
 
 Runs as a GHA step, fired on demand by the app's "Draft pending mails" button. Idempotent:
 re-running only drafts leads whose manifest has no mail yet, so a half-finished run resumes.
@@ -149,6 +150,7 @@ def main():
         manifest["mail"] = mail
         manifest["mail_template"] = n
         media_store.write_manifest(folder, manifest)
+        pipeline.set_mail_status(appid, "Drafted")
         drafted += 1
         tally[n] += 1
         print(f"  {appid} {manifest.get('name', '')!r:.40} -> drafted (template {n})")
