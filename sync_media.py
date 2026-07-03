@@ -1,5 +1,5 @@
 """Push local review media (curated JSON + screenshots + sprite sheet + mail draft) to
-R2 so the cloud Streamlit app can show game art it can't get from the gitignored folders.
+R2 so the cloud review app can show game art it can't get from the gitignored folders.
 Run it after a local discovery/triage batch (run_daily does this automatically).
 
     pip install boto3            # one-time, local only

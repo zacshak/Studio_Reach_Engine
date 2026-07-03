@@ -3,14 +3,14 @@
 Local media (screenshots + sprite sheet + curated JSON) lives in gitignored
 folders, so it isn't in the GitHub repo the cloud app deploys from. This module
 mirrors each lead's media to a Cloudflare R2 bucket and serves it back by public
-URL, so Streamlit Community Cloud can render it.
+URL, so the review app (webapp/, a Cloudflare Worker) can render it.
 
 Two halves, deliberately split so the CLOUD app stays dependency-light:
   - READ  (public_url / fetch_manifest): plain urllib, no boto3. Used by the app.
   - WRITE (upload_dir): boto3 (S3-compatible R2 API), imported lazily. Used only
     by sync_media.py on the local machine.
 
-Env (repo-root .env locally, Streamlit Secrets in cloud):
+Env (repo-root .env locally, GHA/Worker secrets in cloud):
     R2_PUBLIC_BASE=https://pub-xxxx.r2.dev   # bucket public URL (read side)
     R2_BUCKET=sre-media                       # write side ↓
     R2_ACCOUNT_ID=...
@@ -30,7 +30,8 @@ import urllib.request
 
 def _load_env():
     """Pull KEY=VALUE from the repo-root .env into os.environ (local convenience;
-    doesn't override anything already set — e.g. Streamlit Secrets in cloud)."""
+    doesn't override anything already set — e.g. secrets already in the environment
+    in CI/cloud)."""
     p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
     if os.path.exists(p):
         with open(p, encoding="utf-8") as f:

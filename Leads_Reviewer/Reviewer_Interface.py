@@ -35,8 +35,9 @@ MEDIA_DIR = os.path.join(_REVIEW_DIR, "Approval_Pending_Games")   # seeded leads
 NOMAIL_DIR = os.path.join(_REVIEW_DIR, "No_Mail_Games")           # pending (no-email) leads
 
 # Cloud mode: serve cards from R2 when its public base is set AND there's no local
-# media tree (i.e. Streamlit Community Cloud, where the gitignored folders don't
-# exist). Locally the tree exists, so the desktop GUI keeps reading from disk.
+# media tree (i.e. running somewhere other than the machine sync_media.py ran on,
+# where the gitignored folders don't exist). Locally the tree exists, so the
+# desktop GUI keeps reading from disk.
 _CLOUD = media_store.read_enabled() and not os.path.isdir(_REVIEW_DIR)
 
 
