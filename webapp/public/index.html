@@ -235,8 +235,8 @@ function render() {
   const A = { triage: ["✅ Keep", "keep"], approval: ["✅ Accept", "accept"],
               mail: ["✅ Approve", "approve"], nomail: [null, null] }[tab];
   const R = tab === "triage" ? "reject_irrelevant" : "reject";
-  // two-tap Reject-all with an explicit Cancel, exactly like the Streamlit gate
-  const bulkTriage = tab !== "triage" ? "" : armed === "bulkR"
+  // two-tap Reject-all with an explicit Cancel — triage (irrelevant) + no-mail (dead-end leads)
+  const bulkTriage = (tab !== "triage" && tab !== "nomail") ? "" : armed === "bulkR"
     ? `<button class="armed" onclick="bulkReject()">⚠️ Tap again to purge all ${list.length} — can't be undone</button>
        <button onclick="armed=null;render()">Cancel</button>`
     : `<button onclick="bulkReject()">🗑 Reject all (${list.length})</button>`;
@@ -303,12 +303,13 @@ function approveAll() {
   render();
   api("approve_all", { appids: ids });
 }
-function bulkReject() {                 // two-tap confirm + Cancel, like the Streamlit gate
+function bulkReject() {                 // two-tap confirm + Cancel — triage + no-mail
   if (armed !== "bulkR") { armed = "bulkR"; render(); return; }
-  const ids = Q.triage.map((c) => c.appid);
-  Q.triage = []; armed = null;
+  const ids = Q[tab].map((c) => c.appid);
+  const action = tab === "triage" ? "reject_all_irrelevant" : "reject_all";
+  Q[tab] = []; armed = null;
   render();
-  api("reject_all_irrelevant", { appids: ids });
+  api(action, { appids: ids });
 }
 
 // ---- touch swipe (phone navigation, like the Streamlit app) ----

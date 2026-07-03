@@ -1,12 +1,12 @@
 // SRE review app — the entire backend, one Cloudflare Worker. No npm, no build step.
 //
-// Replaces the Streamlit review UI's server side. The static page (public/index.html)
-// is served by Workers Assets from this same deployment; every click on the page is
-// optimistic (instant) and lands here in the background.
+// The static page (public/index.html) is served by Workers Assets from this same
+// deployment; every click on the page is optimistic (instant) and lands here in
+// the background.
 //
 //   GET  /api/state   -> everything needed to render all four views (1 DB round-trip + 2 R2 gets)
-//   POST /api/act     -> {action, ...} — accept / reject / approve / approve_all / keep /
-//                        reject_irrelevant / reject_all_irrelevant / trigger
+//   POST /api/act     -> {action, ...} — accept / reject / reject_all / approve / approve_all /
+//                        keep / reject_irrelevant / reject_all_irrelevant / trigger
 //   GET  /media/<key> -> R2 passthrough (images + manifests), same-origin so no CORS/bot-block
 //
 // Secrets (wrangler secret put): TURSO_URL, TURSO_TOKEN, AUTH_SECRET, GH_PAT.
@@ -150,6 +150,10 @@ async function act(env, ctx, body) {
     case "reject": // ❌ anywhere -> delete both tables + purge media
       await sql(env, deleteStmts(appid));
       queuePurge(env, ctx, [appid]);
+      break;
+    case "reject_all": // No-Mail bulk purge — same as reject, just no irrelevant.json involved
+      await sql(env, appids.flatMap(deleteStmts));
+      queuePurge(env, ctx, appids);
       break;
     case "approve": { // Mail Approval ✅ -> record template + 'Scheduled'
       const index = (await getJSON(env, "index.json")) || {};
