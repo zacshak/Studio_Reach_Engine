@@ -19,6 +19,11 @@
   header h1 { font-size: 1rem; margin: 0 1rem 0 0; color: #9aa4b2; font-weight: 600; }
   .tab { background: none; border: 1px solid #262b36; color: #9aa4b2; padding: .35rem .8rem;
          border-radius: 999px; cursor: pointer; font-size: .9rem; }
+  @media (max-width: 480px) {
+    header { flex-wrap: nowrap; overflow-x: auto; padding: .4rem .6rem; gap: .3rem; }
+    header h1 { display: none; }
+    .tab { padding: .3rem .55rem; font-size: .8rem; flex: none; white-space: nowrap; }
+  }
   .tab.on { background: #1b2330; color: #fff; border-color: #3b82f6; }
   .tab b { color: #3b82f6; }
   main { max-width: 860px; margin: 0 auto; padding: 1rem; padding-bottom: 5.5rem; }
