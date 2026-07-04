@@ -21,7 +21,7 @@
          border-radius: 999px; cursor: pointer; font-size: .9rem; }
   .tab.on { background: #1b2330; color: #fff; border-color: #3b82f6; }
   .tab b { color: #3b82f6; }
-  main { max-width: 860px; margin: 0 auto; padding: 1rem; }
+  main { max-width: 860px; margin: 0 auto; padding: 1rem; padding-bottom: 5.5rem; }
   .banner { background: #7f1d1d; color: #fecaca; padding: .5rem .8rem; border-radius: 8px;
             margin-bottom: .8rem; display: flex; justify-content: space-between; align-items: center; }
   .banner[hidden] { display: none; }   /* display:flex above beats the hidden attr without this */
@@ -43,7 +43,9 @@
   .nav button { background: #1b2330; color: #e6e6e6; border: 1px solid #262b36;
                 border-radius: 8px; padding: .35rem .9rem; cursor: pointer; }
   .nav span { color: #6b7280; font-size: .85rem; min-width: 70px; text-align: center; }
-  .actions { display: flex; gap: .6rem; }
+  .actions { display: flex; gap: .6rem; position: fixed; left: 0; right: 0; bottom: 0;
+             max-width: 860px; margin: 0 auto; padding: .6rem 1rem calc(.6rem + env(safe-area-inset-bottom));
+             background: #0e1117; border-top: 1px solid #262b36; z-index: 2; }
   .actions button { flex: 1; padding: .7rem; border: 0; border-radius: 10px;
                     font-size: 1rem; cursor: pointer; font-weight: 600; }
   .ok  { background: #14532d; color: #bbf7d0; }
