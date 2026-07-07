@@ -1,0 +1,53 @@
+name: Triage
+
+# Runs after Nightly discovery and receives that run's staged screenshots as an artifact.
+# A manual run requires the source discovery run ID so it can download the same artifact.
+on:
+  workflow_run:
+    workflows: ["Nightly discovery"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      discovery_run_id:
+        description: "Discovery workflow run ID containing the triage-media artifact"
+        required: true
+        type: string
+
+concurrency:
+  group: triage
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  triage:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Download staged games from Discovery
+        uses: actions/download-artifact@v4
+        with:
+          name: triage-media
+          path: Leads_Reviewer/Studios_To_Review
+          run-id: ${{ github.event.workflow_run.id || inputs.discovery_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install deps
+        run: pip install --quiet boto3 openai
+      - name: Triage -> flag irrelevant into R2 (vision model)
+        env:
+          TRIAGE_BASE_URL: ${{ secrets.TRIAGE_BASE_URL }}
+          TRIAGE_MODEL: ${{ secrets.TRIAGE_MODEL }}
+          TRIAGE_API_KEY: ${{ secrets.TRIAGE_API_KEY }}
+          R2_PUBLIC_BASE: ${{ secrets.R2_PUBLIC_BASE }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: python Claude_Lead_Discovery_Engine/triage_cloud.py

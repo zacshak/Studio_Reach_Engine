@@ -1,18 +1,20 @@
 # Steam SRE — Studio Reach Engine: workflow
 
-The pipeline now runs **in the cloud**. Discovery + triage happen on a nightly GitHub
-Actions schedule; you review and drive the rest from the phone-friendly web app
-(**https://studioreachengine.streamlit.app**), which fires the heavy steps (scrape, draft,
-send) as on-demand GitHub Actions runs. Your PC no longer needs to be on.
+The pipeline now runs **in the cloud**. A nightly GitHub Actions chain runs discovery,
+triage, then email scraping; you review and drive the rest from the phone-friendly web app
+(**https://your-worker.example.com**), which fires drafting and sending as
+on-demand GitHub Actions runs. Your PC no longer needs to be on.
 
 All local/manual commands still exist through the one launcher: `python SRE.py <command>`.
 
 ```
-                 ┌─────────── nightly (GitHub Actions cron) ───────────┐
- discover.yml →  SRE --discover  →  triage_cloud.py  →  Turso + R2 (+ irrelevant.json)
-                 └─────────────────────────────────────────────────────┘
+ discover.yml  →  SRE --discover  →  Turso + R2 + staged-media artifact
+      │
+      └──success──► triage.yml  →  triage_cloud.py  →  R2 irrelevant.json
+                         │
+                         └──success──► kimchi.yml  →  pending leads get scraped
                                         │
-                         Web app (Streamlit) — review on your phone
+                     Web app (Cloudflare Worker) — review on your phone
                                         │
   Triage gate → Game Approval → No-Mail ──(🔎 Hermes button)──► emails found
                      │                                              │
@@ -38,14 +40,15 @@ runner keeps no state between runs.
 
 ---
 
-## 1. Discover + Triage — automatic, nightly (`discover.yml`)
-Cron `0 1 * * *` (01:00 UTC ≈ 06:30 IST). Runs `SRE --discover` then
-`Claude_Lead_Discovery_Engine/triage_cloud.py`:
+## 1. Discover + Triage + Scrape — automatic chain (`discover.yml` → `triage.yml` → `kimchi.yml`)
+Discovery runs nightly at `30 22 * * *` (22:30 UTC = 04:00 IST), then successful runs
+automatically trigger Triage, whose success automatically triggers Kimchi:
 - Diff Steam's app list vs `known_comingsoon`, fetch details for the new appids into
   `newly_added`, seed `scrape_tracker` (`seeded` if Steam gave an email, else `pending`),
-  and mirror each lead's media to R2.
+  mirror each lead's media to R2, and upload the staged folders as a one-day artifact.
 - A **vision model** (Gemini) reviews each staged game's sprite sheet + JSON and writes the
   appids it judges irrelevant to R2 `irrelevant.json`. Non-destructive — it only flags.
+- Kimchi processes the remaining `pending` leads and records the best published contact email.
 
 ## 2. Review — the web app
 One card at a time, swipe to page. Sections appear in order; you clear each on the phone.

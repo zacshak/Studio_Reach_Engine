@@ -1,8 +1,8 @@
 name: Nightly discovery
 
 # Runs the discovery pipeline in the cloud each morning so fresh, reviewable leads are
-# waiting in Turso + R2 without your PC being on. Ephemeral runner: all state lives in
-# Turso (DB) and R2 (media); nothing on the runner survives.
+# waiting in Turso + R2 without your PC being on. The staged review folders are uploaded
+# as a short-lived artifact for the separate Triage workflow.
 on:
   schedule:
     - cron: "30 22 * * *"    # 22:30 UTC = 04:00 IST daily (GitHub cron is UTC)
@@ -15,16 +15,14 @@ concurrency:
 jobs:
   discover:
     runs-on: ubuntu-latest
-    timeout-minutes: 350     # near GitHub's 6h hard cap. Normal runs finish in ~15m;
-                             # this only matters if triage is patiently waiting out a
-                             # rate-limited free key. A safety ceiling, not the runtime.
+    timeout-minutes: 350     # near GitHub's 6h hard cap; a safety ceiling, not runtime.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"   # libsql ships Linux wheels for 3.12
       - name: Install deps
-        run: pip install --quiet openpyxl Pillow libsql boto3 openai
+        run: pip install --quiet openpyxl Pillow libsql boto3
       - name: Discover -> stage -> mirror to R2
         env:
           TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
@@ -35,16 +33,14 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: python SRE.py --discover
-      - name: Triage -> flag irrelevant into R2 (vision model)
-        # folders from the previous step are still on the runner disk. Provider-agnostic:
-        # set TRIAGE_BASE_URL/MODEL/API_KEY to a VISION-capable OpenAI-compatible endpoint.
-        env:
-          TRIAGE_BASE_URL: ${{ secrets.TRIAGE_BASE_URL }}
-          TRIAGE_MODEL: ${{ secrets.TRIAGE_MODEL }}
-          TRIAGE_API_KEY: ${{ secrets.TRIAGE_API_KEY }}
-          R2_PUBLIC_BASE: ${{ secrets.R2_PUBLIC_BASE }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-        run: python Claude_Lead_Discovery_Engine/triage_cloud.py
+      - name: Prepare triage artifact
+        run: |
+          mkdir -p Leads_Reviewer/Studios_To_Review
+          printf '%s\n' "$GITHUB_RUN_ID" > Leads_Reviewer/Studios_To_Review/triage-run.txt
+      - name: Upload staged games for Triage
+        uses: actions/upload-artifact@v4
+        with:
+          name: triage-media
+          path: Leads_Reviewer/Studios_To_Review
+          retention-days: 1
+          if-no-files-found: error
