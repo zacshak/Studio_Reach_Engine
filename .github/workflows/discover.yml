@@ -1,8 +1,7 @@
 name: Nightly discovery
 
 # Runs the discovery pipeline in the cloud each morning so fresh, reviewable leads are
-# waiting in Turso + R2 without your PC being on. The staged review folders are uploaded
-# as a short-lived artifact for the separate Triage workflow.
+# waiting in Turso + R2 without your PC being on. Triage reads `scrape_tracker` directly.
 on:
   schedule:
     - cron: "30 22 * * *"    # 22:30 UTC = 04:00 IST daily (GitHub cron is UTC)
@@ -33,14 +32,3 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: python SRE.py --discover
-      - name: Prepare triage artifact
-        run: |
-          mkdir -p Leads_Reviewer/Studios_To_Review
-          printf '%s\n' "$GITHUB_RUN_ID" > Leads_Reviewer/Studios_To_Review/triage-run.txt
-      - name: Upload staged games for Triage
-        uses: actions/upload-artifact@v4
-        with:
-          name: triage-media
-          path: Leads_Reviewer/Studios_To_Review
-          retention-days: 1
-          if-no-files-found: error

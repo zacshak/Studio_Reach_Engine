@@ -17,9 +17,9 @@ Env (repo-root .env locally, GHA/Worker secrets in cloud):
     R2_ACCESS_KEY_ID=...
     R2_SECRET_ACCESS_KEY=...
 
-Layout in the bucket:  <appid>/<image files> + <appid>/manifest.json
-The manifest is self-contained (card text + image list + mail draft), so a card
-is one HTTP GET — no DB round-trip for display.
+Layout in the bucket: each lead folder contains its images + manifest.json; root
+index.json maps appids to folders. A manifest is one HTTP GET — no DB round-trip
+for display.
 """
 import json
 import os

@@ -29,6 +29,11 @@ def run(script, *args):
     return subprocess.call([PY, os.path.join(HERE, script), *args])
 
 
+def sync_media(*args):
+    script = os.path.join(os.path.dirname(HERE), "sync_media.py")
+    return subprocess.call([PY, script, *args]) if os.path.exists(script) else 0
+
+
 def main():
     stamp = datetime.now(IST).strftime("%Y-%m-%d_%H%M")
     print(f"=== Daily run {stamp} IST ===\n")
@@ -55,10 +60,11 @@ def main():
     # Mirror the freshly-staged media to R2 so the cloud review app sees the night's
     # batch. No-op (with a one-line note) if R2 creds aren't set. ponytail: full mirror
     # each run — fine within R2's free tier; make it incremental if it ever drags.
-    sync = os.path.join(os.path.dirname(HERE), "sync_media.py")
-    if os.path.exists(sync):
-        print("\nMirroring media to R2 ...")
-        subprocess.call([PY, sync])
+    print("\nMirroring media to R2 ...")
+    rc = sync_media()
+    if rc:
+        print(f"Media sync exited with code {rc}; stopping before triage.")
+        return rc
 
     xlsx = os.path.join(HERE, "out", f"leads_{stamp}.xlsx")
     if os.path.exists(xlsx):

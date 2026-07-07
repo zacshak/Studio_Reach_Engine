@@ -8,7 +8,7 @@ on-demand GitHub Actions runs. Your PC no longer needs to be on.
 All local/manual commands still exist through the one launcher: `python SRE.py <command>`.
 
 ```
- discover.yml  →  SRE --discover  →  Turso + R2 + staged-media artifact
+ discover.yml  →  SRE --discover  →  Turso scrape_tracker + R2 media
       │
       └──success──► triage.yml  →  triage_cloud.py  →  R2 irrelevant.json
                          │
@@ -45,9 +45,10 @@ Discovery runs nightly at `30 22 * * *` (22:30 UTC = 04:00 IST), then successful
 automatically trigger Triage, whose success automatically triggers Kimchi:
 - Diff Steam's app list vs `known_comingsoon`, fetch details for the new appids into
   `newly_added`, seed `scrape_tracker` (`seeded` if Steam gave an email, else `pending`),
-  mirror each lead's media to R2, and upload the staged folders as a one-day artifact.
-- A **vision model** (Gemini) reviews each staged game's sprite sheet + JSON and writes the
-  appids it judges irrelevant to R2 `irrelevant.json`. Non-destructive — it only flags.
+  and mirror each lead's media to R2.
+- Triage reads the current `Mail_status='Pending'` set from `scrape_tracker`, loads each
+  queued manifest + sprite sheet from R2, and merges the appids it judges irrelevant into
+  `irrelevant.json`. Non-destructive — it only flags.
 - Kimchi processes the remaining `pending` leads and records the best published contact email.
 
 ## 2. Review — the web app

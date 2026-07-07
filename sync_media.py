@@ -7,8 +7,7 @@ Run it after a local discovery/triage batch (run_daily does this automatically).
     python sync_media.py 12345   # push just these appids
 
 One direction: local -> R2. Objects are keyed by the local folder basename
-"<GameName>_<appid>/"; a root index.json maps appid -> folder for the cloud app.
-R2 creds come from .env (see media_store.py).
+"<GameName>_<appid>/"; index.json maps appid -> folder. R2 creds come from .env.
 """
 import json
 import os
@@ -61,8 +60,8 @@ def main(argv):
         # Quiet skip so it's safe to auto-call (run_daily) on a machine with no creds.
         print("R2 not configured — media sync skipped.")
         return 0
-    only = {int(a) for a in argv} or None
     client = media_store._client()        # reuse one client for the whole run
+    only = {int(a) for a in argv} or None
     done = failed = 0
     local = {str(appid): os.path.basename(folder) for appid, folder in _lead_folders()}
     for appid, folder in _lead_folders(only):
@@ -80,11 +79,12 @@ def main(argv):
             print(f"  FAILED {appid}: {e!r}")
     # MERGE into the existing R2 index, don't overwrite. On the PC (full local set) this
     # equals a rebuild; on an ephemeral cloud runner (only the night's new leads) it adds
-    # them without wiping the rest. Stale entries are harmless — the queue is DB-driven.
+    # them without wiping the rest.
     index = media_store.fetch_index()
     index.update(local)
     media_store.write_index(index, client=client)
-    print(f"\ndone: {done} lead(s) -> R2 bucket '{media_store.BUCKET}'; index {len(index)}"
+    print(f"\ndone: {done} lead(s) -> R2 bucket '{media_store.BUCKET}'; "
+          f"index {len(index)}"
           + (f", {failed} failed" if failed else ""))
     return 1 if failed else 0
 
