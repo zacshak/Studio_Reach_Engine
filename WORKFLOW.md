@@ -1,9 +1,9 @@
 # Steam SRE — Studio Reach Engine: workflow
 
 The pipeline now runs **in the cloud**. A nightly GitHub Actions chain runs discovery,
-triage, then email scraping; you review and drive the rest from the phone-friendly web app
-(**https://your-worker.example.com**), which fires drafting and sending as
-on-demand GitHub Actions runs. Your PC no longer needs to be on.
+triage, then email scraping; you review and drive the rest from the phone-friendly web app,
+which fires drafting and sending as on-demand GitHub Actions runs. Your PC no longer needs
+to be on.
 
 All local/manual commands still exist through the one launcher: `python SRE.py <command>`.
 

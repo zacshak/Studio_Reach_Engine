@@ -7,7 +7,7 @@ Free tiers throughout; the only non-free bit is triage (Claude vision → Anthro
 ---
 
 ## Phase 1 — DB goes remote  ← DONE (2026-06-28)
-Turso DB live (`turso-db`, ap-south-1) is now the **single source of truth**. Local
+Turso DB live is now the **single source of truth**. Local
 `cache.sqlite` deleted (git-removed) and `turso_push.py` removed — remote-only.
 - `pipeline.py`: `_rw()`/`_ro()` go to Turso via `libsql`; a `_Conn`/`_Rows` proxy buffers
   libsql cursors so every sqlite3-style call site works unchanged. `pipeline.connect()` added.

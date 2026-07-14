@@ -8,8 +8,7 @@ on:
     inputs:
       to:
         description: "Recipient inbox"
-        required: false
-        default: "recipient@example.com"
+        required: true
 
 permissions:
   contents: read

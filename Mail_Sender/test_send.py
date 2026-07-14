@@ -3,7 +3,7 @@ Gmail SMTP path the real outreach uses — identical to mailer._send (same From 
 STARTTLS on smtp.gmail.com:587, plain-text single-recipient MIME) — so where it lands
 (inbox vs spam) reflects the real thing. Stdlib only; no DB / R2 needed.
 
-    python Mail_Sender/test_send.py [recipient]     # default: recipient@example.com
+    python Mail_Sender/test_send.py recipient@example.com
 
 Env: GMAIL_USER + GMAIL_APP_PASSWORD (the same GHA secrets the send job uses).
 """
@@ -15,7 +15,6 @@ from email.message import EmailMessage
 
 SENDER_NAME = "Meshak"                 # keep in sync with mailer.SENDER_NAME
 SMTP_HOST, SMTP_PORT = "smtp.gmail.com", 587
-DEFAULT_TO = "recipient@example.com"
 
 SUBJECT = "helping with your game ?"
 BODY = """Hi,
@@ -33,11 +32,15 @@ Meshak
 
 
 def main(argv):
-    user = os.environ.get("GMAIL_USER", "you@example.com")
+    user = os.environ.get("GMAIL_USER", "")
     password = os.environ.get("GMAIL_APP_PASSWORD", "")
+    if not user:
+        sys.exit("GMAIL_USER not set (env / GHA secret).")
     if not password:
         sys.exit("GMAIL_APP_PASSWORD not set (env / GHA secret).")
-    to = (argv[0] if argv else DEFAULT_TO).strip() or DEFAULT_TO
+    if not argv or not argv[0].strip():
+        sys.exit("recipient email required")
+    to = argv[0].strip()
 
     msg = EmailMessage()
     msg["From"] = f"{SENDER_NAME} <{user}>"

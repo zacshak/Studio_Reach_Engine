@@ -146,8 +146,10 @@ def _send(user, password, to, subject, body):
 
 def main(dry_run=False, limit=None):
     _load_env()
-    user = os.environ.get("GMAIL_USER", "you@example.com")
+    user = os.environ.get("GMAIL_USER", "")
     password = os.environ.get("GMAIL_APP_PASSWORD", "")
+    if not user:
+        sys.exit("GMAIL_USER not set. Add it to the repo-root .env or GHA secret.")
     if not dry_run and not password:
         sys.exit("GMAIL_APP_PASSWORD not set. Add it to the repo-root .env "
                  "(see this file's header). Or use --dry-run.")
@@ -216,8 +218,10 @@ def review():
     Mail_status to 'Replied'. Read-only on Gmail (IMAP), only the DB status changes.
     Uses the same App password as sending (works for IMAP too)."""
     _load_env()
-    user = os.environ.get("GMAIL_USER", "you@example.com")
+    user = os.environ.get("GMAIL_USER", "")
     password = os.environ.get("GMAIL_APP_PASSWORD", "")
+    if not user:
+        sys.exit("GMAIL_USER not set. Add it to the repo-root .env or GHA secret.")
     if not password:
         sys.exit("GMAIL_APP_PASSWORD not set. Add it to the repo-root .env "
                  "(see this file's header).")
