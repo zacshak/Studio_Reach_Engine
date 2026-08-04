@@ -170,13 +170,12 @@ class PipelineTest(unittest.TestCase):
         # THE regression: INSERT OR REPLACE on newly_added must NOT reset tracker
         with self._raw() as c:
             insert_lead(c, 200, name="V1")
-        pipeline.write_result(200, scrape_status="scraped", emails="e@x.com",
-                              country="Japan")
+        pipeline.write_result(200, scrape_status="scraped", emails="e@x.com")
         with self._raw() as c:
             insert_lead(c, 200, name="V2", replace=True)   # re-fetch
-            row = c.execute("SELECT scrape_status,emails,country FROM scrape_tracker "
+            row = c.execute("SELECT scrape_status,emails FROM scrape_tracker "
                             "WHERE appid=200").fetchone()
-        self.assertEqual(row, ("scraped", "e@x.com", "Japan"))
+        self.assertEqual(row, ("scraped", "e@x.com"))
 
     # ---- seed_pending --------------------------------------------------
     def test_seed_pending_backfills_and_is_idempotent(self):
@@ -220,14 +219,13 @@ class PipelineTest(unittest.TestCase):
         with self._raw() as c:
             insert_lead(c, 600, name="Keep")
         pipeline.write_result(600, scrape_status="scraped", emails="a@b.com")
-        pipeline.write_result(600, scrape_status="no_email", country="US")  # no emails
+        pipeline.write_result(600, scrape_status="no_email")  # no emails
         with self._raw() as c:
-            row = c.execute("SELECT scrape_status,emails,country,game_name "
+            row = c.execute("SELECT scrape_status,emails,game_name "
                             "FROM scrape_tracker WHERE appid=600").fetchone()
         self.assertEqual(row[0], "no_email")
         self.assertEqual(row[1], "a@b.com")   # prior emails untouched
-        self.assertEqual(row[2], "US")
-        self.assertEqual(row[3], "Keep")      # seeded data intact
+        self.assertEqual(row[2], "Keep")      # seeded data intact
 
     def test_delete_lead_removes_from_both_tables(self):
         with self._raw() as c:
@@ -264,6 +262,63 @@ class PipelineTest(unittest.TestCase):
             added2 = c.execute("SELECT added_at FROM scrape_tracker "
                                "WHERE appid=900").fetchone()[0]
         self.assertEqual(added2, "t")
+
+    def test_mail_send_claim_and_completion_are_idempotent(self):
+        with self._raw() as c:
+            insert_lead(c, 950, support_email="hello@example.com")
+        pipeline.set_mail_status(950, "Scheduled")
+        self.assertEqual(pipeline.mail_status_emails("Scheduled"),
+                         [(950, "hello@example.com")])
+        self.assertTrue(pipeline.claim_mail(950))
+        self.assertFalse(pipeline.claim_mail(950))
+        pipeline.mark_sent(950)
+        pipeline.mark_sent(950)
+        with self._raw() as c:
+            row = c.execute("SELECT Mail_status, sent_at FROM scrape_tracker "
+                            "WHERE appid=950").fetchone()
+            cached = c.execute("SELECT COUNT(*) FROM newly_added WHERE appid=950").fetchone()[0]
+        self.assertEqual(row[0], "Sent")
+        self.assertIsNotNone(row[1])
+        self.assertEqual(cached, 0)
+
+    def test_sending_can_only_be_reset_explicitly(self):
+        with self._raw() as c:
+            insert_lead(c, 951, support_email="hello@example.com")
+        pipeline.set_mail_status(951, "Scheduled")
+        self.assertTrue(pipeline.claim_mail(951))
+        pipeline.reset_sending(951, "Drafted")
+        self.assertEqual(pipeline.mail_status_appids("Drafted"), [951])
+        with self.assertRaises(ValueError):
+            pipeline.reset_sending(951, "Sent")
+
+    def test_remote_reads_reconnect_after_transient_dns_failure(self):
+        class Cursor:
+            rowcount = -1
+
+            def fetchall(self):
+                return [(1,)]
+
+        class Broken:
+            def execute(self, *_):
+                raise ValueError("dns error: Temporary failure in name resolution")
+
+            def close(self):
+                pass
+
+        class Libsql:
+            @staticmethod
+            def connect(*_, **__):
+                return type("Healthy", (), {"execute": lambda self, *_: Cursor()})()
+
+        old_url, old_libsql, old_sleep = pipeline.TURSO_URL, pipeline.libsql, pipeline.time.sleep
+        try:
+            pipeline.TURSO_URL = "libsql://test"
+            pipeline.libsql = Libsql
+            pipeline.time.sleep = lambda _: None
+            self.assertEqual(pipeline._Conn(Broken()).execute("SELECT 1").fetchall(), [(1,)])
+        finally:
+            pipeline.TURSO_URL, pipeline.libsql = old_url, old_libsql
+            pipeline.time.sleep = old_sleep
 
 
 if __name__ == "__main__":

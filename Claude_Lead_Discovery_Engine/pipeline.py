@@ -13,7 +13,9 @@ scraped results, so it is self-contained for export.
 import json
 import os
 import sqlite3
+import sys
 import threading
+import time
 from contextlib import closing
 
 try:
@@ -51,8 +53,8 @@ STATUSES = ("pending", "seeded", "scraped", "no_email", "failed")
 # it has an email, so it's out of the 'pending' work queue and into the mail flow.
 # outreach state; Mail_status defaults to 'Pending'. Review moves it Pending ->
 # Writing (accepted) ; the drafter moves Writing -> Drafted once the mail text is
-# written; the mailer later moves Drafted -> Scheduled -> Sent -> Replied.
-MAIL_STATUSES = ("Pending", "Writing", "Drafted", "Scheduled", "Sent", "Replied")
+# written; the mailer later moves Drafted -> Scheduled -> Sending -> Sent -> Replied.
+MAIL_STATUSES = ("Pending", "Writing", "Drafted", "Scheduled", "Sending", "Sent", "Replied")
 
 # Canonical scrape_tracker schema — ONE definition, used both for fresh DBs and
 # for the rebuild migration below (SQLite's ALTER can only append a column, so
@@ -138,10 +140,7 @@ class _Rows:
     cursors aren't directly iterable and exhaust on read, so we fetch up front."""
     def __init__(self, cur):
         self.rowcount = getattr(cur, "rowcount", -1)
-        try:
-            self._rows = cur.fetchall()
-        except Exception:
-            self._rows = []                # write statements have nothing to fetch
+        self._rows = cur.fetchall()
         self._i = 0
 
     def __iter__(self):
@@ -164,7 +163,28 @@ class _Conn:
         self._raw = raw
 
     def execute(self, *a):
-        return _Rows(self._raw.execute(*a))
+        read = str(a[0]).lstrip().upper().startswith(("SELECT", "PRAGMA"))
+        for attempt in range(4):
+            try:
+                if self._raw is None:
+                    self._raw = libsql.connect(TURSO_URL, auth_token=TURSO_TOKEN)
+                return _Rows(self._raw.execute(*a))
+            except Exception as exc:
+                msg = str(exc).lower()
+                transient = any(s in msg for s in (
+                    "dns error", "failed to lookup", "error trying to connect",
+                    "connection refused", "connection reset", "timed out", "timeout"))
+                if not read or not transient or attempt == 3:
+                    raise
+                delay = 2 ** attempt
+                print(f"Turso read failed; reconnecting in {delay}s ({exc})", file=sys.stderr)
+                try:
+                    if self._raw is not None:
+                        self._raw.close()
+                except Exception:
+                    pass
+                self._raw = None
+                time.sleep(delay)
 
     def close(self):
         pass  # shared process-wide connection (see _turso); real close is at exit.
@@ -426,6 +446,15 @@ def mail_status_appids(status):
             (status,))]
 
 
+def mail_status_emails(status):
+    """(appid, emails) for one mail state, fetched in a single remote read."""
+    _ensure()
+    with closing(_ro()) as conn:
+        return [(r[0], r[1] or "") for r in conn.execute(
+            "SELECT appid, emails FROM scrape_tracker WHERE Mail_status=? ORDER BY appid",
+            (status,))]
+
+
 def approval_ready_appids():
     """Appids ready for Game Approval: Mail_status still 'Pending' AND scrape_status
     has an actual email ('seeded' or 'scraped'). A bare Mail_status='Pending' check
@@ -484,13 +513,44 @@ def delete_newly_added(appid):
         conn.commit()
 
 
+def claim_mail(appid):
+    """Atomically reserve one Scheduled mail. False means another run/state owns it."""
+    _ensure()
+    with closing(_rw()) as conn:
+        row = conn.execute(
+            "UPDATE scrape_tracker SET Mail_status='Sending' "
+            "WHERE appid=? AND Mail_status='Scheduled' RETURNING appid",
+            (int(appid),)).fetchone()
+        conn.commit()
+    return row is not None
+
+
+def reset_sending(appid, status):
+    """Resolve a definitely-unsent claim without touching any other state."""
+    if status not in ("Scheduled", "Drafted"):
+        raise ValueError("Sending can only be reset to Scheduled or Drafted")
+    _ensure()
+    with closing(_rw()) as conn:
+        conn.execute("UPDATE scrape_tracker SET Mail_status=? "
+                     "WHERE appid=? AND Mail_status='Sending'", (status, int(appid)))
+        conn.commit()
+
+
 def mark_sent(appid):
     """Mail was sent: Mail_status -> 'Sent', stamp sent_at (UTC) for the daily cap,
     and drop the newly_added row (the scrape_tracker row stays as the record)."""
     _ensure()
     with closing(_rw()) as conn:
-        conn.execute("UPDATE scrape_tracker SET Mail_status='Sent', "
-                     "sent_at=CURRENT_TIMESTAMP WHERE appid=?", (int(appid),))
+        row = conn.execute(
+            "UPDATE scrape_tracker SET Mail_status='Sent', "
+            "sent_at=COALESCE(sent_at,CURRENT_TIMESTAMP) "
+            "WHERE appid=? AND Mail_status='Sending' RETURNING appid",
+            (int(appid),)).fetchone()
+        if row is None:
+            current = conn.execute("SELECT Mail_status FROM scrape_tracker WHERE appid=?",
+                                   (int(appid),)).fetchone()
+            if not current or current[0] != "Sent":
+                raise RuntimeError(f"cannot mark {appid} Sent from {current[0] if current else 'missing'}")
         conn.execute("DELETE FROM newly_added WHERE appid=?", (int(appid),))
         conn.commit()
 

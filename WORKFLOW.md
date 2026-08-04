@@ -32,7 +32,7 @@ All local/manual commands still exist through the one launcher: `python SRE.py <
 
 - **`scrape_status`**: `pending` (no email yet) · `seeded` (Steam listed one) · `scraped`
   (Hermes found one) · `no_email` · `failed`.
-- **`Mail_status`**: `Pending` → `Writing` → `Scheduled` → `Sent` → `Replied`.
+- **`Mail_status`**: `Pending` → `Writing` → `Drafted` → `Scheduled` → `Sending` → `Sent` → `Replied`.
 
 Media (screenshots, sprite sheet, manifest with the drafted mail) lives in **Cloudflare
 R2**, keyed by appid via `index.json`. The app and the cloud jobs read/write there; the
@@ -81,8 +81,12 @@ Leads with no email anywhere on their Steam page.
 ## 3. Send — on demand (`send.yml`)
 **📨 Send approved** button (Mail Approval) → fires `send.yml`. Sends every `Scheduled`
 lead from Gmail, paced 2–4 min apart, capped at **50 / UTC day**. Reads each draft from its
-R2 manifest, flips `Scheduled → Sent`, and purges the lead's R2 media. No schedule — a human
+R2 manifest, atomically claims `Scheduled → Sending`, flips `Sending → Sent`, and purges the lead's R2 media. No schedule — a human
 presses the button, so outbound always has a gate.
+
+If SMTP completed but its result could not be recorded, the lead remains `Sending` to
+prevent duplicates. Check Gmail Sent, then resolve it with
+`python SRE.py --send-mails --resolve-sending APPID sent|retry`.
 
 ## 4. Review replies — automatic, nightly (`review-mails.yml`)
 Cron `0 2 * * *`. Read-only IMAP scan of the Gmail inbox: any `Sent` lead whose address

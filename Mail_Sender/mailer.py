@@ -30,6 +30,7 @@ import smtplib
 import ssl
 import sys
 import time
+from email.headerregistry import Address
 from email.message import EmailMessage
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -144,6 +145,16 @@ def _send(user, password, to, subject, body):
         s.send_message(msg)
 
 
+def _recipient(raw):
+    """First stored address, normalized; empty means it is not deliverable."""
+    addr = ((raw or "").split(",")[0] or "").strip()
+    try:
+        parsed = Address(addr_spec=addr)
+    except ValueError:
+        return ""
+    return addr if parsed.username and parsed.domain else ""
+
+
 def main(dry_run=False, limit=None):
     _load_env()
     user = os.environ.get("GMAIL_USER", "")
@@ -154,49 +165,77 @@ def main(dry_run=False, limit=None):
         sys.exit("GMAIL_APP_PASSWORD not set. Add it to the repo-root .env "
                  "(see this file's header). Or use --dry-run.")
 
-    scheduled = pipeline.mail_status_appids("Scheduled")
+    uncertain = pipeline.mail_status_appids("Sending")
+    if uncertain and not dry_run:
+        sys.exit("Unresolved Sending mail(s): " + ", ".join(map(str, uncertain)) +
+                 ". Check Gmail Sent, then run: python SRE.py --send-mails "
+                 "--resolve-sending APPID sent|retry")
+
+    scheduled = pipeline.mail_status_emails("Scheduled")
+    valid = []
+    for appid, raw in scheduled:
+        to = _recipient(raw)
+        if to:
+            valid.append((appid, to))
+            continue
+        print(f"  INVALID {appid}: {raw!r} -> returned to Drafted")
+        if not dry_run:
+            pipeline.set_mail_status(appid, "Drafted")
     sent_already = pipeline.sent_today()
     room = max(0, DAILY_CAP - sent_already)
     if limit is not None:
         room = min(room, limit)
-    queue = scheduled[:room]
-
-    print(f"scheduled: {len(scheduled)} | sent today: {sent_already}/{DAILY_CAP} | "
-          f"sending now: {len(queue)}{' (DRY RUN)' if dry_run else ''}")
-    if not queue:
+    print(f"scheduled: {len(scheduled)} ({len(valid)} valid) | "
+          f"sent today: {sent_already}/{DAILY_CAP} | "
+          f"sending up to: {min(len(valid), room)}{' (DRY RUN)' if dry_run else ''}")
+    if not valid or room == 0:
         if scheduled and room == 0:
             print("daily cap reached — try again tomorrow.")
         return
 
     done = 0
-    for i, appid in enumerate(queue):
-        to = (pipeline.get_emails(appid).split(",")[0] or "").strip()
+    for appid, to in valid:
+        if done >= room:
+            break
         subject, body, path = _load_mail(appid)
-        if not to:
-            print(f"  SKIP {appid}: no recipient email")
-            continue
         if body is None:
-            print(f"  SKIP {appid}: no mail draft found")
+            print(f"  SKIP {appid}: no mail draft found -> returned to Drafted")
+            if not dry_run:
+                pipeline.set_mail_status(appid, "Drafted")
             continue
         if dry_run:
             print(f"  [dry] {appid} -> {to} | {subject!r} | {os.path.basename(path)}")
+            done += 1
             continue
-        try:
-            _send(user, password, to, subject, body)
-        except Exception as e:
-            print(f"  FAIL {appid} -> {to}: {e}")
-            continue
-        pipeline.mark_sent(appid)
-        _delete_media(appid)                    # sent -> drop its media folder
-        done += 1
-        print(f"  sent {appid} -> {to} | {subject!r}")
-        if i < len(queue) - 1:                  # pace the next one
+        if done:
             gap = random.randint(MIN_GAP, MAX_GAP)
             print(f"    waiting {gap}s before next…")
             time.sleep(gap)
+        if not pipeline.claim_mail(appid):
+            print(f"  SKIP {appid}: no longer Scheduled")
+            continue
+        try:
+            _send(user, password, to, subject, body)
+        except smtplib.SMTPRecipientsRefused as e:
+            pipeline.reset_sending(appid, "Drafted")
+            print(f"  FAIL {appid} -> {to}: {e} -> returned to Drafted")
+            continue
+        except (smtplib.SMTPAuthenticationError, smtplib.SMTPHeloError,
+                smtplib.SMTPSenderRefused, smtplib.SMTPNotSupportedError):
+            pipeline.reset_sending(appid, "Scheduled")
+            raise
+        except Exception as e:
+            print(f"  UNCERTAIN {appid} -> {to}: {e}; left as Sending to prevent a duplicate")
+            raise
+        pipeline.mark_sent(appid)
+        try:
+            _delete_media(appid)                # sent -> drop its media folder
+        except Exception as e:
+            print(f"  WARN {appid}: sent, but media cleanup failed: {e}")
+        done += 1
+        print(f"  sent {appid} -> {to} | {subject!r}")
 
-    if not dry_run:
-        print(f"done: {done} sent this run.")
+    print(f"done: {done} {'previewed' if dry_run else 'sent'} this run.")
 
 
 def purge_sent():
@@ -259,13 +298,32 @@ def _selftest():
     assert s == "Hi there" and b == "hey,\nbody line", (s, b)
     s, b = _split_subject("no subject here\njust body")
     assert s == "Hello" and b.startswith("no subject"), (s, b)
+    assert _recipient("hello@example.com, other@example.com") == "hello@example.com"
+    assert not _recipient("nordvader email")
+    assert not _recipient("cauchemargames.com")
     print("selftest ok")
+
+
+def resolve_sending(appid, outcome):
+    """Operator resolution for an SMTP result that could not be proven automatically."""
+    if outcome == "sent":
+        pipeline.mark_sent(appid)
+    elif outcome == "retry":
+        pipeline.reset_sending(appid, "Scheduled")
+    else:
+        sys.exit("resolution must be 'sent' or 'retry'")
+    print(f"resolved {appid}: {'Sent' if outcome == 'sent' else 'Scheduled for retry'}")
 
 
 if __name__ == "__main__":
     args = sys.argv[1:]
     if "--selftest" in args:
         _selftest()
+    elif "--resolve-sending" in args:
+        i = args.index("--resolve-sending")
+        if len(args) <= i + 2:
+            sys.exit("usage: --resolve-sending APPID sent|retry")
+        resolve_sending(int(args[i + 1]), args[i + 2].lower())
     elif "--review" in args:
         review()
     elif "--purge-sent" in args:
