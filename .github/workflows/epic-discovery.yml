@@ -1,0 +1,31 @@
+name: Epic discovery
+
+on:
+  schedule:
+    - cron: "30 22 * * *" # 22:30 UTC = 04:00 IST daily
+  workflow_dispatch: {}
+
+concurrency:
+  group: epic-discovery
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Epic dependencies
+        run: pip install --quiet libsql
+      - name: Discover Epic upcoming games
+        env:
+          EPIC_TURSO_DATABASE_URL: ${{ secrets.EPIC_TURSO_DATABASE_URL }}
+          EPIC_TURSO_AUTH_TOKEN: ${{ secrets.EPIC_TURSO_AUTH_TOKEN }}
+          EPIC_TURSO_REQUIRED: "1"
+        run: python EpicGamesScraper/discover_epic.py
