@@ -9,14 +9,13 @@
 //                        keep / reject_irrelevant / reject_all_irrelevant / trigger
 //   GET  /media/<key> -> R2 passthrough (images + manifests), same-origin so no CORS/bot-block
 //
-// Secrets (wrangler secret put): TURSO_URL, TURSO_TOKEN, AUTH_SECRET, GH_PAT.
+// Secrets (wrangler secret put): TURSO_URL, TURSO_TOKEN, AUTH_SECRET, GH_REPO, GH_PAT.
 // Bindings (wrangler.jsonc): MEDIA -> the existing sre-media R2 bucket.
 //
 // SQL here mirrors Claude_Lead_Discovery_Engine/pipeline.py exactly (same tables, same
 // status strings); R2 layout mirrors Leads_Reviewer/media_store.py (index.json,
 // irrelevant.json, <GameName>_<appid>/manifest.json + images).
 
-const GH_REPO = "Meshak2002/Studio_Reach_Engine";
 const WORKFLOWS = { send: "send.yml", draft: "draft.yml" }; // the only ones the UI may fire
 
 // ---- Turso over HTTP (Hrana v2 pipeline; one fetch = N statements, no client lib) ----
@@ -182,8 +181,9 @@ async function act(env, ctx, body) {
     case "trigger": { // fire a GHA workflow (send / draft) on master
       const file = WORKFLOWS[body.workflow];
       if (!file) throw new Error(`unknown workflow ${body.workflow}`);
+      if (!env.GH_REPO) throw new Error("GH_REPO secret is not set");
       const r = await fetch(
-        `https://api.github.com/repos/${GH_REPO}/actions/workflows/${file}/dispatches`,
+        `https://api.github.com/repos/${env.GH_REPO}/actions/workflows/${file}/dispatches`,
         {
           method: "POST",
           headers: {
@@ -244,3 +244,4 @@ export default {
     return new Response("not found", { status: 404 });
   },
 };
+

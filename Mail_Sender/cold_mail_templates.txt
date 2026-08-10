@@ -1,10 +1,10 @@
 #Cold Mail - 1
 
-Subject : <game>, almost there
+Subject : <game> - one thing I noticed
 
 hey <developer/studio name>,
 
- <Make a hook by making a critical critique on their game and slowly move towards constructive feedback on how it can be improved to hit the charts in 2 lines >
+<specific constructive observation: something that already works + one area that could be improved. ideally 1–2 sentences>
 
 I understand you'd be busy building ur game so I'll convey what I like to offer in 3 points :
 
@@ -46,13 +46,13 @@ Subject:  helping with <game name> ?
 
 hey <developer/studio name>,
 
-<critique/observation, 1-2 lines — a mechanic you liked or a sharp detail>. that's the kind of thing i'd want to be building.
+<specific mechanic/detail you noticed>. especially liked <very small technical/design observation>, that's the kind of stuff i enjoy working on.
 
-I'm Meshak, a professional Game Programmer with 4+ years of experience. I've worked across gameplay and graphics programming, building games and systems using Unreal Engine, C++, DirectX 12, OpenGL, Unity, and C#.
+I'm Meshak, Game Programmer with 4+ years of experience. I've worked across gameplay and graphics programming, building games and systems using Unreal Engine, C++, DirectX 12, OpenGL, Unity, and C#.
 
-Having professional work experience on both AAA and indie titles, I deliver industry-standard quality and have also helped 30+ clients through freelance projects on Fiverr and LinkedIn.
+Having work experience on both AAA and indie titles, I deliver industry standard quality and have also helped 30+ clients through freelance projects on Fiverr and LinkedIn.
 
-Whether you need a gameplay mechanic, prototype, or complete game system, I'm here to deliver high-quality, production-ready solutions.
+Whether you need a gameplay mechanic, prototype, or complete game system, I'm here to deliver high-quality, production ready solutions.
 Just reply with what u r working on and where do u need help.
 
 thanks,
@@ -62,14 +62,21 @@ Meshak
 
 #Cold Mail - 4
 
-Subject: quick one about <game name>
+Subject: <game name>
 
-hey <developer/studio name>,
+tldr;
 
-<one specific thing you noticed from the steam page, a mechanic, the art, a rough edge>. nice work.
+I love what you're building with <game name>. <specific observation>. I spend most of my time building games anyway, so working on something like this is pretty much exactly what I want to be doing.
 
-game programmer, 4+ years. 30+ indie projects and a year and a half on an xbox funded AAA. unreal, unity, c++, C#
+Hi,
 
-need an extra set of hands for the next milestone? reply and i'll send my portfolio.
+Wanted to reach out and see if you need another programmer on <game name>.
 
-meshak
+I've been doing game programming for 4+ years, 30+ indie freelance projects and 1.5 years on an Xbox-funded AAA title. Mostly gameplay/systems work in Unreal + C++, with Unity/C# experience as well.
+
+I like owning systems end to end and just getting them shipped.
+
+If there's anything you're short on programming bandwidth for, reply and I'll send over my work.
+
+Best,
+Meshak

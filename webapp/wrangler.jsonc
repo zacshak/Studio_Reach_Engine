@@ -4,6 +4,7 @@
 //   npx wrangler secret put TURSO_URL        (your Turso libsql URL)
 //   npx wrangler secret put TURSO_TOKEN      (the Turso JWT)
 //   npx wrangler secret put AUTH_SECRET      (any passphrase — the page asks for it once)
+//   npx wrangler secret put GH_REPO          (owner/repo, e.g. zacshak/Studio_Reach_Engine)
 //   npx wrangler secret put GH_PAT           (GitHub PAT with actions:write, for the
 //                                             "Send scheduled mails" / draft buttons)
 //   npx wrangler deploy
@@ -19,3 +20,4 @@
   ],
   "observability": { "enabled": true }
 }
+
