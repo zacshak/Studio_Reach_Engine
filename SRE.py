@@ -15,7 +15,7 @@ the single front door so you don't memorise six script paths.
     python SRE.py --send-mails                # send scheduled cold mails (--dry-run, --limit N)
     python SRE.py --review-mails              # check Sent leads for replies -> mark 'Replied'
     python SRE.py --sync-media                # mirror staged media -> R2 (cloud review app)
-    python SRE.py --snap-db                   # dump live Turso DB -> last_cache.sqlite (DB Browser)
+    python SRE.py --snap-db                   # dump Steam + Epic Turso DBs -> local SQLite files
 """
 import os
 import subprocess

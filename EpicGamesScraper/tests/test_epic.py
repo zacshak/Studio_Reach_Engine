@@ -8,7 +8,7 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HERE)
 
 import epic_db
-from epic_client import normalize_product
+from epic_client import EpicCatalogClient, normalize_product
 
 
 class EpicTests(unittest.TestCase):
@@ -30,6 +30,39 @@ class EpicTests(unittest.TestCase):
         self.assertEqual(product["epic_key"], "namespace:game-1")
         self.assertEqual(product["developers"], "Studio")
         self.assertEqual(product["store_url"], "https://store.epicgames.com/en-US/p/example-game")
+
+    def test_normalize_prefers_product_home_page_slug(self):
+        product = normalize_product({
+            "id": "offer-1",
+            "namespace": "game-1",
+            "title": "Example",
+            "productSlug": "internal-offer-hash",
+            "offerMappings": [{"pageType": "productHome", "pageSlug": "example-123abc"}],
+        })
+        self.assertEqual(product["store_url"], "https://store.epicgames.com/en-US/p/example-123abc")
+
+    def test_fetch_upcoming_follows_server_page_limit(self):
+        client = EpicCatalogClient()
+        calls = []
+
+        def fake_post(page, limit):
+            calls.append((page, limit))
+            count = 50 if page == 1 else 3
+            start = 0 if page == 1 else 50
+            return {
+                "page": page,
+                "limit": 50,
+                "elements": [
+                    {"id": f"offer-{i}", "title": f"Game {i}"}
+                    for i in range(start, start + count)
+                ],
+            }
+
+        client._post = fake_post
+        products = client.fetch_upcoming(page_size=100)
+
+        self.assertEqual(len(products), 53)
+        self.assertEqual(calls, [(1, 100), (2, 100)])
 
     def test_snapshot_isolated_and_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:

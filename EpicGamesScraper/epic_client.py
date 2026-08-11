@@ -68,8 +68,15 @@ def normalize_product(raw: dict) -> dict:
     developer = developer or _value_by_key(custom, "developerName")
     publisher = publisher or _value_by_key(custom, "publisherName")
 
-    slug = str(raw.get("productSlug") or raw.get("urlSlug") or "").strip()
     mappings = raw.get("offerMappings") or []
+    home_slug = next(
+        (str(mapping.get("pageSlug")).strip() for mapping in mappings
+         if isinstance(mapping, dict)
+         and mapping.get("pageType") == "productHome"
+         and mapping.get("pageSlug")),
+        "",
+    )
+    slug = str(home_slug or raw.get("urlSlug") or raw.get("productSlug") or "").strip()
     if not slug:
         for mapping in mappings:
             if isinstance(mapping, dict) and mapping.get("pageSlug"):
@@ -201,9 +208,17 @@ class EpicCatalogClient:
                 product = normalize_product(raw)
                 products.setdefault(product["epic_key"], product)
 
-            if not data["elements"] or len(products) >= (expected or 0):
+            response_limit = data.get("limit") or page_size
+            try:
+                response_limit = int(response_limit)
+            except (TypeError, ValueError):
+                response_limit = page_size
+            if response_limit < 1:
+                raise EpicClientError("Epic catalog returned an invalid page limit")
+
+            if not data["elements"] or (expected is not None and len(products) >= expected):
                 break
-            if len(data["elements"]) < page_size:
+            if len(data["elements"]) < response_limit:
                 break
             page += 1
         else:
