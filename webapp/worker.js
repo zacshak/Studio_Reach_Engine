@@ -19,18 +19,37 @@
 const WORKFLOWS = { send: "send.yml", draft: "draft.yml" }; // the only ones the UI may fire
 
 // ---- Turso over HTTP (Hrana v2 pipeline; one fetch = N statements, no client lib) ----
-async function sql(env, stmts) {
+const hranaStmt = ([q, ...args]) => ({
+  sql: q,
+  args: args.map((v) =>
+    typeof v === "number"
+      ? { type: "integer", value: String(v) }
+      : { type: "text", value: String(v) }),
+});
+
+async function sql(env, stmts, atomic = false) {
+  if (!stmts.length) return [];
   const url = env.TURSO_URL.replace(/^libsql:/, "https:").replace(/\/$/, "") + "/v2/pipeline";
-  const requests = stmts.map(([q, ...args]) => ({
-    type: "execute",
-    stmt: {
-      sql: q,
-      args: args.map((v) =>
-        typeof v === "number"
-          ? { type: "integer", value: String(v) }
-          : { type: "text", value: String(v) }),
-    },
-  }));
+  let requests;
+  if (atomic && stmts.length > 1) {
+    const steps = [{ stmt: { sql: "BEGIN IMMEDIATE" } }];
+    stmts.forEach((statement, i) => steps.push({
+      condition: { type: "ok", step: i },
+      stmt: hranaStmt(statement),
+    }));
+    steps.push({ condition: { type: "ok", step: stmts.length }, stmt: { sql: "COMMIT" } });
+    steps.push({
+      condition: {
+        type: "or",
+        conds: [...stmts.map((_, i) => ({ type: "error", step: i + 1 })),
+                { type: "error", step: stmts.length + 1 }],
+      },
+      stmt: { sql: "ROLLBACK" },
+    });
+    requests = [{ type: "batch", batch: { steps } }];
+  } else {
+    requests = stmts.map((statement) => ({ type: "execute", stmt: hranaStmt(statement) }));
+  }
   requests.push({ type: "close" });
   const r = await fetch(url, {
     method: "POST",
@@ -39,6 +58,16 @@ async function sql(env, stmts) {
   });
   if (!r.ok) throw new Error(`turso http ${r.status}: ${await r.text()}`);
   const { results } = await r.json();
+  if (atomic && stmts.length > 1) {
+    const res = results[0];
+    if (res.type === "error") throw new Error(res.error?.message || "turso batch error");
+    const batch = res.response?.result || {};
+    const errors = (batch.step_errors || []).slice(1, stmts.length + 1);
+    const failed = errors.find(Boolean);
+    if (failed) throw new Error(failed.message || "turso statement error");
+    return (batch.step_results || []).slice(1, stmts.length + 1).map((result) =>
+      (result?.rows || []).map((row) => row.map((cell) => cell.value)));
+  }
   return results.slice(0, stmts.length).map((res) => {
     if (res.type === "error") throw new Error(res.error?.message || "turso error");
     const rows = res.response?.result?.rows || [];
@@ -51,22 +80,29 @@ const getJSON = async (env, key) => {
   const o = await env.MEDIA.get(key);
   return o ? o.json() : null;
 };
-const putJSON = (env, key, obj) =>
-  env.MEDIA.put(key, JSON.stringify(obj), {
-    httpMetadata: { contentType: "application/json" },
-  });
+async function updateJSON(env, key, fallback, mutate) {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const object = await env.MEDIA.get(key);
+    const current = object ? await object.json() : fallback;
+    const written = await env.MEDIA.put(key, JSON.stringify(mutate(current)), {
+      onlyIf: object ? { etagMatches: object.etag } : { etagDoesNotMatch: "*" },
+      httpMetadata: { contentType: "application/json" },
+    });
+    if (written) return;
+  }
+  throw new Error(`concurrent R2 update did not settle for ${key}`);
+}
 
-// Purge each appid's media folder and drop it from index.json (read index once,
-// write once — avoids the read-modify-write race media_store.delete_lead_media has
-// when two rejects land close together).
+// Purge each appid's media folder after atomically removing it from index.json.
 async function purgeMedia(env, appids) {
-  const index = (await getJSON(env, "index.json")) || {};
-  let dirty = false;
-  for (const a of appids) {
-    const folder = index[String(a)];
-    if (!folder) continue;
-    delete index[String(a)];
-    dirty = true;
+  let folders = [];
+  await updateJSON(env, "index.json", {}, (current) => {
+    const index = { ...current };
+    folders = appids.map((a) => index[String(a)]).filter(Boolean);
+    for (const a of appids) delete index[String(a)];
+    return index;
+  });
+  for (const folder of new Set(folders)) {
     let cursor;
     do {
       const l = await env.MEDIA.list({ prefix: folder + "/", cursor });
@@ -74,17 +110,6 @@ async function purgeMedia(env, appids) {
       cursor = l.truncated ? l.cursor : undefined;
     } while (cursor);
   }
-  if (dirty) await putJSON(env, "index.json", index);
-}
-
-// ponytail: module-level chain serializes index.json writers within one isolate —
-// enough for a single-user app; move to a Durable Object if it ever multi-users.
-let purgeChain = Promise.resolve();
-function queuePurge(env, ctx, appids) {
-  purgeChain = purgeChain
-    .then(() => purgeMedia(env, appids))
-    .catch((e) => console.error("media purge failed", e));
-  ctx.waitUntil(purgeChain);
 }
 
 // ---- the four-view snapshot the page renders from ----
@@ -97,7 +122,7 @@ async function state(env) {
       // nowhere yet — a bare Mail_status check let those leak in here too, GH-bug).
       ["SELECT appid FROM scrape_tracker WHERE Mail_status='Pending' AND scrape_status IN ('seeded','scraped') ORDER BY appid"],
       ["SELECT appid, emails FROM scrape_tracker WHERE Mail_status='Drafted' ORDER BY appid"],
-      ["SELECT appid FROM scrape_tracker WHERE scrape_status IN ('no_email','failed') ORDER BY appid"],
+      [NOMAIL_SQL],
       ["SELECT EXISTS(SELECT 1 FROM scrape_tracker WHERE Mail_status='Scheduled')"],
       // accepted but the drafter hasn't written the mail yet — gates the Draft button
       ["SELECT EXISTS(SELECT 1 FROM scrape_tracker WHERE Mail_status='Writing')"],
@@ -118,15 +143,12 @@ async function state(env) {
 }
 
 // ---- actions (all optimistic on the client; errors surface in its banner) ----
-async function approveStmts(env, index, appid) {
-  const folder = index[String(appid)];
-  const m = folder ? await getJSON(env, `${folder}/manifest.json`) : null;
-  const stmts = [];
-  if (m && m.mail_template != null)
-    stmts.push(["UPDATE scrape_tracker SET mail_template=? WHERE appid=?", m.mail_template, appid]);
-  stmts.push(["UPDATE scrape_tracker SET Mail_status='Scheduled' WHERE appid=?", appid]);
-  return stmts;
-}
+const approveStmt = (appid) => [
+  "UPDATE scrape_tracker SET Mail_status='Scheduled' WHERE appid=? AND Mail_status='Drafted' AND scrape_status IN ('seeded','scraped')",
+  appid,
+];
+
+const NOMAIL_SQL = "SELECT appid FROM scrape_tracker WHERE scrape_status IN ('pending','no_email','failed') AND Mail_status='Pending' ORDER BY appid";
 
 const deleteStmts = (appid) => [
   ["DELETE FROM scrape_tracker WHERE appid=?", appid],
@@ -135,53 +157,77 @@ const deleteStmts = (appid) => [
 
 async function dropIrrelevant(env, appids) {
   const gone = new Set(appids.map(Number));
-  const keep = ((await getJSON(env, "irrelevant.json")) || []).filter((a) => !gone.has(Number(a)));
-  await putJSON(env, "irrelevant.json", keep);
+  await updateJSON(env, "irrelevant.json", [], (current) =>
+    current.filter((a) => !gone.has(Number(a))));
 }
 
-async function act(env, ctx, body) {
-  const appid = Number(body.appid);
-  const appids = (body.appids || []).map(Number);
+function oneId(body) {
+  const value = Number(body.appid);
+  if (!Number.isSafeInteger(value) || value <= 0) throw new Error("invalid appid");
+  return value;
+}
+
+function manyIds(body) {
+  if (!Array.isArray(body.appids) || body.appids.length > 500)
+    throw new Error("appids must be an array of at most 500 values");
+  return [...new Set(body.appids.map((value) => {
+    value = Number(value);
+    if (!Number.isSafeInteger(value) || value <= 0) throw new Error("invalid appid");
+    return value;
+  }))];
+}
+
+async function act(env, body) {
   switch (body.action) {
-    case "accept": // Game Approval ✅ -> Mail_status 'Writing'
-      await sql(env, [["UPDATE scrape_tracker SET Mail_status='Writing' WHERE appid=?", appid]]);
+    case "accept": { // Game Approval ✅ -> Mail_status 'Writing'
+      const appid = oneId(body);
+      await sql(env, [["UPDATE scrape_tracker SET Mail_status='Writing' WHERE appid=? AND Mail_status='Pending' AND scrape_status IN ('seeded','scraped')", appid]]);
       break;
-    case "reject": // ❌ anywhere -> delete both tables + purge media
-      await sql(env, deleteStmts(appid));
-      queuePurge(env, ctx, [appid]);
+    }
+    case "reject": { // ❌ anywhere -> delete both tables + purge media
+      const appid = oneId(body);
+      await sql(env, deleteStmts(appid), true);
+      await purgeMedia(env, [appid]);
       break;
-    case "reject_all": // No-Mail bulk purge — same as reject, just no irrelevant.json involved
-      await sql(env, appids.flatMap(deleteStmts));
-      queuePurge(env, ctx, appids);
+    }
+    case "reject_all": { // No-Mail bulk purge — same as reject, just no irrelevant.json involved
+      const appids = manyIds(body);
+      await sql(env, appids.flatMap(deleteStmts), true);
+      await purgeMedia(env, appids);
       break;
-    case "approve": { // Mail Approval ✅ -> record template + 'Scheduled'
-      const index = (await getJSON(env, "index.json")) || {};
-      await sql(env, await approveStmts(env, index, appid));
+    }
+    case "approve": { // Mail Approval ✅ -> 'Scheduled'
+      const appid = oneId(body);
+      await sql(env, [approveStmt(appid)]);
       break;
     }
     case "approve_all": {
-      const index = (await getJSON(env, "index.json")) || {};
-      const nested = await Promise.all(appids.map((a) => approveStmts(env, index, a)));
-      await sql(env, nested.flat());
+      const appids = manyIds(body);
+      await sql(env, appids.map(approveStmt), true);
       break;
     }
     case "keep": // Triage: AI was wrong — unflag, lead rejoins the normal queue
-      await dropIrrelevant(env, [appid]);
+      await dropIrrelevant(env, [oneId(body)]);
       break;
-    case "reject_irrelevant": // Triage ❌: unflag + full delete
+    case "reject_irrelevant": { // Triage ❌: unflag + full delete
+      const appid = oneId(body);
+      await sql(env, deleteStmts(appid), true);
       await dropIrrelevant(env, [appid]);
-      await sql(env, deleteStmts(appid));
-      queuePurge(env, ctx, [appid]);
+      await purgeMedia(env, [appid]);
       break;
-    case "reject_all_irrelevant":
+    }
+    case "reject_all_irrelevant": {
+      const appids = manyIds(body);
+      await sql(env, appids.flatMap(deleteStmts), true);
       await dropIrrelevant(env, appids);
-      await sql(env, appids.flatMap(deleteStmts));
-      queuePurge(env, ctx, appids);
+      await purgeMedia(env, appids);
       break;
+    }
     case "trigger": { // fire a GHA workflow (send / draft) on master
       const file = WORKFLOWS[body.workflow];
       if (!file) throw new Error(`unknown workflow ${body.workflow}`);
       if (!env.GH_REPO) throw new Error("GH_REPO secret is not set");
+      if (!env.GH_PAT) throw new Error("GH_PAT secret is not set");
       const r = await fetch(
         `https://api.github.com/repos/${env.GH_REPO}/actions/workflows/${file}/dispatches`,
         {
@@ -191,7 +237,7 @@ async function act(env, ctx, body) {
             Accept: "application/vnd.github+json",
             "User-Agent": "sre-review-worker",
           },
-          body: JSON.stringify({ ref: "master" }),
+          body: JSON.stringify({ ref: env.GH_REF || "master" }),
         },
       );
       if (r.status !== 204) throw new Error(`github ${r.status}: ${await r.text()}`);
@@ -209,13 +255,20 @@ const json = (obj, status = 200) =>
     headers: { "Content-Type": "application/json" },
   });
 
+export { approveStmt, NOMAIL_SQL, sql, updateJSON };
+
 export default {
-  async fetch(req, env, ctx) {
+  async fetch(req, env) {
     const path = new URL(req.url).pathname;
 
     // R2 passthrough. No auth: the bucket is already world-readable via its r2.dev URL.
     if (path.startsWith("/media/")) {
-      const key = decodeURIComponent(path.slice("/media/".length));
+      let key;
+      try {
+        key = decodeURIComponent(path.slice("/media/".length));
+      } catch {
+        return new Response("invalid media path", { status: 400 });
+      }
       const obj = await env.MEDIA.get(key);
       if (!obj) return new Response("not found", { status: 404 });
       return new Response(obj.body, {
@@ -233,7 +286,7 @@ export default {
       try {
         if (path === "/api/state") return json(await state(env));
         if (path === "/api/act" && req.method === "POST")
-          return json(await act(env, ctx, await req.json()));
+          return json(await act(env, await req.json()));
         return json({ error: "not found" }, 404);
       } catch (e) {
         return json({ error: String((e && e.message) || e) }, 500);

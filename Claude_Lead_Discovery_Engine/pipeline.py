@@ -17,6 +17,8 @@ import sys
 import threading
 import time
 from contextlib import closing
+from email.errors import HeaderParseError
+from email.headerregistry import Address
 
 try:
     import libsql                      # Turso/libSQL client (sqlite3 DBAPI drop-in)
@@ -47,14 +49,22 @@ _load_env()
 TURSO_URL = os.environ.get("TURSO_DATABASE_URL", "")
 TURSO_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "")
 
-STATUSES = ("pending", "seeded", "scraped", "no_email", "failed")
+STATUSES = ("pending", "seeded", "scraped", "no_email", "invalid", "failed")
 # 'scraped' = email recovered by scraping the studio site (higher provenance than
 # 'seeded', which is Steam-provided). Treated exactly like 'seeded' downstream:
 # it has an email, so it's out of the 'pending' work queue and into the mail flow.
-# outreach state; Mail_status defaults to 'Pending'. Review moves it Pending ->
-# Writing (accepted) ; the drafter moves Writing -> Drafted once the mail text is
-# written; the mailer later moves Drafted -> Scheduled -> Sending -> Sent -> Replied.
-MAIL_STATUSES = ("Pending", "Writing", "Drafted", "Scheduled", "Sending", "Sent", "Replied")
+# 'invalid' means a non-empty email-like value failed validation. It is quarantined
+# from the outreach state machine and hidden from user-facing queues.
+# Visible outreach states, in dashboard order. 'Sending' is an internal atomic
+# claim state and is intentionally not exposed as a user-facing status.
+MAIL_STATUSES = ("Pending", "Invalid", "Writing", "Drafted", "Scheduled", "Sent", "Replied")
+INTERNAL_MAIL_STATUSES = ("Sending",)
+MAIL_TRANSITIONS = {
+    "Writing": "Pending",
+    "Drafted": "Writing",
+    "Scheduled": "Drafted",
+    "Replied": "Sent",
+}
 
 # Canonical scrape_tracker schema — ONE definition, used both for fresh DBs and
 # for the rebuild migration below (SQLite's ALTER can only append a column, so
@@ -102,22 +112,41 @@ _TRIGGER_NEEDS = ("name", "short_description", "website", "support_info",
 # an outer `INSERT OR REPLACE` on newly_added (cache_put does this on re-fetch)
 # would override an inner IGNORE and wipe scrape progress — the NOT EXISTS guard
 # avoids any conflict, so an existing tracker row is left completely untouched.
-# A lead whose support_info already carries an email is born 'seeded' with that
-# email pre-filled, so Hermes never has to scrape it. The rest start 'pending'.
+# A lead whose support_info already carries a valid email is born 'seeded' with that
+# email pre-filled, so Hermes never has to scrape it. Invalid values are quarantined.
 _TRIGGER_SQL = """
 CREATE TRIGGER IF NOT EXISTS trg_sync_scrape_tracker
 AFTER INSERT ON newly_added
 BEGIN
   INSERT INTO scrape_tracker
     (appid, game_name, short_descript, scrape_status, emails,
-     steam_url, website, support_info, developers, publishers, genres, added_at)
+     Mail_status, steam_url, website, support_info, developers, publishers, genres, added_at)
   SELECT
     NEW.appid,
     NEW.name,
     NEW.short_description,
-    CASE WHEN nullif(json_extract(coalesce(NEW.support_info,'{}'),'$.email'),'') IS NOT NULL
-         THEN 'seeded' ELSE 'pending' END,
+    CASE
+      WHEN nullif(trim(json_extract(coalesce(NEW.support_info,'{}'),'$.email')),'') IS NULL
+        THEN 'pending'
+      WHEN instr(trim(json_extract(coalesce(NEW.support_info,'{}'),'$.email')), '@') > 1
+       AND instr(substr(trim(json_extract(coalesce(NEW.support_info,'{}'),'$.email')),
+                        instr(trim(json_extract(coalesce(NEW.support_info,'{}'),'$.email')), '@') + 1), '.') > 1
+       AND trim(json_extract(coalesce(NEW.support_info,'{}'),'$.email')) NOT LIKE '% %'
+        THEN 'seeded'
+      ELSE 'invalid'
+    END,
     nullif(json_extract(coalesce(NEW.support_info,'{}'),'$.email'),''),
+    CASE
+      WHEN nullif(trim(json_extract(coalesce(NEW.support_info,'{}'),'$.email')),'') IS NOT NULL
+       AND NOT (
+         instr(trim(json_extract(coalesce(NEW.support_info,'{}'),'$.email')), '@') > 1
+         AND instr(substr(trim(json_extract(coalesce(NEW.support_info,'{}'),'$.email')),
+                          instr(trim(json_extract(coalesce(NEW.support_info,'{}'),'$.email')), '@') + 1), '.') > 1
+         AND trim(json_extract(coalesce(NEW.support_info,'{}'),'$.email')) NOT LIKE '% %'
+       )
+        THEN 'Invalid'
+      ELSE 'Pending'
+    END,
     'https://store.steampowered.com/app/' || NEW.appid || '/',
     NEW.website,
     NEW.support_info,
@@ -314,6 +343,33 @@ def _jload(v):
         return None
 
 
+def normalize_email(raw):
+    """Return the first deliverable address, or '' for missing/malformed input."""
+    addr = ((raw or "").split(",", 1)[0] or "").strip()
+    if not addr or any(ch.isspace() for ch in addr):
+        return ""
+    try:
+        parsed = Address(addr_spec=addr)
+    except (ValueError, HeaderParseError):
+        return ""
+    if not parsed.username or not parsed.domain or "." not in parsed.domain:
+        return ""
+    return addr
+
+
+def email_state(raw):
+    """Classify a stored email as missing, valid, or invalid."""
+    value = (raw or "").strip()
+    if not value:
+        return "missing"
+    return "valid" if normalize_email(value) else "invalid"
+
+
+def discovery_status(raw):
+    """Map a Steam contact value to its initial scrape_tracker state."""
+    return {"missing": "pending", "valid": "seeded", "invalid": "invalid"}[email_state(raw)]
+
+
 def _names(v):
     """developers/publishers JSON ['A','B'] -> 'A, B'."""
     return ", ".join(str(x) for x in (_jload(v) or []))
@@ -332,29 +388,43 @@ def _support_email(v):
 
 
 def seed_pending():
-    """Backfill: add a tracker row for every newly_added lead not already tracked.
-    The trigger handles new inserts going forward; this catches up existing rows.
-    Idempotent. Returns count added."""
+    """Backfill and reconcile discovery states from newly_added.
+
+    Only untouched leads are reconciled; accepted/sent leads keep their outreach
+    history. Returns the number of rows newly added to scrape_tracker.
+    """
     _ensure()
     with closing(_ro()) as ro:
         src = ro.execute(
             "SELECT appid, name, short_description, website, support_info, "
             "developers, publishers, genres, fetched_at FROM newly_added").fetchall()
     with closing(_rw()) as conn:
-        have = {r[0] for r in conn.execute("SELECT appid FROM scrape_tracker")}
+        have = {r[0]: (r[1], r[2]) for r in conn.execute(
+            "SELECT appid, scrape_status, Mail_status FROM scrape_tracker")}
         added = 0
         for appid, name, brief, website, support, devs, pubs, genres, fetched_at in src:
+            email = _support_email(support)
+            status = discovery_status(email)
+            stored_email = email or None
             if appid in have:
+                current_scrape, current_mail = have[appid]
+                if (current_mail in ("Pending", "Invalid")
+                        and current_scrape in ("pending", "seeded", "invalid")):
+                    conn.execute(
+                        "UPDATE scrape_tracker SET scrape_status=?, emails=?, Mail_status=? "
+                        "WHERE appid=?",
+                        (status, stored_email,
+                         "Invalid" if status == "invalid" else "Pending", appid))
                 continue
-            email = _support_email(support)            # Steam-listed email, if any
-            status = "seeded" if email else "pending"   # seeded skips Hermes
             conn.execute(
-                f"INSERT INTO scrape_tracker ({','.join(SEED_COLS)}, emails, scrape_status, added_at) "
-                f"VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                f"INSERT INTO scrape_tracker ({','.join(SEED_COLS)}, emails, scrape_status, "
+                "Mail_status, added_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (appid, name, brief, f"https://store.steampowered.com/app/{appid}/",
                  website or "", support or "", _names(devs), _names(pubs), _genres(genres),
-                 email or None, status, fetched_at),
+                 stored_email, status,
+                 "Invalid" if status == "invalid" else "Pending", fetched_at),
             )
+            have[appid] = (status, "Invalid" if status == "invalid" else "Pending")
             added += 1
         conn.commit()
     return added
@@ -362,6 +432,8 @@ def seed_pending():
 
 def get_pending(limit=None):
     """Appids whose scrape_status is 'pending'. Hermes's work queue."""
+    if limit is not None and (not isinstance(limit, int) or limit < 1):
+        raise ValueError("limit must be a positive integer")
     _ensure()
     with closing(_ro()) as conn:
         q = "SELECT appid FROM scrape_tracker WHERE scrape_status='pending' ORDER BY appid"
@@ -374,8 +446,9 @@ def get_pending(limit=None):
 
 def scrape_status_appids(*statuses):
     """Appids at any of the given scrape_status values ('pending'|'seeded'|'scraped'|
-    'no_email'|'failed'). The No-Mail review view passes ('no_email','failed') — leads
-    scraping found no email for, plus ones it errored on (both un-mailable)."""
+    'no_email'|'invalid'|'failed')."""
+    if not statuses or any(status not in STATUSES for status in statuses):
+        raise ValueError(f"statuses must be one or more of {STATUSES}")
     _ensure()
     placeholders = ",".join("?" * len(statuses))
     with closing(_ro()) as conn:
@@ -419,14 +492,30 @@ def write_result(appid, *, scrape_status, emails=None, website=None):
     if scrape_status not in STATUSES:
         raise ValueError(f"bad status {scrape_status!r}; expected one of {STATUSES}")
     _ensure()
-    sets = ["scrape_status=?"]
-    vals = [scrape_status]
-    for col, val in (("emails", emails), ("website", website)):
-        if val is not None:
-            sets.append(f"{col}=?")
-            vals.append(val)
-    vals.append(appid)
     with closing(_rw()) as conn:
+        current = conn.execute(
+            "SELECT emails, Mail_status FROM scrape_tracker WHERE appid=?",
+            (int(appid),)).fetchone()
+        if current and current[1] in ("Sent", "Replied"):
+            raise ValueError(f"cannot alter completed outreach for appid {appid}")
+        candidate = emails if emails is not None else (current[0] if current else None)
+        if scrape_status in ("scraped", "invalid"):
+            scrape_status = "scraped" if normalize_email(candidate) else (
+                "invalid" if (candidate or "").strip() else "no_email")
+        if scrape_status == "no_email" and emails is None:
+            emails = ""
+        sets = ["scrape_status=?"]
+        vals = [scrape_status]
+        if not current or current[1] not in ("Sent", "Replied"):
+            if scrape_status == "invalid":
+                sets.append("Mail_status='Invalid'")
+            elif current and current[1] == "Invalid":
+                sets.append("Mail_status='Pending'")
+        for col, val in (("emails", emails), ("website", website)):
+            if val is not None:
+                sets.append(f"{col}=?")
+                vals.append(val)
+        vals.append(appid)
         cur = conn.execute(
             f"UPDATE scrape_tracker SET {','.join(sets)} WHERE appid=?", vals)
         if cur.rowcount == 0:  # appid not tracked yet -> create then set
@@ -439,6 +528,8 @@ def write_result(appid, *, scrape_status, emails=None, website=None):
 # --- review actions (used by the Leads Reviewer) ------------------------
 def mail_status_appids(status):
     """Appids whose Mail_status equals `status` (e.g. 'Pending'). Read-only."""
+    if status not in MAIL_STATUSES + INTERNAL_MAIL_STATUSES:
+        raise ValueError(f"bad mail status {status!r}")
     _ensure()
     with closing(_ro()) as conn:
         return [r[0] for r in conn.execute(
@@ -448,6 +539,8 @@ def mail_status_appids(status):
 
 def mail_status_emails(status):
     """(appid, emails) for one mail state, fetched in a single remote read."""
+    if status not in MAIL_STATUSES + INTERNAL_MAIL_STATUSES:
+        raise ValueError(f"bad mail status {status!r}")
     _ensure()
     with closing(_ro()) as conn:
         return [(r[0], r[1] or "") for r in conn.execute(
@@ -467,15 +560,40 @@ def approval_ready_appids():
             "AND scrape_status IN ('seeded','scraped') ORDER BY appid")]
 
 
+def nomail_ready_appids():
+    """Appids awaiting scraping or settled without a usable email."""
+    _ensure()
+    with closing(_ro()) as conn:
+        return [r[0] for r in conn.execute(
+            "SELECT appid FROM scrape_tracker WHERE Mail_status='Pending' "
+            "AND scrape_status IN ('pending','no_email','failed') ORDER BY appid")]
+
+
 def set_mail_status(appid, status):
-    """Set one lead's Mail_status (e.g. 'Writing' on acceptance)."""
-    if status not in MAIL_STATUSES:
-        raise ValueError(f"bad mail status {status!r}; expected one of {MAIL_STATUSES}")
+    """Apply one legal user-facing outreach transition."""
     _ensure()
     with closing(_rw()) as conn:
-        conn.execute("UPDATE scrape_tracker SET Mail_status=? WHERE appid=?",
-                     (status, int(appid)))
+        if status == "Invalid":
+            row = conn.execute(
+                "UPDATE scrape_tracker SET Mail_status='Invalid' "
+                "WHERE appid=? AND scrape_status='invalid' "
+                "AND Mail_status NOT IN ('Sent','Replied') RETURNING appid",
+                (int(appid),)).fetchone()
+        elif status in MAIL_TRANSITIONS:
+            previous = (("Writing", "Scheduled") if status == "Drafted"
+                        else (MAIL_TRANSITIONS[status],))
+            placeholders = ",".join("?" * len(previous))
+            email_guard = (" AND scrape_status IN ('seeded','scraped')"
+                           if status in ("Writing", "Drafted", "Scheduled") else "")
+            row = conn.execute(
+                f"UPDATE scrape_tracker SET Mail_status=? WHERE appid=? "
+                f"AND Mail_status IN ({placeholders}){email_guard} RETURNING appid",
+                (status, int(appid), *previous)).fetchone()
+        else:
+            raise ValueError(f"{status!r} is not a direct outreach transition")
         conn.commit()
+    if row is None:
+        raise ValueError(f"illegal transition to {status!r} for appid {appid}")
 
 
 def get_emails(appid):
@@ -488,12 +606,17 @@ def get_emails(appid):
 
 
 def set_mail_template(appid, template):
-    """Record which mail variant was approved (the N in mail_<appid>_<N>.txt)."""
+    """Record the mail variant while a draft is being written or reviewed."""
     _ensure()
     with closing(_rw()) as conn:
-        conn.execute("UPDATE scrape_tracker SET mail_template=? WHERE appid=?",
-                     (int(template), int(appid)))
+        row = conn.execute(
+            "UPDATE scrape_tracker SET mail_template=? "
+            "WHERE appid=? AND Mail_status IN ('Writing','Drafted') RETURNING appid",
+            (int(template), int(appid)),
+        ).fetchone()
         conn.commit()
+    if row is None:
+        raise ValueError(f"cannot set mail template for appid {appid} in its current state")
 
 
 def get_mail_template(appid):
@@ -519,10 +642,63 @@ def claim_mail(appid):
     with closing(_rw()) as conn:
         row = conn.execute(
             "UPDATE scrape_tracker SET Mail_status='Sending' "
-            "WHERE appid=? AND Mail_status='Scheduled' RETURNING appid",
+            "WHERE appid=? AND Mail_status='Scheduled' "
+            "AND scrape_status IN ('seeded','scraped') RETURNING appid",
             (int(appid),)).fetchone()
         conn.commit()
     return row is not None
+
+
+def repair_invalid_rows():
+    """Reconcile unsent rows whose stored email and pipeline states disagree."""
+    _ensure()
+    changed = []
+    with closing(_rw()) as conn:
+        rows = conn.execute(
+            "SELECT appid, scrape_status, emails, Mail_status FROM scrape_tracker"
+        ).fetchall()
+        for appid, scrape_status, emails, mail_status in rows:
+            state = email_state(emails)
+            outreach_state = mail_status in ("Writing", "Drafted", "Scheduled", "Sending")
+            source_state = scrape_status in ("seeded", "scraped")
+            if mail_status in ("Sent", "Replied"):
+                continue
+            if state == "invalid":
+                target = ("invalid", "Invalid")
+            elif state == "missing" and (outreach_state or source_state
+                                         or scrape_status == "invalid"):
+                target = ("pending", "Pending")
+            elif state == "valid" and (scrape_status == "invalid"
+                                       or mail_status == "Invalid"):
+                target = ("scraped", "Pending")
+            else:
+                continue
+            if target == (scrape_status, mail_status):
+                continue
+            conn.execute(
+                "UPDATE scrape_tracker SET scrape_status=?, Mail_status=? WHERE appid=?",
+                (*target, appid))
+            changed.append(appid)
+        conn.commit()
+    return changed
+
+
+def quarantine_unusable(appid):
+    """Remove an unusable recipient from outreach, preserving missing vs malformed."""
+    _ensure()
+    with closing(_rw()) as conn:
+        row = conn.execute(
+            "SELECT emails, Mail_status FROM scrape_tracker WHERE appid=?", (int(appid),)
+        ).fetchone()
+        if row and row[1] not in ("Sent", "Replied"):
+            state = email_state(row[0])
+            if state != "valid":
+                target = ("pending", "Pending") if state == "missing" else (
+                    "invalid", "Invalid")
+                conn.execute(
+                    "UPDATE scrape_tracker SET scrape_status=?, Mail_status=? WHERE appid=?",
+                    (*target, int(appid)))
+        conn.commit()
 
 
 def reset_sending(appid, status):

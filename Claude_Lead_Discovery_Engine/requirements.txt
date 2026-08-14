@@ -1,1 +1,4 @@
-openpyxl>=3.1.5
+boto3==1.43.22
+libsql==0.1.11
+openpyxl==3.1.5
+Pillow==12.2.0

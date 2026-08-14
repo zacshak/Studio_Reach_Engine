@@ -30,9 +30,13 @@ All local/manual commands still exist through the one launcher: `python SRE.py <
 
 ## State model (Turso `scrape_tracker`)
 
-- **`scrape_status`**: `pending` (no email yet) · `seeded` (Steam listed one) · `scraped`
-  (Hermes found one) · `no_email` · `failed`.
-- **`Mail_status`**: `Pending` → `Writing` → `Drafted` → `Scheduled` → `Sending` → `Sent` → `Replied`.
+- **`scrape_status`**: `pending` (awaiting email scraping) · `seeded` (Steam listed a
+  valid one) · `scraped` (Hermes/Kimchi found a valid one) · `no_email` · `invalid`
+  (a non-empty value failed validation) · `failed`.
+- **`Mail_status`**: valid leads follow `Pending` → `Writing` → `Drafted` →
+  `Scheduled` → `Sent` → `Replied`; invalid leads branch `Pending` → `Invalid` and
+  stop. `Sending` is a hidden internal claim state between `Scheduled` and `Sent`;
+  `Invalid` is quarantined and never rendered in the review views.
 
 Media (screenshots, sprite sheet, manifest with the drafted mail) lives in **Cloudflare
 R2**, keyed by appid via `index.json`. The app and the cloud jobs read/write there; the
@@ -63,8 +67,9 @@ While `irrelevant.json` is non-empty the app shows ONLY the flagged leads:
 - **Accept** → `Mail_status = Writing` (queues it for a draft).
 - **Reject** → deleted (rows + R2 media).
 
-### No-Mail (`scrape_status = pending`)
-Leads with no email anywhere on their Steam page.
+### No-Mail (`scrape_status = pending`, `no_email`, or `failed`)
+Leads that are not eligible for outreach yet: awaiting scraping, no email found,
+or a scraper failure. Invalid records are quarantined and hidden.
 - **🔎 Scrape emails (run Hermes)** button → fires `hermes.yml`. Hermes (headless Playwright
   + Gemini) walks every `pending` lead, scrapes the studio's site (DuckDuckGo search when
   there's no website) and extracts the best recruiting email. A hit flips the lead to
@@ -111,6 +116,7 @@ No redeploy needed — the next draft run reads the new templates.
 | `--draft-mails` | AI-draft cold mails for `Writing` leads → R2 manifests (`draft.yml`) |
 | `--send-mails` | send `Scheduled` mails (`send.yml`); `--dry-run`, `--limit N` locally |
 | `--review-mails` | check `Sent` leads for replies → `Replied` (`review-mails.yml`) |
+| `--repair-invalid` | quarantine existing unsent rows with missing/invalid recipients |
 | `--sync-templates` | push cold-mail templates → R2 |
 | `--sync-media` | mirror local staged media → R2 |
 | `--snap-db` | dump live Turso DB → `last_cache.sqlite` (DB Browser) |

@@ -14,7 +14,7 @@ class MailerTest(unittest.TestCase):
             patch.object(mailer.pipeline, "mail_status_emails",
                          return_value=[(1, "not an email"), (2, "studio@example.com")]),
             patch.object(mailer.pipeline, "sent_today", return_value=0),
-            patch.object(mailer.pipeline, "set_mail_status") as set_status,
+            patch.object(mailer.pipeline, "quarantine_unusable") as quarantine,
             patch.object(mailer.pipeline, "claim_mail", return_value=True),
             patch.object(mailer.pipeline, "mark_sent") as mark_sent,
             patch.object(mailer, "_load_mail",
@@ -24,7 +24,7 @@ class MailerTest(unittest.TestCase):
         ):
             mailer.main(limit=1)
 
-        set_status.assert_called_once_with(1, "Drafted")
+        quarantine.assert_called_once_with(1)
         send.assert_called_once_with("sender@example.com", "secret",
                                      "studio@example.com", "subject", "body")
         mark_sent.assert_called_once_with(2)

@@ -127,13 +127,10 @@ def games_to_review():
 
 
 def nomail_games_to_review():
-    """Un-mailable leads: scraping found no email ('no_email') or errored ('failed').
-    Kimchi runs right after discovery and drains 'pending', so what lands here is the
-    settled set. Same shape as games_to_review(). Reject-only in the GUI."""
-    statuses = ("no_email", "failed")
+    """Leads awaiting scraping, with no email, or with a scraper error."""
     if _CLOUD:
-        return _lazy_list(pipeline.scrape_status_appids(*statuses))
-    return _local_queue(pipeline.scrape_status_appids(*statuses), NOMAIL_DIR)
+        return _lazy_list(pipeline.nomail_ready_appids())
+    return _local_queue(pipeline.nomail_ready_appids(), NOMAIL_DIR)
 
 
 def _local_queue(appids, base):
@@ -229,6 +226,9 @@ def ingest_emails(items):
             unmatched.append(url)
             continue
         pipeline.write_result(appid, scrape_status="scraped", emails=email)
+        if pipeline.email_state(email) != "valid":
+            skipped.append(url)
+            continue
         src = _folder_for(appid, NOMAIL_DIR)       # move local data to the seeded store
         if src:
             dst = os.path.join(MEDIA_DIR, os.path.basename(src))
@@ -335,8 +335,8 @@ def irrelevant_to_review():
 
 def _drop_irrelevant(appid):
     """Remove one appid from R2's irrelevant.json."""
-    keep = [a for a in media_store.fetch_irrelevant() if int(a) != int(appid)]
-    media_store.write_irrelevant(keep)
+    media_store.update_irrelevant(
+        lambda current: [a for a in current if int(a) != int(appid)])
 
 
 def Keep_Irrelevant(appid):

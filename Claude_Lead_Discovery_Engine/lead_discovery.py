@@ -125,6 +125,7 @@ def main():
     os.makedirs(bf.OUT_DIR, exist_ok=True)
     conn = pipeline.connect()
     bf.init_db(conn)
+    pipeline.init_tracker()
 
     today = datetime.now(bf.IST).date().isoformat()
     stamp = args.stamp or datetime.now(bf.IST).strftime("%Y-%m-%d_%H%M")
@@ -138,27 +139,25 @@ def main():
     # --sample is a PREVIEW tool: it must never write into newly_added.
     # Only real runs (a diff list or an explicit --file) persist leads.
     is_sample = bool(args.sample)
-    # background exporter: stages each newly-seeded lead (folder + JSON + screenshots)
-    # for human approval, off the main thread so downloads never slow the fetch loop.
+    # Exporters stage folders + screenshots concurrently after source validation.
     exporter = None if is_sample else ApprovalExporter()
     # same staging for no-email leads, into No_Mail_Games (scrape_status 'pending')
     nomail_exporter = None if is_sample else ApprovalExporter(base_dir=NOMAIL_BASE,
                                                               status="pending")
     limiter = bf.RateLimiter(bf.MIN_INTERVAL, bf.MAX_PER_WINDOW, bf.WINDOW)
-    rows, ok, dropped = [], 0, 0
+    rows, tracked_appids, ok, dropped = [], [], 0, 0
     for idx, appid in enumerate(appids, 1):
         hit = None if args.refresh else bf.cache_get(conn, appid)
         if hit is not None:
             norm = hit["normalized"] if hit["success"] else None
+            tracked = norm is not None
             tag = "cache"
         else:
             success, norm, raw = bf.fetch_one(appid, limiter)
+            tracked = False
             if not is_sample:  # cache_put itself guards to pre-release leads only
-                if bf.cache_put(conn, appid, success, raw, discovered_on=today) and norm:
-                    if norm.get("support_email"):
-                        exporter.submit(appid)        # seeded -> Approval_Pending_Games
-                    else:
-                        nomail_exporter.submit(appid)  # no email -> No_Mail_Games
+                tracked = bool(bf.cache_put(
+                    conn, appid, success, raw, discovered_on=today) and norm)
             tag = "fetched"
         if not norm:
             dropped += 1
@@ -170,10 +169,31 @@ def main():
         if not args.include_released and not norm.get("coming_soon"):
             dropped += 1
             continue
+        if not is_sample and tracked:
+            tracked_appids.append(appid)
         rows.append(to_row(norm))
         ok += 1
         print(f"[{idx}/{len(appids)}] {tag:<7} {norm['game_name'][:42]}  "
               f"[{norm['type']}, {'coming soon' if norm['coming_soon'] else 'released'}]")
+
+    if not is_sample:
+        # Reconcile with the shared validator before any media exporter can stage a
+        # lead. This is the first point at which source contact data becomes a queue
+        # state, so invalid values never reach the outreach review folder.
+        pipeline.seed_pending()
+        invalid = 0
+        for appid in tracked_appids:
+            norm = pipeline.read_lead(appid) or {}
+            status = norm.get("support_info")
+            state = pipeline.discovery_status(pipeline._support_email(status))
+            if state == "seeded":
+                exporter.submit(appid)
+            elif state == "invalid":
+                invalid += 1
+            else:
+                nomail_exporter.submit(appid)
+    else:
+        invalid = 0
 
     csv_path = os.path.join(bf.OUT_DIR, f"leads_{stamp}.csv")
     xlsx_path = os.path.join(bf.OUT_DIR, f"leads_{stamp}.xlsx")
@@ -183,18 +203,19 @@ def main():
         w.writerows(rows)
     write_excel(rows, xlsx_path)
 
-    # wait for background exports to finish (they ran during the loop)
+    # wait for concurrent exports to finish
     staged, exp_errors = exporter.close() if exporter else (0, [])
     nomail_staged, nomail_errors = nomail_exporter.close() if nomail_exporter else (0, [])
 
     print("\n" + "=" * 60)
-    print(f"  LEAD DISCOVERY COMPLETE")
+    print("  LEAD DISCOVERY COMPLETE")
     print(f"  {ok} pre-release leads kept, {dropped} skipped (released/no-data/other)")
     print(f"  Excel: {xlsx_path}")
     print(f"  CSV  : {csv_path}")
     if exporter:
         print(f"  Approval-staged: {staged} seeded lead(s)"
               + (f", {len(exp_errors)} export error(s)" if exp_errors else ""))
+        print(f"  Invalid         : {invalid} lead(s) quarantined")
         print(f"  No-mail-staged : {nomail_staged} pending lead(s)"
               + (f", {len(nomail_errors)} export error(s)" if nomail_errors else ""))
     print("=" * 60)

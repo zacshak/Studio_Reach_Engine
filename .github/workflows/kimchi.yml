@@ -26,20 +26,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 75          # job ceiling; the agent step below has its own 60-min cap
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - name: Install kimchi CLI + Playwright (headless Chromium) + DB deps
-        env:
-          # Force bin+data under $HOME. The runner CAN write /usr/local/bin, so the installer
-          # picks it — but its paired /usr/local/share is root-owned, so the data-dir move dies
-          # with "Permission denied". Pinning the dir keeps both halves writable.
-          KIMCHI_INSTALL_DIR: /home/runner/.local/bin
         run: |
-          curl -fsSL https://github.com/getkimchi/kimchi/releases/latest/download/install.sh | bash
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"   # ensure the kimchi binary is on PATH
-          pip install --quiet libsql playwright
+          mkdir -p "$HOME/.local"
+          curl -fsSLo "$RUNNER_TEMP/kimchi.tar.gz" https://github.com/getkimchi/kimchi/releases/download/v0.1.90/kimchi_linux_amd64.tar.gz
+          echo "176f18d4cec511fa75ba9e3a0c6bb9c7639f4d72060ce3501cf96cf91471d310  $RUNNER_TEMP/kimchi.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/kimchi.tar.gz" -C "$HOME/.local"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          pip install --quiet libsql==0.1.11 playwright==1.60.0
           playwright install --with-deps chromium
       - name: Run kimchi agent over the pending queue
         # Hard cap: on 2026-07-02 the agent drained the queue but never exited and idled

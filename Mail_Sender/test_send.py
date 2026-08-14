@@ -8,13 +8,9 @@ STARTTLS on smtp.gmail.com:587, plain-text single-recipient MIME) — so where i
 Env: GMAIL_USER + GMAIL_APP_PASSWORD (the same GHA secrets the send job uses).
 """
 import os
-import smtplib
-import ssl
 import sys
-from email.message import EmailMessage
 
-SENDER_NAME = "Meshak"                 # keep in sync with mailer.SENDER_NAME
-SMTP_HOST, SMTP_PORT = "smtp.gmail.com", 587
+from mailer import _recipient, _send
 
 SUBJECT = "helping with your game ?"
 BODY = """Hi,
@@ -40,17 +36,11 @@ def main(argv):
         sys.exit("GMAIL_APP_PASSWORD not set (env / GHA secret).")
     if not argv or not argv[0].strip():
         sys.exit("recipient email required")
-    to = argv[0].strip()
+    to = _recipient(argv[0])
+    if not to:
+        sys.exit("recipient email is invalid")
 
-    msg = EmailMessage()
-    msg["From"] = f"{SENDER_NAME} <{user}>"
-    msg["To"] = to
-    msg["Subject"] = SUBJECT
-    msg.set_content(BODY)
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as s:
-        s.starttls(context=ssl.create_default_context())
-        s.login(user, password)
-        s.send_message(msg)
+    _send(user, password, to, SUBJECT, BODY)
     print(f"sent test mail to {to} from {user}")
     return 0
 

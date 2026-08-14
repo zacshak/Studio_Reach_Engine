@@ -54,8 +54,8 @@ def snapshot(src, out, label):
             if typ != "table":
                 try:
                     dst.execute(sql)
-                except sqlite3.Error:
-                    pass
+                except sqlite3.Error as exc:
+                    raise RuntimeError(f"could not recreate {typ} {name!r}: {exc}") from exc
         dst.commit()
     finally:
         dst.close()

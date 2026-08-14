@@ -472,7 +472,7 @@ class Reviewer(tk.Tk):
 
     def _reject(self, appid):
         verb = "Delete" if self.mode == "delete" else "Reject"
-        name = next((l["name"] for l in self.leads if l["appid"] == appid), appid)
+        name = next((lead["name"] for lead in self.leads if lead["appid"] == appid), appid)
         if not messagebox.askyesno(
                 f"{verb} lead",
                 f"{verb} “{name}”?\n\nThis permanently deletes its row from both "
@@ -495,7 +495,7 @@ class Reviewer(tk.Tk):
         self._info.pop(appid, None)
         if card:
             card.destroy()
-        self.leads = [l for l in self.leads if l["appid"] != appid]
+        self.leads = [lead for lead in self.leads if lead["appid"] != appid]
         self._update_counter()
         if not self.cards:
             self._empty()

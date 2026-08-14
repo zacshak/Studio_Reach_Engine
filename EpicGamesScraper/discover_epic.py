@@ -71,17 +71,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(f"Epic database: {database}")
     print(f"Epic details: {detail_ok} fetched, {detail_failed} failed")
+    result = 1 if detail_failed else 0
+    if detail_failed:
+        print("Epic discovery incomplete: failed details remain retryable.", file=sys.stderr)
     if bootstrap:
         print("Baseline stored. New-game reporting starts on the next run.")
-        return 0
+        return result
     if not new_products:
         print("No newly observed Epic upcoming games.")
-        return 0
+        return result
 
     print(f"New Epic games: {len(new_products)}")
     for product in new_products:
         print(f"  {product['title']} [{product['epic_key']}] {product['store_url']}")
-    return 0
+    return result
 
 
 if __name__ == "__main__":

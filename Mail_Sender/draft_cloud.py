@@ -36,18 +36,21 @@ _UA = {"User-Agent": "Mozilla/5.0"}
 def _parse_templates(raw):
     """The templates as a list of (n, text), split on the '#Cold Mail - N' headers,
     in ascending number order (so selection cycles 1,2,3,4,1,...)."""
-    out = []
-    for block in re.split(r"#Cold Mail\s*-\s*(\d+)", raw)[1:]:
-        if out and out[-1][1] is None:
-            out[-1] = (out[-1][0], block.strip().strip("-").strip())
-        else:
-            out.append((int(block), None))
-    return sorted([(n, t) for n, t in out if t])
+    parts = re.split(r"#Cold Mail\s*-\s*(\d+)", raw)
+    return sorted((int(parts[i]), parts[i + 1].strip().strip("-").strip())
+                  for i in range(1, len(parts) - 1, 2) if parts[i + 1].strip())
+
+
+def _normalize_terms(text):
+    """Undo speech-style rewrites of technical names and numeric '+' notation."""
+    text = re.sub(r"\bC\s+plus\s+plus\b", "C++", text, flags=re.I)
+    text = re.sub(r"\bC\s+sharp\b", "C#", text, flags=re.I)
+    return re.sub(r"\b(\d+)\s+plus\b", r"\1+", text, flags=re.I)
 
 
 def _load_templates():
     """Templates from R2 (the persistent source of truth); fall back to the tracked file."""
-    raw = media_store.fetch_templates()
+    raw = media_store.fetch_templates(strict=True)
     if not raw:
         raw = open(TEMPLATES_FILE, encoding="utf-8").read()
     return _parse_templates(raw)
@@ -71,6 +74,8 @@ Rules:
   Never state store-page features as if you saw them. If the screenshot shows no flaw, critique
   only what is on screen, or do not critique at all. Never invent facts.
 - Do NOT use the '-' character anywhere in what you write; it screams AI written. Reword instead.
+- Preserve technical names and symbols exactly: C++, C#, DirectX 12, OpenGL, Unreal Engine,
+  Unity, AAA, and numeric forms such as 4+ and 30+.
 - Keep the "Subject:" line and the template's tone. Output ONLY the finished email, nothing else."""
 
 
@@ -100,7 +105,10 @@ def _draft(client, model, manifest, folder):
     for attempt in range(RETRIES):
         try:
             resp = client.chat.completions.create(model=model, max_tokens=600, messages=msgs)
-            return (resp.choices[0].message.content or "").strip()
+            mail = _normalize_terms((resp.choices[0].message.content or "").strip())
+            if not mail:
+                raise ValueError("model returned an empty draft")
+            return mail
         except Exception as e:
             if attempt == RETRIES - 1:
                 raise
@@ -122,7 +130,9 @@ def main():
     client = OpenAI(base_url=base, api_key=key, max_retries=0)
 
     templates = _load_templates()
-    index = media_store.fetch_index()
+    if not templates:
+        sys.exit("no valid '#Cold Mail - N' templates found")
+    index = media_store.fetch_index(strict=True)
     queue = pipeline.mail_status_appids("Writing")
     print(f"{len(queue)} lead(s) in 'Writing'; {len(templates)} templates")
 
@@ -130,12 +140,19 @@ def main():
     tally = {n: 0 for n, _ in templates}
     for appid in queue:
         folder = index.get(str(appid))
-        manifest = media_store.fetch_manifest(folder) if folder else None
+        manifest = media_store.fetch_manifest(folder, strict=True) if folder else None
         if not manifest:
             skipped += 1
             continue
-        if (manifest.get("mail") or "").strip():     # already drafted — idempotent
-            skipped += 1
+        if (manifest.get("mail") or "").strip():
+            # Recover a crash after the manifest write but before the DB transition.
+            n = manifest.get("mail_template")
+            if n is not None:
+                pipeline.set_mail_template(appid, n)
+            pipeline.set_mail_status(appid, "Drafted")
+            drafted += 1
+            if n in tally:
+                tally[n] += 1
             continue
         # pick templates in sequence (1,2,3,4,1,...) by how many we've drafted so far
         n, template = templates[drafted % len(templates)]
@@ -150,6 +167,7 @@ def main():
         manifest["mail"] = mail
         manifest["mail_template"] = n
         media_store.write_manifest(folder, manifest)
+        pipeline.set_mail_template(appid, n)
         pipeline.set_mail_status(appid, "Drafted")
         drafted += 1
         tally[n] += 1

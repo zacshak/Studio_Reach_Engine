@@ -23,19 +23,6 @@ sys.path.insert(0, _PIPELINE_DIR)
 import pipeline  # noqa: E402
 
 
-def get_pending(limit=None):
-    """Appids that still need scraping (status 'pending'). Your work queue.
-    Pass limit=N to take only the first N (e.g. limit=5 for a test run)."""
-    return pipeline.get_pending(limit)
-
-
-def read_lead(appid):
-    """The full lead row for one appid as a dict (read-only). None if unknown."""
-    return pipeline.read_lead(appid)
-
-
-def write_result(appid, *, scrape_status, emails=None, website=None):
-    """Save your result for one appid. Writes the results table only.
-    scrape_status is one of: 'SCRAPED', 'no_email', 'failed'."""
-    return pipeline.write_result(
-        appid, scrape_status=scrape_status, emails=emails, website=website)
+get_pending = pipeline.get_pending
+read_lead = pipeline.read_lead
+write_result = pipeline.write_result

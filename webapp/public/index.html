@@ -145,6 +145,11 @@ async function load() {
   $("#view").innerHTML = '<div class="empty">Loading…</div>';
   const r = await fetch("/api/state", { headers: { "x-auth": AUTH } });
   if (r.status === 401) { localStorage.removeItem("sre_auth"); AUTH = ""; ensureAuth(); return load(); }
+  if (!r.ok) {
+    const error = await r.json().catch(() => ({}));
+    $("#view").textContent = `Could not load data: ${error.error || r.status}`;
+    return;
+  }
   S = await r.json();
   Q = queues();
   if (!Q[tab].length) tab = ["triage", "approval", "mail", "nomail"].find((t) => Q[t].length) || tab;
@@ -236,7 +241,7 @@ function render() {
     ? `<div class="shotsall">${imgs.map((f) =>
         `<img loading="lazy" src="/media/${enc(card.folder)}/${enc(f)}">`).join("")}</div>` : "";
   const mail = tab === "mail"
-    ? `<div class="mail"><div class="to">To: ${emailsOf(card.appid) || "(no recipient!)"}</div>${
+    ? `<div class="mail"><div class="to">To: ${escapeHtml(emailsOf(card.appid) || "(no recipient!)")}</div>${
         (m && m.mail) ? escapeHtml(m.mail) : "<i>(not drafted yet)</i>"}</div>` : "";
 
   const A = { triage: ["✅ Keep", "keep"], approval: ["✅ Accept", "accept"],

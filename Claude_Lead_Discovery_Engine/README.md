@@ -52,7 +52,7 @@ Preview without waiting (does NOT touch the database):
 python lead_discovery.py --sample 25
 ```
 
-## Data model (`cache.sqlite`, git-ignored)
+## Data model (Turso, or local `cache.sqlite` fallback)
 
 | Table | Purpose |
 |---|---|

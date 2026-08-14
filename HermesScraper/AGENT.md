@@ -81,10 +81,11 @@ upstream — you never write them.)
 | Status | Who sets it | When | In your queue? |
 |---|---|---|---|
 | `pending` | upstream | no email on the Steam page — needs you | **yes** |
-| `seeded` | upstream | Steam already listed an email; pre-filled, skipped | no |
+| `seeded` | upstream | Steam listed a valid email; pre-filled, skipped | no |
 | `SCRAPED` | **you** | found an email on the web | no |
 | `no_email` | **you** | checked everywhere, nothing published | no |
-| `failed` | **you** | scrape errored, blocked, or hit the ~6 min budget | stays — retried next run |
+| `invalid` | pipeline | a non-empty extracted value failed validation; hidden quarantine | no |
+| `failed` | **you** | scrape errored, blocked, or hit the ~6 min budget | No-Mail; retry after reset |
 `get_pending()` returns only `pending`, so any status you write removes the lead from
 the queue (except `failed`, which a later run retries).
 

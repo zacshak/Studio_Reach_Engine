@@ -117,7 +117,7 @@ def fetch_comingsoon():
             if appid not in seen:
                 seen.add(appid)
                 items.append((appid, name))
-        start += PAGE
+        start += len(page_items)
         if pages % 20 == 0:
             print(f"  ...{len(items)} / ~{total0} so far ({pages} pages)")
     # reliability guard: refuse a silently-truncated snapshot
@@ -171,7 +171,7 @@ def main():
     print("\n" + "=" * 56)
     if bootstrap:
         print(f"  BOOTSTRAP done. Baseline of {len(items)} pre-release pages memorised.")
-        print(f"  No 'new' list this run (need a prior run to compare).")
+        print("  No 'new' list this run (need a prior run to compare).")
         print("=" * 56)
         conn.close()
         return 10  # runner: baseline-only, no leads to build

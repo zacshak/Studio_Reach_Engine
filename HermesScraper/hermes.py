@@ -11,12 +11,13 @@ Division of labour:
 The DB is reached only through scraper_interface (get_pending / read_lead / write_result):
   email found  -> scrape_status='scraped'  (leaves No-Mail, surfaces in Game-Approval)
   none found   -> scrape_status='no_email'
-  errored      -> scrape_status='failed'   (stays pending, retried next run)
+  errored      -> scrape_status='failed'   (surfaces in No-Mail review)
 
 Env: TURSO_* (via .env / GHA secrets, loaded by pipeline) + TRIAGE_BASE_URL/MODEL/API_KEY
 (reused from triage so there's nothing new to configure). Playwright browser must be
 installed (`playwright install chromium`).
 """
+import json
 import os
 import re
 import sys
@@ -52,9 +53,11 @@ def _text(page):
 
 def _same_site(base, href):
     try:
-        return urllib.parse.urlparse(href).netloc.endswith(
-            urllib.parse.urlparse(base).netloc.split(":")[0]) or href.startswith("/")
-    except Exception:
+        source = (urllib.parse.urlparse(base).hostname or "").lower().removeprefix("www.")
+        target = (urllib.parse.urlparse(urllib.parse.urljoin(base, href)).hostname
+                  or "").lower().removeprefix("www.")
+        return bool(source and (target == source or target.endswith("." + source)))
+    except (TypeError, ValueError):
         return False
 
 
@@ -154,9 +157,12 @@ def _candidate_urls(lead):
     urls, support = [], lead.get("support_info") or ""
     if lead.get("website"):
         urls.append(lead["website"])
-    m = re.search(r'"url"\s*:\s*"([^"]+)"', support)   # support_info is a raw JSON string
-    if m and m.group(1) not in urls:
-        urls.append(m.group(1))
+    try:
+        support_url = (json.loads(support).get("url") or "") if isinstance(support, str) else ""
+    except (json.JSONDecodeError, AttributeError):
+        support_url = ""
+    if support_url and support_url not in urls:
+        urls.append(support_url)
     return [u for u in urls if u and "store.steampowered.com" not in u]
 
 

@@ -44,7 +44,7 @@ def _games():
     appids = pipeline.mail_status_appids("Pending")
     if not appids:
         return []
-    index = media_store.fetch_index()
+    index = media_store.fetch_index(strict=True)
     out = []
     missing = []
     for appid in appids:
@@ -160,9 +160,8 @@ def main():
     print(f"Rejected Games = {rejected}")
     if skipped:
         print(f"NOTE: {skipped} game(s) couldn't be triaged; rerun Triage.", file=sys.stderr)
-    existing = {int(appid) for appid in media_store.fetch_irrelevant()}
-    merged = sorted(existing | set(rejected))
-    media_store.write_irrelevant(merged)
+    merged = media_store.update_irrelevant(
+        lambda current: sorted({int(appid) for appid in current} | set(rejected)))
     print(f"merged {len(rejected)} new flag(s) -> {len(merged)} in R2 irrelevant.json")
     return 1 if skipped else 0
 

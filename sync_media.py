@@ -63,7 +63,7 @@ def main(argv):
     client = media_store._client()        # reuse one client for the whole run
     only = {int(a) for a in argv} or None
     done = failed = 0
-    local = {str(appid): os.path.basename(folder) for appid, folder in _lead_folders()}
+    uploaded = {}
     for appid, folder in _lead_folders(only):
         jpath = os.path.join(folder, f"{appid}.json")
         if not os.path.exists(jpath):
@@ -72,17 +72,14 @@ def main(argv):
             with open(jpath, encoding="utf-8") as f:
                 data = json.load(f)
             media_store.upload_dir(folder, appid, _card(data, appid), client=client)
+            uploaded[str(appid)] = os.path.basename(folder)
             done += 1
             print(f"  synced {appid}  {data.get('gameName', '')[:48]}")
         except Exception as e:               # one bad lead shouldn't stop the mirror
             failed += 1
             print(f"  FAILED {appid}: {e!r}")
-    # MERGE into the existing R2 index, don't overwrite. On the PC (full local set) this
-    # equals a rebuild; on an ephemeral cloud runner (only the night's new leads) it adds
-    # them without wiping the rest.
-    index = media_store.fetch_index()
-    index.update(local)
-    media_store.write_index(index, client=client)
+    # Merge only successful uploads; a failed folder must never enter the remote index.
+    index = media_store.update_index(lambda current: {**current, **uploaded}, client=client)
     print(f"\ndone: {done} lead(s) -> R2 bucket '{media_store.BUCKET}'; "
           f"index {len(index)}"
           + (f", {failed} failed" if failed else ""))

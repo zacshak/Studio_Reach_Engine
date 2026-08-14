@@ -14,6 +14,7 @@ the single front door so you don't memorise six script paths.
     python SRE.py --sync-templates            # push cold-mail templates -> R2 (drafter source)
     python SRE.py --send-mails                # send scheduled cold mails (--dry-run, --limit N)
     python SRE.py --review-mails              # check Sent leads for replies -> mark 'Replied'
+    python SRE.py --repair-invalid            # quarantine existing invalid unsent recipients
     python SRE.py --sync-media                # mirror staged media -> R2 (cloud review app)
     python SRE.py --snap-db                   # dump Steam + Epic Turso DBs -> local SQLite files
 """
@@ -35,6 +36,7 @@ ROUTES = {
     "--sync-templates": ("Mail_Sender/sync_templates.py", []),
     "--send-mails":    ("Mail_Sender/mailer.py", []),
     "--review-mails":  ("Mail_Sender/mailer.py", ["--review"]),
+    "--repair-invalid": ("Claude_Lead_Discovery_Engine/repair_invalid.py", []),
     "--sync-media":    ("sync_media.py", []),
     "--snap-db":       ("snap_db.py", []),
 }

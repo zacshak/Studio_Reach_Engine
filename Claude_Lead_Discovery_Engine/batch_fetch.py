@@ -24,10 +24,10 @@ import urllib.request
 from collections import deque
 from datetime import datetime, timedelta, timezone
 
-IST = timezone(timedelta(hours=5, minutes=30))  # India Standard Time
-
 from fetch_app import normalize  # reuse the v0.1 field extractor
 import pipeline  # shared DB connection (Turso when configured) — single source of truth
+
+IST = timezone(timedelta(hours=5, minutes=30))  # India Standard Time
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -345,7 +345,7 @@ def main():
             print(f"           -> {norm['game_name']}  [{norm['type']}]  email={norm['support_email'] or 'none'}")
         else:
             dead += 1
-            print(f"           -> no store data (dead/region-locked/non-store)")
+            print("           -> no store data (dead/region-locked/non-store)")
 
     if args.games_only:
         rows = [r for r in rows if r.get("type") == "game"]

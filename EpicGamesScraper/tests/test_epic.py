@@ -7,8 +7,8 @@ import unittest
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HERE)
 
-import epic_db
-from epic_client import EpicCatalogClient, normalize_product
+import epic_db  # noqa: E402
+from epic_client import EpicCatalogClient, normalize_product  # noqa: E402
 
 
 class EpicTests(unittest.TestCase):
@@ -40,6 +40,15 @@ class EpicTests(unittest.TestCase):
             "offerMappings": [{"pageType": "productHome", "pageSlug": "example-123abc"}],
         })
         self.assertEqual(product["store_url"], "https://store.epicgames.com/en-US/p/example-123abc")
+
+    def test_store_slug_cannot_create_extra_path_segments(self):
+        product = normalize_product({
+            "id": "offer-1", "title": "Example", "productSlug": "example/edition",
+        })
+        self.assertEqual(
+            product["store_url"],
+            "https://store.epicgames.com/en-US/p/example%2Fedition",
+        )
 
     def test_fetch_upcoming_follows_server_page_limit(self):
         client = EpicCatalogClient()

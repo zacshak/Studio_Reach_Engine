@@ -20,7 +20,6 @@ results. Deleting the KimchiScraper folder removes kimchi entirely (pipeline is 
 """
 import json
 import os
-import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -38,9 +37,12 @@ def _candidate_urls(lead):
     urls, support = [], lead.get("support_info") or ""
     if lead.get("website"):
         urls.append(lead["website"])
-    m = re.search(r'"url"\s*:\s*"([^"]+)"', support)   # support_info is a raw JSON string
-    if m and m.group(1) not in urls:
-        urls.append(m.group(1))
+    try:
+        support_url = (json.loads(support).get("url") or "") if isinstance(support, str) else ""
+    except (json.JSONDecodeError, AttributeError):
+        support_url = ""
+    if support_url and support_url not in urls:
+        urls.append(support_url)
     return [u for u in urls if u and "store.steampowered.com" not in u]
 
 

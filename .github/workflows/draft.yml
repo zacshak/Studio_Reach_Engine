@@ -11,17 +11,20 @@ concurrency:
   group: draft
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
   draft:
     runs-on: ubuntu-latest
     timeout-minutes: 350         # safety ceiling — a rate-limited free key may wait it out.
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - name: Install deps
-        run: pip install --quiet libsql boto3 openai
+        run: pip install --quiet libsql==0.1.11 boto3==1.43.22 openai==2.43.0
       - name: Draft mails -> R2 manifests
         env:
           TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}

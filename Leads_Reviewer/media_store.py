@@ -24,6 +24,7 @@ for display.
 import json
 import os
 import re
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -63,6 +64,10 @@ TEMPLATES_KEY = "cold_mails.txt"      # the cold-mail templates, persisted in R2
 _UA = {"User-Agent": "Mozilla/5.0"}   # r2.dev 403s default urllib (CF bot block, err 1010)
 
 
+class MediaStoreError(RuntimeError):
+    """Raised when a write path cannot safely read its current R2 state."""
+
+
 # -- read side (cloud app) ------------------------------------------------
 def read_enabled():
     """True if cards can be served from R2 (public base configured)."""
@@ -79,50 +84,76 @@ def public_url(folder, filename):
     return f"{PUBLIC_BASE}/{_enc(folder)}/{_enc(filename)}"
 
 
-def _get_json(path):
+def _get_json(path, strict=False):
     """GET a JSON object by its already-built (encoded) object path."""
     try:
         req = urllib.request.Request(f"{PUBLIC_BASE}/{path}", headers=_UA)
         with urllib.request.urlopen(req, timeout=10) as r:
             return json.load(r)
-    except Exception:
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404 and strict:
+            raise MediaStoreError(f"R2 read failed for {path}: HTTP {exc.code}") from exc
+        return None
+    except Exception as exc:
+        if strict:
+            raise MediaStoreError(f"R2 read failed for {path}: {exc}") from exc
         return None
 
 
-def _get_text(key):
+def _get_text(key, strict=False):
     """GET a plain-text object from R2 (UTF-8), or None if unreachable."""
     try:
         req = urllib.request.Request(f"{PUBLIC_BASE}/{key}", headers=_UA)
         with urllib.request.urlopen(req, timeout=10) as r:
             return r.read().decode("utf-8")
-    except Exception:
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404 and strict:
+            raise MediaStoreError(f"R2 read failed for {key}: HTTP {exc.code}") from exc
+        return None
+    except Exception as exc:
+        if strict:
+            raise MediaStoreError(f"R2 read failed for {key}: {exc}") from exc
         return None
 
 
-def fetch_index():
+def fetch_index(strict=False):
     """{ '<appid>': '<GameName>_<appid>' } — appid→folder map, or {} if absent."""
-    return _get_json(INDEX_KEY) or {}
+    value = _get_json(INDEX_KEY, strict)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        if strict:
+            raise MediaStoreError("R2 index.json is not an object")
+        return {}
+    return value
 
 
-def fetch_templates():
+def fetch_templates(strict=False):
     """The cold-mail templates text stored in R2, or None if not uploaded yet."""
-    return _get_text(TEMPLATES_KEY)
+    return _get_text(TEMPLATES_KEY, strict)
 
 
-def fetch_manifest(folder):
+def fetch_manifest(folder, strict=False):
     """The lead's manifest dict from R2 (by folder name), or None if unreachable."""
-    return _get_json(f"{_enc(folder)}/manifest.json")
+    return _get_json(f"{_enc(folder)}/manifest.json", strict)
 
 
-def fetch_irrelevant():
+def fetch_irrelevant(strict=False):
     """List of appids the cloud triage flagged as irrelevant, or [] if none/absent.
     The app shows a reject-review gate while this is non-empty."""
-    return _get_json(IRRELEVANT_KEY) or []
+    value = _get_json(IRRELEVANT_KEY, strict)
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        if strict:
+            raise MediaStoreError("R2 irrelevant.json is not an array")
+        return []
+    return value
 
 
 # -- write side (boto3, imported lazily) ----------------------------------
-# Used by sync_media (local push) AND by the cloud app's triage-review actions
-# (write_irrelevant / delete_lead_media), so the deployed app needs boto3 + R2 keys.
+# Used by sync_media and the Python triage/reviewer actions, so those processes need
+# boto3 and R2 write credentials.
 def write_enabled():
     return bool(BUCKET and _ACCOUNT and _KEY and _SECRET)
 
@@ -171,7 +202,7 @@ def upload_dir(folder, appid, card, client=None):
     for name in manifest["images"]:
         ctype = "image/png" if name.lower().endswith(".png") else "image/jpeg"
         with open(os.path.join(folder, name), "rb") as fh:
-            cli.put_object(Bucket=BUCKET, Key=f"{prefix}/{name}", Body=fh.read(),
+            cli.put_object(Bucket=BUCKET, Key=f"{prefix}/{name}", Body=fh,
                            ContentType=ctype)
     cli.put_object(Bucket=BUCKET, Key=f"{prefix}/manifest.json",
                    Body=json.dumps(manifest, ensure_ascii=False).encode("utf-8"),
@@ -179,13 +210,50 @@ def upload_dir(folder, appid, card, client=None):
     return prefix
 
 
-def write_index(mapping, client=None):
-    """Upload the appid->folder map to the bucket root so the cloud app can resolve
-    a lead's folder from its appid."""
+def _error_code(exc):
+    return str(getattr(exc, "response", {}).get("Error", {}).get("Code", ""))
+
+
+def _update_json(key, fallback, mutate, client=None):
+    """Conditionally update one shared JSON object without losing concurrent writes."""
     cli = client or _client()
-    cli.put_object(Bucket=BUCKET, Key=INDEX_KEY,
-                   Body=json.dumps(mapping, ensure_ascii=False).encode("utf-8"),
-                   ContentType="application/json")
+    for _ in range(5):
+        try:
+            obj = cli.get_object(Bucket=BUCKET, Key=key)
+            current = json.loads(obj["Body"].read())
+            condition = {"IfMatch": obj["ETag"]}
+        except Exception as exc:
+            if _error_code(exc) not in ("404", "NoSuchKey", "NotFound"):
+                raise MediaStoreError(f"R2 read failed for {key}: {exc}") from exc
+            current = fallback.copy()
+            condition = {"IfNoneMatch": "*"}
+        if not isinstance(current, type(fallback)):
+            raise MediaStoreError(f"R2 {key} has the wrong JSON type")
+        updated = mutate(current.copy())
+        if not isinstance(updated, type(fallback)):
+            raise TypeError(f"R2 {key} update returned the wrong JSON type")
+        try:
+            cli.put_object(
+                Bucket=BUCKET,
+                Key=key,
+                Body=json.dumps(updated, ensure_ascii=False).encode("utf-8"),
+                ContentType="application/json",
+                **condition,
+            )
+            return updated
+        except Exception as exc:
+            if _error_code(exc) not in ("409", "412", "ConditionalRequestConflict",
+                                        "PreconditionFailed"):
+                raise MediaStoreError(f"R2 write failed for {key}: {exc}") from exc
+    raise MediaStoreError(f"concurrent R2 update did not settle for {key}")
+
+
+def update_index(mutate, client=None):
+    return _update_json(INDEX_KEY, {}, mutate, client)
+
+
+def update_irrelevant(mutate, client=None):
+    return _update_json(IRRELEVANT_KEY, [], mutate, client)
 
 
 def write_manifest(folder, manifest, client=None):
@@ -205,20 +273,18 @@ def write_templates(text, client=None):
                    ContentType="text/plain; charset=utf-8")
 
 
-def write_irrelevant(appids, client=None):
-    """Write the triage-flagged appid list to irrelevant.json at the bucket root."""
-    cli = client or _client()
-    cli.put_object(Bucket=BUCKET, Key=IRRELEVANT_KEY,
-                   Body=json.dumps(list(appids)).encode("utf-8"),
-                   ContentType="application/json")
-
-
 def delete_lead_media(appid, client=None):
     """Purge one lead's media from R2: delete every object under its folder and drop it
     from the index. Used by the app's Reject. No-op if the appid isn't indexed."""
     cli = client or _client()
-    index = fetch_index()
-    folder = index.pop(str(appid), None)
+    folder = None
+
+    def remove(index):
+        nonlocal folder
+        folder = index.pop(str(appid), None)
+        return index
+
+    update_index(remove, client=cli)
     if folder:
         keys = [o["Key"] for page in cli.get_paginator("list_objects_v2")
                 .paginate(Bucket=BUCKET, Prefix=f"{folder}/")
@@ -226,5 +292,4 @@ def delete_lead_media(appid, client=None):
         for i in range(0, len(keys), 1000):
             cli.delete_objects(Bucket=BUCKET,
                                Delete={"Objects": [{"Key": k} for k in keys[i:i + 1000]]})
-        write_index(index, client=cli)
     return bool(folder)

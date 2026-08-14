@@ -85,7 +85,7 @@ def normalize_product(raw: dict) -> dict:
 
     store_url = str(raw.get("url") or "").strip()
     if not store_url and slug:
-        store_url = f"https://store.epicgames.com/en-US/p/{urllib.parse.quote(slug)}"
+        store_url = f"https://store.epicgames.com/en-US/p/{urllib.parse.quote(slug, safe='')}"
 
     # Namespace represents the Epic product. Multiple base-game offers can share
     # one namespace, so it is the stable game-level key when available.

@@ -30,7 +30,6 @@ import smtplib
 import ssl
 import sys
 import time
-from email.headerregistry import Address
 from email.message import EmailMessage
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -110,8 +109,8 @@ def _load_mail(appid):
     Cloud: the chosen draft already lives in the lead's R2 manifest ('mail'), written at
     sync time — no local folder to read, so pull it from there."""
     if _CLOUD:
-        folder = media_store.fetch_index().get(str(appid))
-        man = media_store.fetch_manifest(folder) if folder else None
+        folder = media_store.fetch_index(strict=True).get(str(appid))
+        man = media_store.fetch_manifest(folder, strict=True) if folder else None
         text = (man or {}).get("mail")
         if not text:
             return None, None, None
@@ -147,12 +146,7 @@ def _send(user, password, to, subject, body):
 
 def _recipient(raw):
     """First stored address, normalized; empty means it is not deliverable."""
-    addr = ((raw or "").split(",")[0] or "").strip()
-    try:
-        parsed = Address(addr_spec=addr)
-    except ValueError:
-        return ""
-    return addr if parsed.username and parsed.domain else ""
+    return pipeline.normalize_email(raw)
 
 
 def main(dry_run=False, limit=None):
@@ -173,14 +167,18 @@ def main(dry_run=False, limit=None):
 
     scheduled = pipeline.mail_status_emails("Scheduled")
     valid = []
+    invalid = []
     for appid, raw in scheduled:
         to = _recipient(raw)
         if to:
             valid.append((appid, to))
             continue
-        print(f"  INVALID {appid}: {raw!r} -> returned to Drafted")
+        invalid.append((appid, raw))
+    for appid, raw in invalid:
+        state = pipeline.email_state(raw).upper()
+        print(f"  {state} {appid}: {raw!r} -> removed from outreach")
         if not dry_run:
-            pipeline.set_mail_status(appid, "Drafted")
+            pipeline.quarantine_unusable(appid)
     sent_already = pipeline.sent_today()
     room = max(0, DAILY_CAP - sent_already)
     if limit is not None:
@@ -299,6 +297,10 @@ def _selftest():
     s, b = _split_subject("no subject here\njust body")
     assert s == "Hello" and b.startswith("no subject"), (s, b)
     assert _recipient("hello@example.com, other@example.com") == "hello@example.com"
+    assert not _recipient(None)
+    assert not _recipient("")
+    assert not _recipient("*")
+    assert not _recipient("https://goodgamesnh.com/")
     assert not _recipient("nordvader email")
     assert not _recipient("cauchemargames.com")
     print("selftest ok")
