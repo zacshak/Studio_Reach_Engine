@@ -12,6 +12,7 @@ Env: TURSO_* (read the 'Writing' queue) + R2 read/write (manifest) + TRIAGE_BASE
 API_KEY (reused Gemini creds; the model must be vision-capable for the sheet).
 """
 import base64
+import json
 import os
 import re
 import sys
@@ -31,6 +32,9 @@ if hasattr(sys.stdout, "reconfigure"):
 TEMPLATES_FILE = os.path.join(HERE, "cold_mail_templates.txt")   # local fallback / seed
 RETRIES = 6
 _UA = {"User-Agent": "Mozilla/5.0"}
+_PLACEHOLDER = re.compile(r"<([^<>]+)>")
+_GAME_SLOTS = {"game", "game name"}
+_STUDIO_SLOTS = {"developer/studio name"}
 
 
 def _parse_templates(raw):
@@ -42,7 +46,7 @@ def _parse_templates(raw):
 
 
 def _normalize_terms(text):
-    """Undo speech-style rewrites of technical names and numeric '+' notation."""
+    """Undo speech-style rewrites inside one model-generated value."""
     text = re.sub(r"\bC\s+plus\s+plus\b", "C++", text, flags=re.I)
     text = re.sub(r"\bC\s+sharp\b", "C#", text, flags=re.I)
     return re.sub(r"\b(\d+)\s+plus\b", r"\1+", text, flags=re.I)
@@ -56,27 +60,92 @@ def _load_templates():
     return _parse_templates(raw)
 
 
-PROMPT = """You are a Cold Mail writer. I pitch my game programming skills as a freelance/
-contract service. Analyse ONE game and write a cold email to its studio.
+SYSTEM_PROMPT = """You write personalized observation values for a cold-email template.
+Return only one valid JSON object with exactly the requested keys. Never return the email,
+the template, Markdown fences, commentary, or additional keys."""
+
+
+PROMPT = """I pitch my game programming skills as a freelance/contract service. Analyse ONE
+game and fill only the requested observation slots.
 
 Game: "{game}"  |  studio/devs: {devs}
 
 The MOST IMPORTANT context is the attached sprite-sheet screenshot image — study it; it gives
-the best read on the game. Fill in the placeholders of THIS template for this specific game:
+the best read on the game.
 
-TEMPLATE:
+READ-ONLY TEMPLATE CONTEXT:
 {template}
 
+Return this JSON shape:
+{json_shape}
+
+Slot meanings:
+{slot_meanings}
+
 Rules:
-- Replace <game>/<game name> with the game's name and <developer/studio name> with the studio.
-- Write the <...> critique/observation slot yourself.
+- Write one string value for every requested observation key.
 - EVERY concrete claim in the mail must come from what is ACTUALLY VISIBLE in the sprite sheet.
   Never state store-page features as if you saw them. If the screenshot shows no flaw, critique
   only what is on screen, or do not critique at all. Never invent facts.
-- Do NOT use the '-' character anywhere in what you write; it screams AI written. Reword instead.
+- Do not use the '-' character in observation values. Reword instead.
 - Preserve technical names and symbols exactly: C++, C#, DirectX 12, OpenGL, Unreal Engine,
   Unity, AAA, and numeric forms such as 4+ and 30+.
-- Keep the "Subject:" line and the template's tone. Output ONLY the finished email, nothing else."""
+- Match the surrounding template tone. Return only the JSON object."""
+
+
+def _studio_name(manifest):
+    """Developer segment from the legacy '<developers> · <genres>' card metadata."""
+    return (manifest.get("meta") or "").split("·", 1)[0].strip() or "there"
+
+
+def _observation_slots(template):
+    return [label.strip() for label in _PLACEHOLDER.findall(template)
+            if label.strip().lower() not in _GAME_SLOTS | _STUDIO_SLOTS]
+
+
+def _parse_observations(raw, count):
+    """Parse and validate the model's observation-only JSON response."""
+    text = (raw or "").strip()
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end < start:
+        raise ValueError("model did not return a JSON object")
+    data = json.loads(text[start:end + 1])
+    keys = [f"observation_{i}" for i in range(1, count + 1)]
+    if not isinstance(data, dict) or set(data) != set(keys):
+        raise ValueError(f"model must return exactly {keys}")
+    values = []
+    for key in keys:
+        value = data[key]
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{key} must be a non-empty string")
+        value = _normalize_terms(value.strip())
+        if "<" in value or ">" in value or "-" in value:
+            raise ValueError(f"{key} contains a forbidden character")
+        values.append(value)
+    return values
+
+
+def _render_template(template, game, studio, observations):
+    """Replace known slots while preserving every literal template byte."""
+    observations = iter(observations)
+
+    def replace(match):
+        label = match.group(1).strip().lower()
+        if label in _GAME_SLOTS:
+            return game
+        if label in _STUDIO_SLOTS:
+            return studio
+        return next(observations)
+
+    try:
+        rendered = _PLACEHOLDER.sub(replace, template)
+    except StopIteration as exc:
+        raise ValueError("missing observation value") from exc
+    try:
+        next(observations)
+    except StopIteration:
+        return rendered
+    raise ValueError("extra observation value")
 
 
 def _sheet_b64(folder, images):
@@ -93,27 +162,36 @@ def _sheet_b64(folder, images):
 
 
 def _draft(client, model, manifest, folder):
-    """One Gemini call -> the finished mail text for this lead."""
-    content = [{"type": "text", "text": PROMPT.format(
-        game=manifest.get("name", ""), devs=manifest.get("meta", ""),
-        template=manifest["__template"])}]
+    """One vision-model call for slot values, then deterministic template rendering."""
+    template = manifest["__template"]
+    game = manifest.get("name", "")
+    studio = _studio_name(manifest)
+    slots = _observation_slots(template)
+    if not slots:
+        return _render_template(template, game, studio, [])
     b64 = _sheet_b64(folder, manifest.get("images", []))
-    if b64:
-        content.append({"type": "image_url",
-                        "image_url": {"url": f"data:image/png;base64,{b64}"}})
-    msgs = [{"role": "user", "content": content}]
+    if not b64:
+        raise ValueError("sprite sheet unavailable")
+    keys = [f"observation_{i}" for i in range(1, len(slots) + 1)]
+    content = [{"type": "text", "text": PROMPT.format(
+        game=game,
+        devs=studio,
+        template=template,
+        json_shape=json.dumps(dict.fromkeys(keys, "...")),
+        slot_meanings="\n".join(f"- {key}: {label}" for key, label in zip(keys, slots)),
+    )}, {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}]
+    msgs = [{"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": content}]
     for attempt in range(RETRIES):
         try:
             resp = client.chat.completions.create(model=model, max_tokens=600, messages=msgs)
-            mail = _normalize_terms((resp.choices[0].message.content or "").strip())
-            if not mail:
-                raise ValueError("model returned an empty draft")
-            return mail
+            values = _parse_observations(resp.choices[0].message.content, len(slots))
+            return _render_template(template, game, studio, values)
         except Exception as e:
             if attempt == RETRIES - 1:
                 raise
             wait = min(60, 2 ** attempt) + attempt
-            print(f"    gemini error ({type(e).__name__}), retry "
+            print(f"    mail-writer error ({type(e).__name__}), retry "
                   f"{attempt + 1}/{RETRIES} in {wait}s", file=sys.stderr)
             time.sleep(wait)
 
