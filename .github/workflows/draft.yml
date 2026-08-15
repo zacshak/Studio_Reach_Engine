@@ -5,7 +5,12 @@ name: Draft mails
 # fired on demand by the app's "Draft pending mails" button. Idempotent: skips leads that
 # already have a draft.
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      check_only:
+        description: Verify the configured model without drafting queued leads
+        type: boolean
+        default: false
 
 concurrency:
   group: draft
@@ -25,13 +30,31 @@ jobs:
           python-version: "3.12"
       - name: Install deps
         run: pip install --quiet libsql==0.1.11 boto3==1.43.22 openai==2.43.0
+      - name: Verify mail-writer endpoint
+        env:
+          MAIL_WRITER_BASE_URL: ${{ secrets.MAIL_WRITER_BASE_URL }}
+          MAIL_WRITER_MODEL: ${{ secrets.MAIL_WRITER_MODEL }}
+          MAIL_WRITER_API_KEY: ${{ secrets.MAIL_WRITER_API_KEY }}
+        run: |
+          python - <<'PY'
+          import json, os, urllib.request
+
+          request = urllib.request.Request(
+              f"{os.environ['MAIL_WRITER_BASE_URL'].rstrip('/')}/models",
+              headers={"Authorization": f"Bearer {os.environ['MAIL_WRITER_API_KEY']}"},
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              models = {item["id"] for item in json.load(response).get("data", [])}
+          assert os.environ["MAIL_WRITER_MODEL"] in models, "mail-writer model unavailable"
+          PY
       - name: Draft mails -> R2 manifests
+        if: ${{ !inputs.check_only }}
         env:
           TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
-          TRIAGE_BASE_URL: ${{ secrets.TRIAGE_BASE_URL }}
-          TRIAGE_MODEL: ${{ secrets.TRIAGE_MODEL }}
-          TRIAGE_API_KEY: ${{ secrets.TRIAGE_API_KEY }}
+          TRIAGE_BASE_URL: ${{ secrets.MAIL_WRITER_BASE_URL }}
+          TRIAGE_MODEL: ${{ secrets.MAIL_WRITER_MODEL }}
+          TRIAGE_API_KEY: ${{ secrets.MAIL_WRITER_API_KEY }}
           R2_PUBLIC_BASE: ${{ secrets.R2_PUBLIC_BASE }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
