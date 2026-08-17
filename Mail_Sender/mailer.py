@@ -36,8 +36,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, "Claude_Lead_Discovery_Engine"))
 sys.path.insert(0, os.path.join(ROOT, "Leads_Reviewer"))
+sys.path.insert(0, ROOT)
 import pipeline      # noqa: E402
 import media_store   # noqa: E402  (cloud send: draft from R2 manifest, media purge in R2)
+from Email_Verifier import QEVError, QuickEmailVerification, is_safe_to_send  # noqa: E402
 
 MEDIA_DIR = os.path.join(ROOT, "Leads_Reviewer", "Studios_To_Review", "Approval_Pending_Games")
 # Cloud (GHA send job): no local media folders — drafts + media live in R2. Same test
@@ -158,6 +160,7 @@ def main(dry_run=False, limit=None):
     if not dry_run and not password:
         sys.exit("GMAIL_APP_PASSWORD not set. Add it to the repo-root .env "
                  "(see this file's header). Or use --dry-run.")
+    verifier = None if dry_run else QuickEmailVerification.from_env(timeout=60)
 
     uncertain = pipeline.mail_status_appids("Sending")
     if uncertain and not dry_run:
@@ -183,7 +186,7 @@ def main(dry_run=False, limit=None):
     room = max(0, DAILY_CAP - sent_already)
     if limit is not None:
         room = min(room, limit)
-    print(f"scheduled: {len(scheduled)} ({len(valid)} valid) | "
+    print(f"scheduled: {len(scheduled)} ({len(valid)} syntactically valid) | "
           f"sent today: {sent_already}/{DAILY_CAP} | "
           f"sending up to: {min(len(valid), room)}{' (DRY RUN)' if dry_run else ''}")
     if not valid or room == 0:
@@ -204,6 +207,19 @@ def main(dry_run=False, limit=None):
         if dry_run:
             print(f"  [dry] {appid} -> {to} | {subject!r} | {os.path.basename(path)}")
             done += 1
+            continue
+        result = verifier.verify(to)
+        verification = str(result.get("result", "")).lower()
+        if verification == "unknown":
+            print(f"  SKIP {appid} -> {to}: verification unknown "
+                  f"({result.get('reason', 'no reason')}); left Scheduled")
+            continue
+        if verification not in ("valid", "invalid"):
+            raise QEVError(f"unexpected verification result for {to}: {verification!r}")
+        if verification == "invalid" or not is_safe_to_send(result):
+            reason = result.get("reason") or "unsafe recipient"
+            pipeline.quarantine_verified_invalid(appid)
+            print(f"  INVALID {appid} -> {to}: {reason}; removed from outreach")
             continue
         if done:
             gap = random.randint(MIN_GAP, MAX_GAP)

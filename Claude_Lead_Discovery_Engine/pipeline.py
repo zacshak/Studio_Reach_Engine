@@ -701,6 +701,19 @@ def quarantine_unusable(appid):
         conn.commit()
 
 
+def quarantine_verified_invalid(appid):
+    """Quarantine a Scheduled recipient rejected by external mailbox verification."""
+    _ensure()
+    with closing(_rw()) as conn:
+        row = conn.execute(
+            "UPDATE scrape_tracker SET scrape_status='invalid', Mail_status='Invalid' "
+            "WHERE appid=? AND Mail_status='Scheduled' RETURNING appid",
+            (int(appid),),
+        ).fetchone()
+        conn.commit()
+    return row is not None
+
+
 def reset_sending(appid, status):
     """Resolve a definitely-unsent claim without touching any other state."""
     if status not in ("Scheduled", "Drafted"):

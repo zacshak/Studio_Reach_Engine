@@ -197,6 +197,21 @@ class PipelineTest(unittest.TestCase):
                             "WHERE appid=118").fetchone()
         self.assertEqual(row, ("pending", "Pending"))
 
+    def test_external_verifier_quarantines_only_scheduled_mail(self):
+        with self._raw() as c:
+            insert_lead(c, 119, support_email="dead@example.com")
+            insert_lead(c, 120, support_email="already@example.com")
+            c.execute("UPDATE scrape_tracker SET Mail_status='Scheduled' WHERE appid=119")
+            c.execute("UPDATE scrape_tracker SET Mail_status='Sent' WHERE appid=120")
+            c.commit()
+        self.assertTrue(pipeline.quarantine_verified_invalid(119))
+        self.assertFalse(pipeline.quarantine_verified_invalid(120))
+        with self._raw() as c:
+            rows = dict(c.execute(
+                "SELECT appid, scrape_status || '/' || Mail_status FROM scrape_tracker "
+                "WHERE appid IN (119,120)"))
+        self.assertEqual(rows, {119: "invalid/Invalid", 120: "seeded/Sent"})
+
     def test_trigger_handles_null_json(self):
         # a lead with no developers/genres must not break the trigger
         with self._raw() as c:
