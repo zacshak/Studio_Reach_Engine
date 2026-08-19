@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+node_modules/
 out/
 Studios_To_Review/
 *.sqlite

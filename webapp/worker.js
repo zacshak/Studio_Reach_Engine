@@ -126,10 +126,12 @@ async function state(env) {
       ["SELECT EXISTS(SELECT 1 FROM scrape_tracker WHERE Mail_status='Scheduled')"],
       // accepted but the drafter hasn't written the mail yet — gates the Draft button
       ["SELECT EXISTS(SELECT 1 FROM scrape_tracker WHERE Mail_status='Writing')"],
+      [TRIAGE_KEPT_SQL],
     ]),
   ]);
-  const [pending, drafted, nomail, sched, writing] = db;
-  const triage = (irrelevant || []).map(Number);
+  const [pending, drafted, nomail, sched, writing, kept] = db;
+  const keptIds = new Set(kept.map((r) => Number(r[0])));
+  const triage = (irrelevant || []).map(Number).filter((a) => !keptIds.has(a));
   const flagged = new Set(triage);
   return {
     index: index || {},
@@ -149,6 +151,12 @@ const approveStmt = (appid) => [
 ];
 
 const NOMAIL_SQL = "SELECT appid FROM scrape_tracker WHERE scrape_status IN ('pending','no_email','failed') AND Mail_status='Pending' ORDER BY appid";
+const TRIAGE_KEPT_SQL = "SELECT appid FROM scrape_tracker WHERE triage_kept=1";
+
+const keepStmt = (appid) => [
+  "UPDATE scrape_tracker SET triage_kept=1 WHERE appid=? AND Mail_status='Pending'",
+  appid,
+];
 
 const deleteStmts = (appid) => [
   ["DELETE FROM scrape_tracker WHERE appid=?", appid],
@@ -206,9 +214,12 @@ async function act(env, body) {
       await sql(env, appids.map(approveStmt), true);
       break;
     }
-    case "keep": // Triage: AI was wrong — unflag, lead rejoins the normal queue
-      await dropIrrelevant(env, [oneId(body)]);
+    case "keep": { // Triage: persist human Keep, then unflag into the normal queue
+      const appid = oneId(body);
+      await sql(env, [keepStmt(appid)]);
+      await dropIrrelevant(env, [appid]);
       break;
+    }
     case "reject_irrelevant": { // Triage ❌: unflag + full delete
       const appid = oneId(body);
       await sql(env, deleteStmts(appid), true);
@@ -255,7 +266,7 @@ const json = (obj, status = 200) =>
     headers: { "Content-Type": "application/json" },
   });
 
-export { approveStmt, NOMAIL_SQL, sql, updateJSON };
+export { approveStmt, keepStmt, NOMAIL_SQL, TRIAGE_KEPT_SQL, sql, updateJSON };
 
 export default {
   async fetch(req, env) {

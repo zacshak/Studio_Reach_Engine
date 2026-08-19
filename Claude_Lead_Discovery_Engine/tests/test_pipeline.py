@@ -107,6 +107,20 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(cols[cols.index("short_descript") + 1], "Mail_status")
         self.assertEqual(row, ("seeded", "a@b.com", "Pending"))  # data kept, default set
 
+    def test_triage_keep_migration_appends_without_losing_existing_data(self):
+        with self._raw() as c:
+            insert_lead(c, 8, support_email="a@b.com")
+            c.execute("UPDATE scrape_tracker SET Mail_status='Sent', sent_at='2026-01-02' "
+                      "WHERE appid=8")
+            c.execute("ALTER TABLE scrape_tracker DROP COLUMN triage_kept")
+            c.commit()
+        pipeline._ensured = False
+        pipeline.init_tracker()
+        with self._raw() as c:
+            row = c.execute("SELECT game_name, Mail_status, sent_at, triage_kept "
+                            "FROM scrape_tracker WHERE appid=8").fetchone()
+        self.assertEqual(row, ("Game", "Sent", "2026-01-02", 0))
+
     # ---- trigger auto-sync --------------------------------------------
     def test_trigger_seeds_row_with_transforms(self):
         with self._raw() as c:
@@ -283,6 +297,16 @@ class PipelineTest(unittest.TestCase):
             c.execute("UPDATE scrape_tracker SET scrape_status='failed', Mail_status='Writing' WHERE appid=415")
             c.commit()
         self.assertEqual(pipeline.nomail_ready_appids(), [410, 411, 412])
+
+    def test_human_kept_lead_never_reenters_ai_triage(self):
+        with self._raw() as c:
+            insert_lead(c, 420)
+            insert_lead(c, 421)
+        self.assertEqual(pipeline.triage_pending_appids(), [420, 421])
+        self.assertTrue(pipeline.mark_triage_kept(420))
+        self.assertEqual(pipeline.triage_pending_appids(), [421])
+        self.assertEqual(pipeline.triage_kept_appids(), [420])
+        self.assertEqual(pipeline.mail_status_appids("Pending"), [420, 421])
 
     # ---- read_lead -----------------------------------------------------
     def test_read_lead_full_row_and_missing(self):

@@ -84,7 +84,8 @@ _SCHEMA = """(
     publishers     TEXT,
     genres         TEXT,
     added_at       TEXT,
-    sent_at        TEXT
+    sent_at        TEXT,
+    triage_kept    INTEGER NOT NULL DEFAULT 0
 )"""
 # columns carried over on rebuild (all but Mail_status / mail_template, which take
 # their defaults)
@@ -95,7 +96,7 @@ _REBUILD_COLS = ("appid, game_name, short_descript, scrape_status, emails, "
 _SCHEMA_COLS = ("appid", "game_name", "short_descript", "Mail_status",
                 "mail_template", "scrape_status", "emails", "steam_url", "website",
                 "support_info", "developers", "publishers", "genres", "added_at",
-                "sent_at")
+                "sent_at", "triage_kept")
 
 # tracker columns seeded from newly_added (the rest are filled by the scraper)
 SEED_COLS = ("appid", "game_name", "short_descript", "steam_url",
@@ -300,6 +301,9 @@ def init_tracker():
             conn.execute("ALTER TABLE scrape_tracker ADD COLUMN mail_template INTEGER")
         if "sent_at" not in cols:
             conn.execute("ALTER TABLE scrape_tracker ADD COLUMN sent_at TEXT")
+        if "triage_kept" not in cols:
+            conn.execute("ALTER TABLE scrape_tracker ADD COLUMN triage_kept "
+                         "INTEGER NOT NULL DEFAULT 0")
         # fix column order if it drifted (ALTER only appends, so mail_template lands
         # last). Rebuild from _SCHEMA, preserving every existing value. No-op once aligned.
         ordered = [c[1] for c in conn.execute("PRAGMA table_info(scrape_tracker)")]
@@ -546,6 +550,35 @@ def mail_status_emails(status):
         return [(r[0], r[1] or "") for r in conn.execute(
             "SELECT appid, emails FROM scrape_tracker WHERE Mail_status=? ORDER BY appid",
             (status,))]
+
+
+def triage_pending_appids():
+    """Pending leads the AI may triage; human-kept leads never re-enter."""
+    _ensure()
+    with closing(_ro()) as conn:
+        return [r[0] for r in conn.execute(
+            "SELECT appid FROM scrape_tracker WHERE Mail_status='Pending' "
+            "AND triage_kept=0 ORDER BY appid")]
+
+
+def triage_kept_appids():
+    """Human-kept appids, used to hide stale/racing R2 triage flags."""
+    _ensure()
+    with closing(_ro()) as conn:
+        return [r[0] for r in conn.execute(
+            "SELECT appid FROM scrape_tracker WHERE triage_kept=1 ORDER BY appid")]
+
+
+def mark_triage_kept(appid):
+    """Persist a human Keep decision without advancing the outreach state."""
+    _ensure()
+    with closing(_rw()) as conn:
+        row = conn.execute(
+            "UPDATE scrape_tracker SET triage_kept=1 "
+            "WHERE appid=? AND Mail_status='Pending' RETURNING appid",
+            (int(appid),)).fetchone()
+        conn.commit()
+    return row is not None
 
 
 def approval_ready_appids():

@@ -40,8 +40,8 @@ Rejected Games = [4858620, 4819850]"""
 
 
 def _games():
-    """Resolve Pending scrape_tracker rows to (appid, folder, manifest) records."""
-    appids = pipeline.mail_status_appids("Pending")
+    """Resolve unreviewed Pending rows to (appid, folder, manifest) records."""
+    appids = pipeline.triage_pending_appids()
     if not appids:
         return []
     index = media_store.fetch_index(strict=True)

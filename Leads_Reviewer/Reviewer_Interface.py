@@ -319,7 +319,9 @@ def Reject_Game(gameId):
 def irrelevant_to_review():
     """Lightweight queue of triage-flagged leads (cloud), built from R2's irrelevant.json
     + the index. [] when nothing's flagged. Cards hydrate on view like the normal queue."""
-    appids = media_store.fetch_irrelevant()
+    kept = set(pipeline.triage_kept_appids())
+    appids = [appid for appid in media_store.fetch_irrelevant()
+              if int(appid) not in kept]
     if not appids:
         return []
     index = media_store.fetch_index()
@@ -340,7 +342,8 @@ def _drop_irrelevant(appid):
 
 
 def Keep_Irrelevant(appid):
-    """The AI was wrong — keep the lead: just unflag it. It rejoins the normal queue."""
+    """The AI was wrong — persist Keep, then unflag it into the normal queue."""
+    pipeline.mark_triage_kept(appid)
     _drop_irrelevant(appid)
 
 

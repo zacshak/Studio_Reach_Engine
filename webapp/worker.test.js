@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { approveStmt, NOMAIL_SQL, sql, updateJSON } from "./worker.js";
+import {
+  approveStmt, keepStmt, NOMAIL_SQL, TRIAGE_KEPT_SQL, sql, updateJSON,
+} from "./worker.js";
 
 test("No-Mail includes only pending outreach with unresolved scrape states", () => {
   assert.equal(
@@ -15,6 +17,14 @@ test("mail approval is one guarded database update", () => {
     "UPDATE scrape_tracker SET Mail_status='Scheduled' WHERE appid=? AND Mail_status='Drafted' AND scrape_status IN ('seeded','scraped')",
     42,
   ]);
+});
+
+test("triage Keep persists without advancing the mail state", () => {
+  assert.deepEqual(keepStmt(42), [
+    "UPDATE scrape_tracker SET triage_kept=1 WHERE appid=? AND Mail_status='Pending'",
+    42,
+  ]);
+  assert.equal(TRIAGE_KEPT_SQL, "SELECT appid FROM scrape_tracker WHERE triage_kept=1");
 });
 
 test("sql uses a guarded transaction for multi-statement mutations", async () => {
