@@ -17,6 +17,10 @@ API_BASE = "https://api.quickemailverification.com/v1"
 class QEVError(RuntimeError):
     """QuickEmailVerification request or response failure."""
 
+    def __init__(self, message: str, *, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+
 
 def is_safe_to_send(result: dict) -> bool:
     """Handle the boolean and string booleans used in QEV's examples."""
@@ -116,7 +120,10 @@ class QuickEmailVerification:
                 raw = response.read()
         except urllib.error.HTTPError as exc:
             detail = self._error_message(exc.read())
-            raise QEVError(f"QuickEmailVerification HTTP {exc.code}: {detail}") from exc
+            raise QEVError(
+                f"QuickEmailVerification HTTP {exc.code}: {detail}",
+                status_code=exc.code,
+            ) from exc
         except (urllib.error.URLError, TimeoutError) as exc:
             detail = exc.reason if hasattr(exc, "reason") else exc
             raise QEVError(f"QuickEmailVerification request failed: {detail}") from exc

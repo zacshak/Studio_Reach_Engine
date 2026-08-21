@@ -162,6 +162,16 @@ class PipelineTest(unittest.TestCase):
         for value in (None, "", "*", "https://example.com/", "example.com"):
             self.assertEqual(pipeline.normalize_email(value), "")
 
+    def test_email_verification_cache_is_case_insensitive_and_idempotent(self):
+        result = {"result": "valid", "safe_to_send": True}
+        self.assertTrue(pipeline.cache_email_verification("Studio@Example.com", result))
+        self.assertEqual(pipeline.get_email_verification("studio@example.com"), result)
+        self.assertFalse(pipeline.cache_email_verification(
+            "unknown@example.com", {"result": "unknown"}))
+        pipeline._ensured = False
+        pipeline.init_tracker()
+        self.assertEqual(pipeline.get_email_verification("STUDIO@EXAMPLE.COM"), result)
+
     def test_scraped_invalid_email_becomes_invalid_and_cannot_enter_mail_flow(self):
         with self._raw() as c:
             insert_lead(c, 113)

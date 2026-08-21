@@ -1,14 +1,14 @@
 name: Send mails
 
-# Sends the approved (Mail_status='Scheduled') cold mails from Gmail, paced 2-4 min apart,
-# capped per UTC day. NOT scheduled — fired on demand by the app's "Send approved mails"
+# Sends the approved (Mail_status='Scheduled') cold mails from Gmail, paced 2-4 min apart.
+# NOT scheduled — fired on demand by the app's "Send approved mails"
 # button (Mail-Approval section) so outbound always has a human gate. Cloud send reads each
 # draft from its R2 manifest and purges the lead's R2 media after a successful send.
 on:
   workflow_dispatch: {}
 
 concurrency:
-  group: send                  # never overlap two send runs (they share the daily cap)
+  group: send                  # never overlap two send runs
   cancel-in-progress: false
 
 permissions:

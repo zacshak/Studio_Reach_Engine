@@ -5,7 +5,6 @@ reads its drafted mail (mail_<appid>_<template>.txt in the game's media folder),
 sends it to the lead's email via Gmail SMTP, then flips Mail_status -> 'Sent'.
 
 Spam / soft-ban guards:
-  - hard daily cap (DAILY_CAP), enforced across reruns via scrape_tracker.sent_at
   - a randomized gap between each send (MIN_GAP..MAX_GAP seconds)
   - plain-text mail, one recipient per message, real From name
 
@@ -17,7 +16,7 @@ Setup (one time):
          GMAIL_APP_PASSWORD=xxxxxxxxxxxxxxxx
 Run:
     python mailer.py --dry-run     # preview what WOULD send, send nothing
-    python mailer.py               # actually send, respecting the cap + gaps
+    python mailer.py               # actually send all scheduled mails, paced by gaps
     python mailer.py --limit 5     # send at most 5 this run
     python mailer.py --review      # check Sent leads for replies, flip -> 'Replied'
 """
@@ -49,7 +48,6 @@ _CLOUD = media_store.read_enabled() and not os.path.isdir(MEDIA_DIR)
 SENDER_NAME = "Meshak"              # the From display name
 SMTP_HOST, SMTP_PORT = "smtp.gmail.com", 587
 IMAP_HOST = "imap.gmail.com"
-DAILY_CAP = 50                     # never send more than this per (UTC) day
 MIN_GAP, MAX_GAP = 120, 240        # 2–4 min between sends, randomized
 
 
@@ -182,21 +180,18 @@ def main(dry_run=False, limit=None):
         print(f"  {state} {appid}: {raw!r} -> removed from outreach")
         if not dry_run:
             pipeline.quarantine_unusable(appid)
-    sent_already = pipeline.sent_today()
-    room = max(0, DAILY_CAP - sent_already)
-    if limit is not None:
-        room = min(room, limit)
+    room = limit
+    sending = len(valid) if room is None else min(len(valid), room)
     print(f"scheduled: {len(scheduled)} ({len(valid)} syntactically valid) | "
-          f"sent today: {sent_already}/{DAILY_CAP} | "
-          f"sending up to: {min(len(valid), room)}{' (DRY RUN)' if dry_run else ''}")
+          f"sending up to: {sending}{' (DRY RUN)' if dry_run else ''}")
     if not valid or room == 0:
-        if scheduled and room == 0:
-            print("daily cap reached — try again tomorrow.")
+        if scheduled and room == 0 and limit is not None:
+            print("per-run limit reached.")
         return
 
     done = 0
     for appid, to in valid:
-        if done >= room:
+        if room is not None and done >= room:
             break
         subject, body, path = _load_mail(appid)
         if body is None:
@@ -208,7 +203,18 @@ def main(dry_run=False, limit=None):
             print(f"  [dry] {appid} -> {to} | {subject!r} | {os.path.basename(path)}")
             done += 1
             continue
-        result = verifier.verify(to)
+        result = pipeline.get_email_verification(to)
+        if result is None:
+            try:
+                result = verifier.verify(to)
+            except QEVError as exc:
+                if exc.status_code == 402:
+                    print("QEV credits exhausted; stopping. Remaining mails stay Scheduled.")
+                    return
+                raise
+            pipeline.cache_email_verification(to, result)
+        else:
+            print(f"  CACHED {appid} -> {to}: QEV result reused")
         verification = str(result.get("result", "")).lower()
         if verification == "unknown":
             print(f"  SKIP {appid} -> {to}: verification unknown "

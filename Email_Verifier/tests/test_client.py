@@ -2,6 +2,7 @@ import io
 import json
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 
 from Email_Verifier.client import QEVError, QuickEmailVerification, is_safe_to_send
@@ -61,6 +62,17 @@ class QuickEmailVerificationTest(unittest.TestCase):
         client = QuickEmailVerification("secret")
         with self.assertRaisesRegex(QEVError, "outside QuickEmailVerification"):
             client.download_report("https://example.com/report.csv", "report.csv")
+
+    def test_http_error_preserves_status_code(self):
+        def open_request(request, timeout):
+            raise urllib.error.HTTPError(
+                request.full_url, 402, "Payment required", {},
+                io.BytesIO(b'{"message":"Low credit"}'),
+            )
+
+        with self.assertRaises(QEVError) as raised:
+            QuickEmailVerification("secret", opener=open_request).verify("a@example.com")
+        self.assertEqual(raised.exception.status_code, 402)
 
 
 if __name__ == "__main__":

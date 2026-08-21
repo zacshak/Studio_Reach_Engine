@@ -98,6 +98,12 @@ _SCHEMA_COLS = ("appid", "game_name", "short_descript", "Mail_status",
                 "support_info", "developers", "publishers", "genres", "added_at",
                 "sent_at", "triage_kept")
 
+_EMAIL_VERIFICATION_CACHE_SCHEMA = """(
+    email        TEXT PRIMARY KEY,
+    result_json  TEXT NOT NULL,
+    verified_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+)"""
+
 # tracker columns seeded from newly_added (the rest are filled by the scraper)
 SEED_COLS = ("appid", "game_name", "short_descript", "steam_url",
              "website", "support_info", "developers", "publishers", "genres")
@@ -304,6 +310,8 @@ def init_tracker():
         if "triage_kept" not in cols:
             conn.execute("ALTER TABLE scrape_tracker ADD COLUMN triage_kept "
                          "INTEGER NOT NULL DEFAULT 0")
+        conn.execute("CREATE TABLE IF NOT EXISTS email_verification_cache "
+                     f"{_EMAIL_VERIFICATION_CACHE_SCHEMA}")
         # fix column order if it drifted (ALTER only appends, so mail_template lands
         # last). Rebuild from _SCHEMA, preserving every existing value. No-op once aligned.
         ordered = [c[1] for c in conn.execute("PRAGMA table_info(scrape_tracker)")]
@@ -367,6 +375,51 @@ def email_state(raw):
     if not value:
         return "missing"
     return "valid" if normalize_email(value) else "invalid"
+
+
+def _email_cache_key(email):
+    return (email or "").strip().casefold()
+
+
+def get_email_verification(email):
+    """Return a cached definitive QEV response for an email, if present."""
+    key = _email_cache_key(email)
+    if not key:
+        return None
+    _ensure()
+    with closing(_ro()) as conn:
+        row = conn.execute(
+            "SELECT result_json FROM email_verification_cache WHERE email=?", (key,)
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        result = json.loads(row[0])
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return result if isinstance(result, dict) else None
+
+
+def cache_email_verification(email, result):
+    """Cache only definitive QEV responses; unknown results remain retryable."""
+    key = _email_cache_key(email)
+    outcome = str(result.get("result", "")).lower() if isinstance(result, dict) else ""
+    if not key or outcome not in ("valid", "invalid"):
+        return False
+    try:
+        encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return False
+    _ensure()
+    with closing(_rw()) as conn:
+        conn.execute(
+            "INSERT INTO email_verification_cache (email, result_json) VALUES (?, ?) "
+            "ON CONFLICT(email) DO UPDATE SET result_json=excluded.result_json, "
+            "verified_at=CURRENT_TIMESTAMP",
+            (key, encoded),
+        )
+        conn.commit()
+    return True
 
 
 def discovery_status(raw):
@@ -759,7 +812,7 @@ def reset_sending(appid, status):
 
 
 def mark_sent(appid):
-    """Mail was sent: Mail_status -> 'Sent', stamp sent_at (UTC) for the daily cap,
+    """Mail was sent: Mail_status -> 'Sent', stamp sent_at (UTC) for audit,
     and drop the newly_added row (the scrape_tracker row stays as the record)."""
     _ensure()
     with closing(_rw()) as conn:
@@ -775,15 +828,6 @@ def mark_sent(appid):
                 raise RuntimeError(f"cannot mark {appid} Sent from {current[0] if current else 'missing'}")
         conn.execute("DELETE FROM newly_added WHERE appid=?", (int(appid),))
         conn.commit()
-
-
-def sent_today():
-    """How many mails were sent today (UTC) — enforces the daily cap across reruns."""
-    _ensure()
-    with closing(_ro()) as conn:
-        return conn.execute(
-            "SELECT COUNT(*) FROM scrape_tracker "
-            "WHERE sent_at IS NOT NULL AND date(sent_at)=date('now')").fetchone()[0]
 
 
 def delete_lead(appid):

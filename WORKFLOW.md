@@ -85,7 +85,7 @@ or a scraper failure. Invalid records are quarantined and hidden.
 
 ## 3. Send — on demand (`send.yml`)
 **📨 Send approved** button (Mail Approval) → fires `send.yml`. Sends every `Scheduled`
-lead from Gmail, paced 2–4 min apart, capped at **50 / UTC day**. Reads each draft from its
+lead from Gmail, paced 2–4 min apart. Reads each draft from its
 R2 manifest, atomically claims `Scheduled → Sending`, flips `Sending → Sent`, and purges the lead's R2 media. No schedule — a human
 presses the button, so outbound always has a gate.
 
