@@ -1,11 +1,8 @@
 name: Triage
 
-# Runs after Nightly discovery, or manually with no inputs. Triage reads the current
-# `scrape_tracker` Pending set from Turso and its manifests/images from R2 directly.
+# On-demand only. Triage reads the current `scrape_tracker` Pending set from Turso
+# and its manifests/images from R2 directly.
 on:
-  workflow_run:
-    workflows: ["Nightly discovery"]
-    types: [completed]
   workflow_dispatch: {}
 
 concurrency:
@@ -17,7 +14,6 @@ permissions:
 
 jobs:
   triage:
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 350
     steps:

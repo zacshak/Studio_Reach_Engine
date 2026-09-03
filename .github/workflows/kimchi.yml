@@ -5,11 +5,8 @@ name: Kimchi scrape
 # results through KimchiScraper/kimchi_db.py. Standalone (KimchiScraper/) — shares no code
 # with Hermes, so either can be deleted wholesale after the A/B evaluation.
 #
-# Trigger: AUTOMATIC after "Triage" succeeds (no button). Manual run also here.
+# Trigger: manual only.
 on:
-  workflow_run:
-    workflows: ["Triage"]
-    types: [completed]
   workflow_dispatch: {}
 
 concurrency:
@@ -21,8 +18,6 @@ permissions:
 
 jobs:
   kimchi:
-    # after triage: only if it succeeded; the manual button always runs
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 75          # job ceiling; the agent step below has its own 60-min cap
     steps:
