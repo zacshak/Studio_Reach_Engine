@@ -179,6 +179,7 @@ def main(dry_run=False, limit=None):
         state = pipeline.email_state(raw).upper()
         print(f"  {state} {appid}: {raw!r} -> removed from outreach")
         if not dry_run:
+            _delete_media(appid)
             pipeline.quarantine_unusable(appid)
     room = limit
     sending = len(valid) if room is None else min(len(valid), room)
@@ -224,6 +225,7 @@ def main(dry_run=False, limit=None):
             raise QEVError(f"unexpected verification result for {to}: {verification!r}")
         if verification == "invalid" or not is_safe_to_send(result):
             reason = result.get("reason") or "unsafe recipient"
+            _delete_media(appid)
             pipeline.quarantine_verified_invalid(appid)
             print(f"  INVALID {appid} -> {to}: {reason}; removed from outreach")
             continue

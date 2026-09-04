@@ -58,8 +58,7 @@ def main():
         return rc
 
     # Mirror the freshly-staged media to R2 so the cloud review app sees the night's
-    # batch. No-op (with a one-line note) if R2 creds aren't set. ponytail: full mirror
-    # each run — fine within R2's free tier; make it incremental if it ever drags.
+    # batch, then remove media no active tracker row owns. No-op if creds aren't set.
     print("\nMirroring media to R2 ...")
     rc = sync_media()
     if rc:

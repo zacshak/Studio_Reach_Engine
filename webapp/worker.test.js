@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  approveStmt, keepStmt, NOMAIL_SQL, TRIAGE_KEPT_SQL, sql, updateJSON,
+  approveStmt, keepStmt, NOMAIL_SQL, purgeMedia, secureEqual, sessionToken,
+  TRIAGE_KEPT_SQL, sql, updateJSON,
 } from "./worker.js";
+import worker from "./worker.js";
 
 test("No-Mail includes only pending outreach with unresolved scrape states", () => {
   assert.equal(
@@ -73,4 +75,43 @@ test("updateJSON retries a failed conditional write", async () => {
   };
   await updateJSON({ MEDIA: media }, "index.json", {}, (value) => ({ ...value, added: true }));
   assert.equal(puts, 2);
+});
+
+test("media requires the authenticated browser session", async () => {
+  const env = {
+    AUTH_SECRET: "secret",
+    MEDIA: { get: async () => ({ body: "ok", httpMetadata: { contentType: "text/plain" } }) },
+  };
+  assert.equal((await worker.fetch(new Request("https://example/media/a"), env)).status, 401);
+  const token = await sessionToken("secret");
+  const response = await worker.fetch(new Request("https://example/media/a", {
+    headers: { Cookie: `sre_session=${token}` },
+  }), env);
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "ok");
+  assert.equal(await secureEqual("secret", "secret"), true);
+  assert.equal(await secureEqual("wrong", "secret"), false);
+});
+
+test("a valid access key establishes the private media session", async () => {
+  const response = await worker.fetch(new Request("https://example/api/not-found", {
+    headers: { "x-auth": "secret" },
+  }), { AUTH_SECRET: "secret" });
+  assert.equal(response.status, 404);
+  assert.match(response.headers.get("set-cookie"), /^sre_session=.*HttpOnly; Secure;/);
+});
+
+test("purge deletes objects before removing their index entry", async () => {
+  const events = [];
+  const media = {
+    get: async () => ({ etag: "v1", json: async () => ({ "1": "Game_1" }) }),
+    list: async () => ({ objects: [{ key: "Game_1/image.jpg" }], truncated: false }),
+    delete: async () => events.push("delete"),
+    put: async (_key, value) => {
+      events.push(`index:${value}`);
+      return { etag: "v2" };
+    },
+  };
+  await purgeMedia({ MEDIA: media }, [1]);
+  assert.deepEqual(events, ["delete", "index:{}"]);
 });

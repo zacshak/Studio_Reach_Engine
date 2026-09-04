@@ -6,7 +6,8 @@ mirrors each lead's media to a Cloudflare R2 bucket and serves it back by public
 URL, so the review app (webapp/, a Cloudflare Worker) can render it.
 
 Two halves, deliberately split so the CLOUD app stays dependency-light:
-  - READ  (public_url / fetch_manifest): plain urllib, no boto3. Used by the app.
+  - READ  (public_url / fetch_manifest): authenticated S3 when credentials exist,
+    with the legacy public URL retained only as a local fallback.
   - WRITE (upload_dir): boto3 (S3-compatible R2 API), imported lazily. Used only
     by sync_media.py on the local machine.
 
@@ -70,8 +71,8 @@ class MediaStoreError(RuntimeError):
 
 # -- read side (cloud app) ------------------------------------------------
 def read_enabled():
-    """True if cards can be served from R2 (public base configured)."""
-    return bool(PUBLIC_BASE)
+    """True if cards can be served from R2."""
+    return write_enabled() or bool(PUBLIC_BASE)
 
 
 def _enc(seg):
@@ -81,39 +82,51 @@ def _enc(seg):
 
 
 def public_url(folder, filename):
+    if write_enabled():
+        return _client().generate_presigned_url(
+            "get_object", Params={"Bucket": BUCKET, "Key": f"{folder}/{filename}"},
+            ExpiresIn=3600)
     return f"{PUBLIC_BASE}/{_enc(folder)}/{_enc(filename)}"
 
 
-def _get_json(path, strict=False):
-    """GET a JSON object by its already-built (encoded) object path."""
+def fetch_bytes(folder, filename, strict=False):
+    """Read one object privately when credentials are configured."""
+    key = f"{folder}/{filename}" if folder else filename
     try:
+        if write_enabled():
+            return _client().get_object(Bucket=BUCKET, Key=key)["Body"].read()
+        path = "/".join(_enc(segment) for segment in key.split("/"))
         req = urllib.request.Request(f"{PUBLIC_BASE}/{path}", headers=_UA)
         with urllib.request.urlopen(req, timeout=10) as r:
-            return json.load(r)
-    except urllib.error.HTTPError as exc:
-        if exc.code != 404 and strict:
-            raise MediaStoreError(f"R2 read failed for {path}: HTTP {exc.code}") from exc
-        return None
-    except Exception as exc:
-        if strict:
-            raise MediaStoreError(f"R2 read failed for {path}: {exc}") from exc
-        return None
-
-
-def _get_text(key, strict=False):
-    """GET a plain-text object from R2 (UTF-8), or None if unreachable."""
-    try:
-        req = urllib.request.Request(f"{PUBLIC_BASE}/{key}", headers=_UA)
-        with urllib.request.urlopen(req, timeout=10) as r:
-            return r.read().decode("utf-8")
+            return r.read()
     except urllib.error.HTTPError as exc:
         if exc.code != 404 and strict:
             raise MediaStoreError(f"R2 read failed for {key}: HTTP {exc.code}") from exc
         return None
     except Exception as exc:
+        if _error_code(exc) in ("404", "NoSuchKey", "NotFound"):
+            return None
         if strict:
             raise MediaStoreError(f"R2 read failed for {key}: {exc}") from exc
         return None
+
+
+def _get_json(key, strict=False):
+    """Read and decode a JSON object."""
+    raw = fetch_bytes(None, key, strict)
+    if raw is None:
+        return None
+    try:
+        return json.loads(raw)
+    except (TypeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        if strict:
+            raise MediaStoreError(f"R2 JSON invalid for {key}: {exc}") from exc
+        return None
+
+
+def _get_text(key, strict=False):
+    raw = fetch_bytes(None, key, strict)
+    return raw.decode("utf-8") if raw is not None else None
 
 
 def fetch_index(strict=False):
@@ -135,7 +148,7 @@ def fetch_templates(strict=False):
 
 def fetch_manifest(folder, strict=False):
     """The lead's manifest dict from R2 (by folder name), or None if unreachable."""
-    return _get_json(f"{_enc(folder)}/manifest.json", strict)
+    return _get_json(f"{folder}/manifest.json", strict)
 
 
 def fetch_irrelevant(strict=False):
@@ -277,19 +290,22 @@ def delete_lead_media(appid, client=None):
     """Purge one lead's media from R2: delete every object under its folder and drop it
     from the index. Used by the app's Reject. No-op if the appid isn't indexed."""
     cli = client or _client()
-    folder = None
-
-    def remove(index):
-        nonlocal folder
-        folder = index.pop(str(appid), None)
-        return index
-
-    update_index(remove, client=cli)
+    obj = cli.get_object(Bucket=BUCKET, Key=INDEX_KEY)
+    folder = json.loads(obj["Body"].read()).get(str(appid))
     if folder:
         keys = [o["Key"] for page in cli.get_paginator("list_objects_v2")
                 .paginate(Bucket=BUCKET, Prefix=f"{folder}/")
                 for o in page.get("Contents", [])]
         for i in range(0, len(keys), 1000):
-            cli.delete_objects(Bucket=BUCKET,
-                               Delete={"Objects": [{"Key": k} for k in keys[i:i + 1000]]})
+            result = cli.delete_objects(
+                Bucket=BUCKET, Delete={"Objects": [{"Key": k} for k in keys[i:i + 1000]]})
+            if result.get("Errors"):
+                raise MediaStoreError(f"R2 delete failed: {result['Errors']}")
+
+        def remove(index):
+            if index.get(str(appid)) == folder:
+                index.pop(str(appid))
+            return index
+
+        update_index(remove, client=cli)
     return bool(folder)

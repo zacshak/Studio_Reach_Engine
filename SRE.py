@@ -16,6 +16,7 @@ the single front door so you don't memorise six script paths.
     python SRE.py --review-mails              # check Sent leads for replies -> mark 'Replied'
     python SRE.py --repair-invalid            # quarantine existing invalid unsent recipients
     python SRE.py --sync-media                # mirror staged media -> R2 (cloud review app)
+    python SRE.py --cleanup-r2 [--apply]      # audit/apply DB-authoritative R2 cleanup
     python SRE.py --snap-db                   # dump Steam + Epic Turso DBs -> local SQLite files
 """
 import os
@@ -38,6 +39,7 @@ ROUTES = {
     "--review-mails":  ("Mail_Sender/mailer.py", ["--review"]),
     "--repair-invalid": ("Claude_Lead_Discovery_Engine/repair_invalid.py", []),
     "--sync-media":    ("sync_media.py", []),
+    "--cleanup-r2":    ("sync_media.py", ["--cleanup"]),
     "--snap-db":       ("snap_db.py", []),
 }
 

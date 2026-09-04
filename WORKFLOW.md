@@ -38,9 +38,9 @@ All local/manual commands still exist through the one launcher: `python SRE.py <
   stop. `Sending` is a hidden internal claim state between `Scheduled` and `Sent`;
   `Invalid` is quarantined and never rendered in the review views.
 
-Media (screenshots, sprite sheet, manifest with the drafted mail) lives in **Cloudflare
-R2**, keyed by appid via `index.json`. The app and the cloud jobs read/write there; the
-runner keeps no state between runs.
+Media (screenshots, sprite sheet, manifest with the drafted mail) lives privately in
+**Cloudflare R2**, keyed by appid via `index.json`. The Worker uses its R2 binding and
+cloud jobs use S3 credentials; nightly sync removes media no active tracker row owns.
 
 ---
 
@@ -119,6 +119,7 @@ No redeploy needed — the next draft run reads the new templates.
 | `--repair-invalid` | quarantine existing unsent rows with missing/invalid recipients |
 | `--sync-templates` | push cold-mail templates → R2 |
 | `--sync-media` | mirror local staged media → R2 |
+| `--cleanup-r2 [--apply]` | audit/apply DB-authoritative R2 cleanup |
 | `--snap-db` | dump live Turso DB → `last_cache.sqlite` (DB Browser) |
 | `--review` | local Tkinter reviewer (Game / No-Mail / Mail approval) |
 | `--delete [ids]` | local GUI review-before-delete those appids |

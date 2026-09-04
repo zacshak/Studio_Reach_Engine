@@ -17,6 +17,32 @@
 // irrelevant.json, <GameName>_<appid>/manifest.json + images).
 
 const WORKFLOWS = { send: "send.yml", draft: "draft.yml" }; // the only ones the UI may fire
+const encoder = new TextEncoder();
+
+async function digest(value) {
+  return new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(value)));
+}
+
+async function secureEqual(provided, expected) {
+  if (!provided || !expected) return false;
+  const [a, b] = await Promise.all([digest(provided), digest(expected)]);
+  if (typeof crypto.subtle.timingSafeEqual === "function")
+    return crypto.subtle.timingSafeEqual(a, b);
+  let mismatch = 0; // Node's WebCrypto lacks timingSafeEqual; Workers uses the branch above.
+  for (let i = 0; i < a.length; i++) mismatch |= a[i] ^ b[i];
+  return mismatch === 0;
+}
+
+async function sessionToken(secret) {
+  return Array.from(await digest(`sre-session:${secret}`),
+    (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function cookie(req, name) {
+  const prefix = `${name}=`;
+  return (req.headers.get("Cookie") || "").split(";").map((part) => part.trim())
+    .find((part) => part.startsWith(prefix))?.slice(prefix.length) || "";
+}
 
 // ---- Turso over HTTP (Hrana v2 pipeline; one fetch = N statements, no client lib) ----
 const hranaStmt = ([q, ...args]) => ({
@@ -93,16 +119,11 @@ async function updateJSON(env, key, fallback, mutate) {
   throw new Error(`concurrent R2 update did not settle for ${key}`);
 }
 
-// Purge each appid's media folder after atomically removing it from index.json.
+// Delete objects first so a failed purge remains indexed and retryable.
 async function purgeMedia(env, appids) {
-  let folders = [];
-  await updateJSON(env, "index.json", {}, (current) => {
-    const index = { ...current };
-    folders = appids.map((a) => index[String(a)]).filter(Boolean);
-    for (const a of appids) delete index[String(a)];
-    return index;
-  });
-  for (const folder of new Set(folders)) {
+  const index = (await getJSON(env, "index.json")) || {};
+  const targets = new Map(appids.map((appid) => [String(appid), index[String(appid)]]));
+  for (const folder of new Set([...targets.values()].filter(Boolean))) {
     let cursor;
     do {
       const l = await env.MEDIA.list({ prefix: folder + "/", cursor });
@@ -110,6 +131,12 @@ async function purgeMedia(env, appids) {
       cursor = l.truncated ? l.cursor : undefined;
     } while (cursor);
   }
+  await updateJSON(env, "index.json", {}, (current) => {
+    const next = { ...current };
+    for (const [appid, folder] of targets)
+      if (next[appid] === folder) delete next[appid];
+    return next;
+  });
 }
 
 // ---- the four-view snapshot the page renders from ----
@@ -194,14 +221,14 @@ async function act(env, body) {
     }
     case "reject": { // ❌ anywhere -> delete both tables + purge media
       const appid = oneId(body);
-      await sql(env, deleteStmts(appid), true);
       await purgeMedia(env, [appid]);
+      await sql(env, deleteStmts(appid), true);
       break;
     }
     case "reject_all": { // No-Mail bulk purge — same as reject, just no irrelevant.json involved
       const appids = manyIds(body);
-      await sql(env, appids.flatMap(deleteStmts), true);
       await purgeMedia(env, appids);
+      await sql(env, appids.flatMap(deleteStmts), true);
       break;
     }
     case "approve": { // Mail Approval ✅ -> 'Scheduled'
@@ -222,16 +249,16 @@ async function act(env, body) {
     }
     case "reject_irrelevant": { // Triage ❌: unflag + full delete
       const appid = oneId(body);
-      await sql(env, deleteStmts(appid), true);
-      await dropIrrelevant(env, [appid]);
       await purgeMedia(env, [appid]);
+      await dropIrrelevant(env, [appid]);
+      await sql(env, deleteStmts(appid), true);
       break;
     }
     case "reject_all_irrelevant": {
       const appids = manyIds(body);
-      await sql(env, appids.flatMap(deleteStmts), true);
-      await dropIrrelevant(env, appids);
       await purgeMedia(env, appids);
+      await dropIrrelevant(env, appids);
+      await sql(env, appids.flatMap(deleteStmts), true);
       break;
     }
     case "trigger": { // fire a GHA workflow (send / draft) on master
@@ -266,14 +293,22 @@ const json = (obj, status = 200) =>
     headers: { "Content-Type": "application/json" },
   });
 
-export { approveStmt, keepStmt, NOMAIL_SQL, TRIAGE_KEPT_SQL, sql, updateJSON };
+export {
+  approveStmt, keepStmt, NOMAIL_SQL, TRIAGE_KEPT_SQL, purgeMedia, secureEqual,
+  sessionToken, sql, updateJSON,
+};
 
 export default {
   async fetch(req, env) {
     const path = new URL(req.url).pathname;
+    const headerAuth = await secureEqual(req.headers.get("x-auth") || "", env.AUTH_SECRET);
+    const cookieAuth = env.AUTH_SECRET ? await secureEqual(
+      cookie(req, "sre_session"), await sessionToken(env.AUTH_SECRET)) : false;
+    const authorized = headerAuth || cookieAuth;
 
-    // R2 passthrough. No auth: the bucket is already world-readable via its r2.dev URL.
+    // Authenticated R2 passthrough. The browser receives its HttpOnly session below.
     if (path.startsWith("/media/")) {
+      if (!authorized) return new Response("unauthorized", { status: 401 });
       let key;
       try {
         key = decodeURIComponent(path.slice("/media/".length));
@@ -292,16 +327,21 @@ export default {
     }
 
     if (path.startsWith("/api/")) {
-      if (req.headers.get("x-auth") !== env.AUTH_SECRET)
-        return json({ error: "unauthorized" }, 401);
+      if (!authorized) return json({ error: "unauthorized" }, 401);
+      let response;
       try {
-        if (path === "/api/state") return json(await state(env));
+        if (path === "/api/state") response = json(await state(env));
         if (path === "/api/act" && req.method === "POST")
-          return json(await act(env, await req.json()));
-        return json({ error: "not found" }, 404);
+          response = json(await act(env, await req.json()));
+        response ||= json({ error: "not found" }, 404);
       } catch (e) {
-        return json({ error: String((e && e.message) || e) }, 500);
+        response = json({ error: String((e && e.message) || e) }, 500);
       }
+      if (headerAuth) response.headers.set(
+        "Set-Cookie",
+        `sre_session=${await sessionToken(env.AUTH_SECRET)}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=604800`,
+      );
+      return response;
     }
 
     // "/" and static files are served by Workers Assets before this handler runs.
