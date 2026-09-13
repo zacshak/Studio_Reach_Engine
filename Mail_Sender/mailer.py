@@ -38,7 +38,7 @@ sys.path.insert(0, os.path.join(ROOT, "Leads_Reviewer"))
 sys.path.insert(0, ROOT)
 import pipeline      # noqa: E402
 import media_store   # noqa: E402  (cloud send: draft from R2 manifest, media purge in R2)
-from Email_Verifier import QEVError, QuickEmailVerification, is_safe_to_send  # noqa: E402
+from Email_Verifier import QEVError, QuickEmailVerification  # noqa: E402
 
 MEDIA_DIR = os.path.join(ROOT, "Leads_Reviewer", "Studios_To_Review", "Approval_Pending_Games")
 # Cloud (GHA send job): no local media folders — drafts + media live in R2. Same test
@@ -226,7 +226,7 @@ def main(dry_run=False, limit=None):
             continue
         if verification not in ("valid", "invalid"):
             raise QEVError(f"unexpected verification result for {to}: {verification!r}")
-        if verification == "invalid" or not is_safe_to_send(result):
+        if verification == "invalid":
             reason = result.get("reason") or "unsafe recipient"
             pipeline.quarantine_verified_invalid(appid)
             try:

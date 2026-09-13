@@ -34,11 +34,11 @@ class MailerTest(unittest.TestCase):
                                      "studio@example.com", "subject", "body")
         mark_sent.assert_called_once_with(2)
 
-    def test_verifier_rejection_is_quarantined_without_sending(self):
+    def test_only_invalid_result_is_quarantined(self):
         verifier = Mock()
         verifier.verify.side_effect = [
             {"result": "invalid", "reason": "rejected_email", "safe_to_send": False},
-            {"result": "valid", "reason": "accepted_email", "safe_to_send": True},
+            {"result": "valid", "reason": "accepted_email", "safe_to_send": False},
         ]
         with (
             patch.dict(os.environ, {"GMAIL_USER": "sender@example.com",
