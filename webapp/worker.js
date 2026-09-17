@@ -6,7 +6,7 @@
 //
 //   GET  /api/state   -> everything needed to render all four views (1 DB round-trip + 2 R2 gets)
 //   POST /api/act     -> {action, ...} — accept / reject / reject_all / approve / approve_all /
-//                        keep / reject_irrelevant / reject_all_irrelevant / trigger
+//                        require_socials / keep / reject_irrelevant / reject_all_irrelevant / trigger
 //   GET  /media/<key> -> R2 passthrough (images + manifests), same-origin so no CORS/bot-block
 //
 // Secrets (wrangler secret put): TURSO_URL, TURSO_TOKEN, AUTH_SECRET, GH_REPO, GH_PAT.
@@ -148,7 +148,7 @@ async function state(env) {
       // has-email states only ('pending'/'no_email'/'failed' belong in No-Mail or
       // nowhere yet — a bare Mail_status check let those leak in here too, GH-bug).
       ["SELECT appid FROM scrape_tracker WHERE Mail_status='Pending' AND scrape_status IN ('seeded','scraped') ORDER BY appid"],
-      ["SELECT appid, emails FROM scrape_tracker WHERE Mail_status='Drafted' ORDER BY appid"],
+      ["SELECT appid, emails, Require_Socials FROM scrape_tracker WHERE Mail_status='Drafted' ORDER BY appid"],
       [NOMAIL_SQL],
       ["SELECT EXISTS(SELECT 1 FROM scrape_tracker WHERE Mail_status='Scheduled')"],
       // accepted but the drafter hasn't written the mail yet — gates the Draft button
@@ -160,12 +160,16 @@ async function state(env) {
   const keptIds = new Set(kept.map((r) => Number(r[0])));
   const triage = (irrelevant || []).map(Number).filter((a) => !keptIds.has(a));
   const flagged = new Set(triage);
+  const requireSocials = Object.fromEntries(
+    [...drafted, ...nomail].map((r) => [String(r[0]), Number(r.at(-1)) === 1]),
+  );
   return {
     index: index || {},
     triage,
     approval: pending.map((r) => Number(r[0])).filter((a) => !flagged.has(a)),
     mail: drafted.map((r) => ({ appid: Number(r[0]), emails: r[1] || "" })),
     nomail: nomail.map((r) => Number(r[0])).filter((a) => !flagged.has(a)),
+    requireSocials,
     scheduled: Number(sched[0]?.[0]) === 1,
     pendingDrafts: Number(writing[0]?.[0]) === 1,
   };
@@ -177,8 +181,14 @@ const approveStmt = (appid) => [
   appid,
 ];
 
-const NOMAIL_SQL = "SELECT appid FROM scrape_tracker WHERE scrape_status IN ('pending','no_email','failed') AND Mail_status='Pending' ORDER BY appid";
+const NOMAIL_SQL = "SELECT appid, Require_Socials FROM scrape_tracker WHERE scrape_status IN ('pending','no_email','failed') AND Mail_status='Pending' ORDER BY appid";
 const TRIAGE_KEPT_SQL = "SELECT appid FROM scrape_tracker WHERE triage_kept=1";
+
+const requireSocialsStmt = (appid, required) => [
+  "UPDATE scrape_tracker SET Require_Socials=? WHERE appid=?",
+  required ? 1 : 0,
+  appid,
+];
 
 const keepStmt = (appid) => [
   "UPDATE scrape_tracker SET triage_kept=1 WHERE appid=? AND Mail_status='Pending'",
@@ -214,6 +224,12 @@ function manyIds(body) {
 
 async function act(env, body) {
   switch (body.action) {
+    case "require_socials": {
+      const appid = oneId(body);
+      if (typeof body.required !== "boolean") throw new Error("required must be boolean");
+      await sql(env, [requireSocialsStmt(appid, body.required)]);
+      break;
+    }
     case "accept": { // Game Approval ✅ -> Mail_status 'Writing'
       const appid = oneId(body);
       await sql(env, [["UPDATE scrape_tracker SET Mail_status='Writing' WHERE appid=? AND Mail_status='Pending' AND scrape_status IN ('seeded','scraped')", appid]]);
@@ -294,7 +310,7 @@ const json = (obj, status = 200) =>
   });
 
 export {
-  approveStmt, keepStmt, NOMAIL_SQL, TRIAGE_KEPT_SQL, purgeMedia, secureEqual,
+  approveStmt, keepStmt, NOMAIL_SQL, requireSocialsStmt, TRIAGE_KEPT_SQL, purgeMedia, secureEqual,
   sessionToken, sql, updateJSON,
 };
 

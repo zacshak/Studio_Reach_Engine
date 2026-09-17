@@ -83,6 +83,22 @@ class PipelineTest(unittest.TestCase):
                            "WHERE appid=105").fetchone()[0]
         self.assertEqual(ms, "Pending")
 
+    def test_social_columns_default_and_survive_reinit(self):
+        with self._raw() as c:
+            insert_lead(c, 106)
+            row = c.execute("SELECT Require_Socials, Socials_Data FROM scrape_tracker "
+                            "WHERE appid=106").fetchone()
+            c.execute("UPDATE scrape_tracker SET Require_Socials=1, Socials_Data=? "
+                      "WHERE appid=106", ('{"x":"studio"}',))
+            c.commit()
+        self.assertEqual(row, (0, "{}"))
+        pipeline._ensured = False
+        pipeline.init_tracker()
+        with self._raw() as c:
+            saved = c.execute("SELECT Require_Socials, Socials_Data FROM scrape_tracker "
+                              "WHERE appid=106").fetchone()
+        self.assertEqual(saved, (1, '{"x":"studio"}'))
+
     def test_rebuild_migration_adds_mail_status_preserving_data(self):
         # simulate an OLD scrape_tracker (no Mail_status), with a row, then re-init:
         # the rebuild must add Mail_status in position AND keep the existing row
@@ -107,19 +123,22 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(cols[cols.index("short_descript") + 1], "Mail_status")
         self.assertEqual(row, ("seeded", "a@b.com", "Pending"))  # data kept, default set
 
-    def test_triage_keep_migration_appends_without_losing_existing_data(self):
+    def test_additive_columns_migrate_without_losing_existing_data(self):
         with self._raw() as c:
             insert_lead(c, 8, support_email="a@b.com")
             c.execute("UPDATE scrape_tracker SET Mail_status='Sent', sent_at='2026-01-02' "
                       "WHERE appid=8")
             c.execute("ALTER TABLE scrape_tracker DROP COLUMN triage_kept")
+            c.execute("ALTER TABLE scrape_tracker DROP COLUMN Require_Socials")
+            c.execute("ALTER TABLE scrape_tracker DROP COLUMN Socials_Data")
             c.commit()
         pipeline._ensured = False
         pipeline.init_tracker()
         with self._raw() as c:
-            row = c.execute("SELECT game_name, Mail_status, sent_at, triage_kept "
+            row = c.execute("SELECT game_name, Mail_status, sent_at, triage_kept, "
+                            "Require_Socials, Socials_Data "
                             "FROM scrape_tracker WHERE appid=8").fetchone()
-        self.assertEqual(row, ("Game", "Sent", "2026-01-02", 0))
+        self.assertEqual(row, ("Game", "Sent", "2026-01-02", 0, 0, "{}"))
 
     # ---- trigger auto-sync --------------------------------------------
     def test_trigger_seeds_row_with_transforms(self):

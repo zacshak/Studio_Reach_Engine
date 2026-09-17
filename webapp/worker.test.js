@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  approveStmt, keepStmt, NOMAIL_SQL, purgeMedia, secureEqual, sessionToken,
+  approveStmt, keepStmt, NOMAIL_SQL, purgeMedia, requireSocialsStmt, secureEqual, sessionToken,
   TRIAGE_KEPT_SQL, sql, updateJSON,
 } from "./worker.js";
 import worker from "./worker.js";
@@ -10,8 +10,17 @@ import worker from "./worker.js";
 test("No-Mail includes only pending outreach with unresolved scrape states", () => {
   assert.equal(
     NOMAIL_SQL,
-    "SELECT appid FROM scrape_tracker WHERE scrape_status IN ('pending','no_email','failed') AND Mail_status='Pending' ORDER BY appid",
+    "SELECT appid, Require_Socials FROM scrape_tracker WHERE scrape_status IN ('pending','no_email','failed') AND Mail_status='Pending' ORDER BY appid",
   );
+});
+
+test("ReqSocial stores an explicit boolean without changing queue state", () => {
+  assert.deepEqual(requireSocialsStmt(42, true), [
+    "UPDATE scrape_tracker SET Require_Socials=? WHERE appid=?", 1, 42,
+  ]);
+  assert.deepEqual(requireSocialsStmt(42, false), [
+    "UPDATE scrape_tracker SET Require_Socials=? WHERE appid=?", 0, 42,
+  ]);
 });
 
 test("mail approval is one guarded database update", () => {

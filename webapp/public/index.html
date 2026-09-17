@@ -55,6 +55,8 @@
                     font-size: 1rem; cursor: pointer; font-weight: 600; }
   .ok  { background: #14532d; color: #bbf7d0; }
   .bad { background: #7f1d1d; color: #fecaca; }
+  .reqsocial { background: #27272a; color: #d4d4d8; border: 1px solid #52525b !important; }
+  .reqsocial.on { background: #854d0e; color: #fef08a; border-color: #eab308 !important; }
   .bulk { display: flex; gap: .6rem; margin-top: .8rem; }
   .bulk button { flex: 1; padding: .5rem; border-radius: 8px; border: 1px solid #262b36;
                  background: #161b26; color: #9aa4b2; cursor: pointer; }
@@ -140,6 +142,7 @@ function queues() {
 }
 let Q = null;
 const emailsOf = (appid) => (S.mail.find((m) => m.appid === appid) || {}).emails || "";
+const requiresSocials = (appid) => Boolean(S.requireSocials?.[String(appid)]);
 
 async function load() {
   $("#view").innerHTML = '<div class="empty">Loading…</div>';
@@ -271,6 +274,10 @@ function render() {
       </div>
       <div class="actions">
         ${A[0] ? `<button class="ok" onclick="doAct('${A[1]}')">${A[0]}</button>` : ""}
+        ${(tab === "mail" || tab === "nomail")
+          ? `<button class="reqsocial ${requiresSocials(card.appid) ? "on" : ""}"
+              onclick="toggleSocials(${card.appid})">ReqSocial: ${requiresSocials(card.appid) ? "ON" : "OFF"}</button>`
+          : ""}
         <button class="bad" onclick="doAct('${R}')">❌ Reject</button>
       </div>
     </div>`;
@@ -308,6 +315,12 @@ function doAct(action) {
   shot = 0; armed = null; showAll = false;
   render();
   api(action, { appid: card.appid });
+}
+function toggleSocials(appid) {
+  const required = !requiresSocials(appid);
+  S.requireSocials[String(appid)] = required;
+  render();
+  api("require_socials", { appid, required });
 }
 function approveAll() {
   const ids = Q.mail.map((c) => c.appid);

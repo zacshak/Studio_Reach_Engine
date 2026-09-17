@@ -85,7 +85,9 @@ _SCHEMA = """(
     genres         TEXT,
     added_at       TEXT,
     sent_at        TEXT,
-    triage_kept    INTEGER NOT NULL DEFAULT 0
+    triage_kept    INTEGER NOT NULL DEFAULT 0,
+    Require_Socials INTEGER NOT NULL DEFAULT 0,
+    Socials_Data   TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(Socials_Data))
 )"""
 # columns carried over on rebuild (all but Mail_status / mail_template, which take
 # their defaults)
@@ -96,7 +98,7 @@ _REBUILD_COLS = ("appid, game_name, short_descript, scrape_status, emails, "
 _SCHEMA_COLS = ("appid", "game_name", "short_descript", "Mail_status",
                 "mail_template", "scrape_status", "emails", "steam_url", "website",
                 "support_info", "developers", "publishers", "genres", "added_at",
-                "sent_at", "triage_kept")
+                "sent_at", "triage_kept", "Require_Socials", "Socials_Data")
 
 _EMAIL_VERIFICATION_CACHE_SCHEMA = """(
     email        TEXT PRIMARY KEY,
@@ -310,6 +312,12 @@ def init_tracker():
         if "triage_kept" not in cols:
             conn.execute("ALTER TABLE scrape_tracker ADD COLUMN triage_kept "
                          "INTEGER NOT NULL DEFAULT 0")
+        if "Require_Socials" not in cols:
+            conn.execute("ALTER TABLE scrape_tracker ADD COLUMN Require_Socials "
+                         "INTEGER NOT NULL DEFAULT 0")
+        if "Socials_Data" not in cols:
+            conn.execute("ALTER TABLE scrape_tracker ADD COLUMN Socials_Data "
+                         "TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(Socials_Data))")
         conn.execute("CREATE TABLE IF NOT EXISTS email_verification_cache "
                      f"{_EMAIL_VERIFICATION_CACHE_SCHEMA}")
         # fix column order if it drifted (ALTER only appends, so mail_template lands
