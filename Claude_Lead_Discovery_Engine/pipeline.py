@@ -59,6 +59,7 @@ STATUSES = ("pending", "seeded", "scraped", "no_email", "invalid", "failed")
 # claim state and is intentionally not exposed as a user-facing status.
 MAIL_STATUSES = ("Pending", "Invalid", "Writing", "Drafted", "Scheduled", "Sent", "Replied")
 INTERNAL_MAIL_STATUSES = ("Sending",)
+SOCIAL_FIELDS = ("X", "LinkedIn", "Instagram", "Discord", "Email")
 MAIL_TRANSITIONS = {
     "Writing": "Pending",
     "Drafted": "Writing",
@@ -663,6 +664,35 @@ def nomail_ready_appids():
             "AND scrape_status IN ('pending','no_email','failed') ORDER BY appid")]
 
 
+def social_requests():
+    """Complete tracker rows awaiting their first social-enrichment result."""
+    _ensure()
+    with closing(_ro()) as conn:
+        cols = [c[1] for c in conn.execute("PRAGMA table_info(scrape_tracker)")]
+        rows = conn.execute(
+            "SELECT * FROM scrape_tracker WHERE Require_Socials=1 "
+            "AND Socials_Data='{}' ORDER BY appid").fetchall()
+    return [dict(zip(cols, row)) for row in rows]
+
+
+def write_socials(appid, socials):
+    """Store one complete social result while leaving it requested for review."""
+    if not isinstance(socials, dict) or set(socials) != set(SOCIAL_FIELDS):
+        raise ValueError(f"socials must contain exactly {SOCIAL_FIELDS}")
+    if any(value is not None and not isinstance(value, str) for value in socials.values()):
+        raise ValueError("social values must be strings or None")
+    encoded = json.dumps({field: socials[field] for field in SOCIAL_FIELDS},
+                         ensure_ascii=False, separators=(",", ":"))
+    _ensure()
+    with closing(_rw()) as conn:
+        row = conn.execute(
+            "UPDATE scrape_tracker SET Socials_Data=? "
+            "WHERE appid=? AND Require_Socials=1 RETURNING appid",
+            (encoded, int(appid))).fetchone()
+        conn.commit()
+    return row is not None
+
+
 def set_mail_status(appid, status):
     """Apply one legal user-facing outreach transition."""
     _ensure()
@@ -826,7 +856,7 @@ def mark_sent(appid):
     with closing(_rw()) as conn:
         row = conn.execute(
             "UPDATE scrape_tracker SET Mail_status='Sent', "
-            "sent_at=COALESCE(sent_at,CURRENT_TIMESTAMP) "
+            "sent_at=COALESCE(sent_at,CURRENT_TIMESTAMP), Require_Socials=0 "
             "WHERE appid=? AND Mail_status='Sending' RETURNING appid",
             (int(appid),)).fetchone()
         if row is None:

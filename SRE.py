@@ -13,6 +13,7 @@ the single front door so you don't memorise six script paths.
     python SRE.py --draft-mails               # AI-draft cold mails for 'Writing' leads -> R2
     python SRE.py --sync-templates            # push cold-mail templates -> R2 (drafter source)
     python SRE.py --send-mails                # send scheduled cold mails (--dry-run, --limit N)
+    python SRE.py --scrape-socials            # enrich requested leads with social links
     python SRE.py --review-mails              # check Sent leads for replies -> mark 'Replied'
     python SRE.py --repair-invalid            # quarantine existing invalid unsent recipients
     python SRE.py --sync-media                # mirror staged media -> R2 (cloud review app)
@@ -36,6 +37,7 @@ ROUTES = {
     "--draft-mails":   ("Mail_Sender/draft_cloud.py", []),
     "--sync-templates": ("Mail_Sender/sync_templates.py", []),
     "--send-mails":    ("Mail_Sender/mailer.py", []),
+    "--scrape-socials": ("HermesScraper/socials.py", []),
     "--review-mails":  ("Mail_Sender/mailer.py", ["--review"]),
     "--repair-invalid": ("Claude_Lead_Discovery_Engine/repair_invalid.py", []),
     "--sync-media":    ("sync_media.py", []),

@@ -327,6 +327,24 @@ class PipelineTest(unittest.TestCase):
             c.commit()
         self.assertEqual(pipeline.nomail_ready_appids(), [410, 411, 412])
 
+    def test_social_request_stores_complete_result_and_stays_requested(self):
+        with self._raw() as c:
+            insert_lead(c, 416, name="Social Game")
+            c.execute("UPDATE scrape_tracker SET Require_Socials=1 WHERE appid=416")
+            c.commit()
+        requests = pipeline.social_requests()
+        self.assertEqual([row["appid"] for row in requests], [416])
+        self.assertEqual(requests[0]["game_name"], "Social Game")
+        result = {field: None for field in pipeline.SOCIAL_FIELDS}
+        result["X"] = "https://x.com/studio"
+        self.assertTrue(pipeline.write_socials(416, result))
+        self.assertEqual(pipeline.social_requests(), [])
+        with self._raw() as c:
+            row = c.execute("SELECT Require_Socials, Socials_Data FROM scrape_tracker "
+                            "WHERE appid=416").fetchone()
+        self.assertEqual(row[0], 1)
+        self.assertEqual(json.loads(row[1]), result)
+
     def test_human_kept_lead_never_reenters_ai_triage(self):
         with self._raw() as c:
             insert_lead(c, 420)
@@ -414,6 +432,9 @@ class PipelineTest(unittest.TestCase):
         pipeline.set_mail_status(950, "Drafted")
         pipeline.set_mail_template(950, 2)
         pipeline.set_mail_status(950, "Scheduled")
+        with self._raw() as c:
+            c.execute("UPDATE scrape_tracker SET Require_Socials=1 WHERE appid=950")
+            c.commit()
         with self.assertRaises(ValueError):
             pipeline.set_mail_template(950, 3)
         self.assertEqual(pipeline.get_mail_template(950), 2)
@@ -426,11 +447,12 @@ class PipelineTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             pipeline.write_result(950, scrape_status="failed")
         with self._raw() as c:
-            row = c.execute("SELECT Mail_status, sent_at FROM scrape_tracker "
+            row = c.execute("SELECT Mail_status, sent_at, Require_Socials FROM scrape_tracker "
                             "WHERE appid=950").fetchone()
             cached = c.execute("SELECT COUNT(*) FROM newly_added WHERE appid=950").fetchone()[0]
         self.assertEqual(row[0], "Sent")
         self.assertIsNotNone(row[1])
+        self.assertEqual(row[2], 0)
         self.assertEqual(cached, 0)
 
     def test_sending_can_only_be_reset_explicitly(self):

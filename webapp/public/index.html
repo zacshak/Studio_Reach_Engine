@@ -44,6 +44,10 @@
   .mail { background: #161b26; border: 1px solid #262b36; border-radius: 10px;
           padding: .8rem; margin: .8rem 0; white-space: pre-wrap; font-size: .92rem; }
   .mail .to { color: #34d399; font-size: .85rem; margin-bottom: .5rem; }
+  .social-links { display: grid; gap: .55rem; margin: .8rem 0; }
+  .social-links a, .social-empty { background: #161b26; border: 1px solid #262b36;
+                                  border-radius: 8px; padding: .65rem .8rem; }
+  .social-links a { overflow-wrap: anywhere; }
   .nav { display: flex; align-items: center; justify-content: center; gap: 1rem; margin: .8rem 0; }
   .nav button { background: #1b2330; color: #e6e6e6; border: 1px solid #262b36;
                 border-radius: 8px; padding: .35rem .9rem; cursor: pointer; }
@@ -72,6 +76,7 @@
   <button class="tab" data-tab="approval">🎮 Approval <b></b></button>
   <button class="tab" data-tab="mail">📧 Mail <b></b></button>
   <button class="tab" data-tab="nomail">🚫 No-Mail <b></b></button>
+  <button class="tab" data-tab="socials">🔗 Socials <b></b></button>
 </header>
 <main>
   <div id="banner" class="banner" hidden>
@@ -123,7 +128,7 @@ async function retryFailed() {
 // ---- state ----
 let S = null;                          // /api/state payload
 let tab = "triage";
-const idx = { triage: 0, approval: 0, mail: 0, nomail: 0 };
+const idx = { triage: 0, approval: 0, mail: 0, nomail: 0, socials: 0 };
 const manifests = new Map();           // folder -> manifest (or null while loading)
 let shot = 0;                          // selected screenshot on current card
 let armed = null;                      // two-tap confirm for bulk buttons
@@ -138,11 +143,13 @@ function queues() {
     approval: mk(S.approval),
     mail: mk(S.mail.map((m) => m.appid)),
     nomail: mk(S.nomail),
+    socials: mk((S.socials || []).map((item) => item.appid)),
   };
 }
 let Q = null;
 const emailsOf = (appid) => (S.mail.find((m) => m.appid === appid) || {}).emails || "";
 const requiresSocials = (appid) => Boolean(S.requireSocials?.[String(appid)]);
+const socialsOf = (appid) => ((S.socials || []).find((item) => item.appid === appid) || {}).data || {};
 
 async function load() {
   $("#view").innerHTML = '<div class="empty">Loading…</div>';
@@ -155,7 +162,7 @@ async function load() {
   }
   S = await r.json();
   Q = queues();
-  if (!Q[tab].length) tab = ["triage", "approval", "mail", "nomail"].find((t) => Q[t].length) || tab;
+  if (!Q[tab].length) tab = ["triage", "approval", "mail", "nomail", "socials"].find((t) => Q[t].length) || tab;
   render();
 }
 
@@ -210,7 +217,8 @@ function render() {
   const gha =
     (tab === "approval" && !list.length && S.pendingDrafts
       ? ghaBtn("✍️ Draft pending mails", "draft") : "") +
-    (tab === "mail" && S.scheduled ? ghaBtn("📨 Send scheduled mails", "send") : "");
+    (tab === "mail" && S.scheduled ? ghaBtn("📨 Send scheduled mails", "send") : "") +
+    (tab === "socials" ? ghaBtn("🔎 Fetch requested socials", "socials") : "");
   if (!list.length) {
     view.innerHTML = (gha ? `<div class="bulk top">${gha}</div>` : "") +
                      `<div class="empty">Nothing to review 🎉</div>`;
@@ -246,9 +254,11 @@ function render() {
   const mail = tab === "mail"
     ? `<div class="mail"><div class="to">To: ${escapeHtml(emailsOf(card.appid) || "(no recipient!)")}</div>${
         (m && m.mail) ? escapeHtml(m.mail) : "<i>(not drafted yet)</i>"}</div>` : "";
+  const socialLinks = tab === "socials" ? renderSocials(socialsOf(card.appid)) : "";
 
   const A = { triage: ["✅ Keep", "keep"], approval: ["✅ Accept", "accept"],
-              mail: ["✅ Approve", "approve"], nomail: [null, null] }[tab];
+              mail: ["✅ Approve", "approve"], nomail: [null, null],
+              socials: [null, null] }[tab];
   const R = tab === "triage" ? "reject_irrelevant" : "reject";
   // two-tap Reject-all with an explicit Cancel — triage (irrelevant) + no-mail (dead-end leads)
   const bulkTriage = (tab !== "triage" && tab !== "nomail") ? "" : armed === "bulkR"
@@ -267,7 +277,9 @@ function render() {
       <div class="meta">${escapeHtml((m && m.meta) || "")} · appid ${card.appid} ·
         <a href="https://store.steampowered.com/app/${card.appid}/" target="_blank" rel="noopener">Steam page 🔗</a></div>
       ${img}${thumbs}${shotsCtl}${allShots}
-      <div class="desc">${m ? escapeHtml(m.desc || "") : "Loading…"}</div>
+      ${tab === "socials"
+        ? socialLinks
+        : `<div class="desc">${m ? escapeHtml(m.desc || "") : "Loading…"}</div>`}
       ${mail}
       <div class="nav">
         <button onclick="move(-1)">←</button><span>${i + 1} / ${list.length}</span><button onclick="move(1)">→</button>
@@ -303,7 +315,13 @@ function move(d) {
 function doAct(action) {
   const card = Q[tab][idx[tab]];
   Q[tab].splice(idx[tab], 1);
-  if (action === "approve") {
+  if (action === "reject") {
+    for (const queue of Object.values(Q))
+      for (let i = queue.length - 1; i >= 0; i--)
+        if (queue[i].appid === card.appid) queue.splice(i, 1);
+    S.mail = S.mail.filter((item) => item.appid !== card.appid);
+    S.socials = (S.socials || []).filter((item) => item.appid !== card.appid);
+  } else if (action === "approve") {
     S.scheduled = true;
     S.mail = S.mail.filter((x) => x.appid !== card.appid);
   } else if (action === "accept") {
@@ -315,6 +333,23 @@ function doAct(action) {
   shot = 0; armed = null; showAll = false;
   render();
   api(action, { appid: card.appid });
+}
+function renderSocials(data) {
+  const links = Object.entries(data).filter(([, value]) => value).map(([label, value]) => {
+    let href = "";
+    if (label === "Email" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
+      href = `mailto:${value}`;
+    } else {
+      try {
+        const url = new URL(value);
+        if (url.protocol === "http:" || url.protocol === "https:") href = url.href;
+      } catch {}
+    }
+    return href ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener">
+      <strong>${escapeHtml(label)}</strong><br>${escapeHtml(value)}</a>` : "";
+  }).join("");
+  return links ? `<div class="social-links">${links}</div>`
+               : '<div class="social-empty">No socials found.</div>';
 }
 function toggleSocials(appid) {
   const required = !requiresSocials(appid);
@@ -359,7 +394,7 @@ document.addEventListener("keydown", (e) => {
   if (!Q || !Q[tab].length) return;
   if (e.key === "ArrowLeft") move(-1);
   else if (e.key === "ArrowRight") move(1);
-  else if (e.key.toLowerCase() === "a" && tab !== "nomail")
+  else if (e.key.toLowerCase() === "a" && ["triage", "approval", "mail"].includes(tab))
     doAct({ triage: "keep", approval: "accept", mail: "approve" }[tab]);
   else if (e.key.toLowerCase() === "r") doAct(tab === "triage" ? "reject_irrelevant" : "reject");
 });

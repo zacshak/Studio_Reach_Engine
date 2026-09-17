@@ -16,7 +16,7 @@
 // status strings); R2 layout mirrors Leads_Reviewer/media_store.py (index.json,
 // irrelevant.json, <GameName>_<appid>/manifest.json + images).
 
-const WORKFLOWS = { send: "send.yml", draft: "draft.yml" }; // the only ones the UI may fire
+const WORKFLOWS = { send: "send.yml", draft: "draft.yml", socials: "socials.yml" };
 const encoder = new TextEncoder();
 
 async function digest(value) {
@@ -150,18 +150,20 @@ async function state(env) {
       ["SELECT appid FROM scrape_tracker WHERE Mail_status='Pending' AND scrape_status IN ('seeded','scraped') ORDER BY appid"],
       ["SELECT appid, emails, Require_Socials FROM scrape_tracker WHERE Mail_status='Drafted' ORDER BY appid"],
       [NOMAIL_SQL],
+      [SOCIALS_SQL],
       ["SELECT EXISTS(SELECT 1 FROM scrape_tracker WHERE Mail_status='Scheduled')"],
       // accepted but the drafter hasn't written the mail yet — gates the Draft button
       ["SELECT EXISTS(SELECT 1 FROM scrape_tracker WHERE Mail_status='Writing')"],
       [TRIAGE_KEPT_SQL],
     ]),
   ]);
-  const [pending, drafted, nomail, sched, writing, kept] = db;
+  const [pending, drafted, nomail, socials, sched, writing, kept] = db;
   const keptIds = new Set(kept.map((r) => Number(r[0])));
   const triage = (irrelevant || []).map(Number).filter((a) => !keptIds.has(a));
   const flagged = new Set(triage);
   const requireSocials = Object.fromEntries(
-    [...drafted, ...nomail].map((r) => [String(r[0]), Number(r.at(-1)) === 1]),
+    [...drafted, ...nomail, ...socials].map((r) =>
+      [String(r[0]), Number(r.at(-1)) === 1]),
   );
   return {
     index: index || {},
@@ -169,6 +171,7 @@ async function state(env) {
     approval: pending.map((r) => Number(r[0])).filter((a) => !flagged.has(a)),
     mail: drafted.map((r) => ({ appid: Number(r[0]), emails: r[1] || "" })),
     nomail: nomail.map((r) => Number(r[0])).filter((a) => !flagged.has(a)),
+    socials: socials.map((r) => ({ appid: Number(r[0]), data: JSON.parse(r[1]) })),
     requireSocials,
     scheduled: Number(sched[0]?.[0]) === 1,
     pendingDrafts: Number(writing[0]?.[0]) === 1,
@@ -182,6 +185,7 @@ const approveStmt = (appid) => [
 ];
 
 const NOMAIL_SQL = "SELECT appid, Require_Socials FROM scrape_tracker WHERE scrape_status IN ('pending','no_email','failed') AND Mail_status='Pending' ORDER BY appid";
+const SOCIALS_SQL = "SELECT appid, Socials_Data, Require_Socials FROM scrape_tracker WHERE Require_Socials=1 AND Socials_Data<>'{}' ORDER BY appid";
 const TRIAGE_KEPT_SQL = "SELECT appid FROM scrape_tracker WHERE triage_kept=1";
 
 const requireSocialsStmt = (appid, required) => [
@@ -310,7 +314,8 @@ const json = (obj, status = 200) =>
   });
 
 export {
-  approveStmt, keepStmt, NOMAIL_SQL, requireSocialsStmt, TRIAGE_KEPT_SQL, purgeMedia, secureEqual,
+  approveStmt, keepStmt, NOMAIL_SQL, requireSocialsStmt, SOCIALS_SQL, TRIAGE_KEPT_SQL,
+  purgeMedia, secureEqual,
   sessionToken, sql, updateJSON,
 };
 
