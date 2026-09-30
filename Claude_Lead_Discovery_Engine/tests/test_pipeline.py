@@ -11,6 +11,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from unittest.mock import Mock, call, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pipeline  # noqa: E402
@@ -494,6 +495,48 @@ class PipelineTest(unittest.TestCase):
         finally:
             pipeline.TURSO_URL, pipeline.libsql = old_url, old_libsql
             pipeline.time.sleep = old_sleep
+
+    def test_remote_reads_recover_from_closed_connection_and_expired_stream(self):
+        for message in ("Hrana: http error: connection closed before message completed",
+                        "Hrana: api error: status=404 stream not found: test"):
+            for stage in ("execute", "fetchall"):
+                with self.subTest(message=message, stage=stage):
+                    broken, healthy, client = Mock(), Mock(), Mock()
+                    if stage == "execute":
+                        broken.execute.side_effect = ValueError(message)
+                    else:
+                        broken.execute.return_value.fetchall.side_effect = ValueError(message)
+                    healthy.execute.return_value.fetchall.return_value = [(1,)]
+                    client.connect.return_value = healthy
+                    with patch.object(pipeline, "libsql", client), \
+                            patch.object(pipeline.time, "sleep") as sleep:
+                        conn = pipeline._Conn(broken)
+                        self.assertEqual(conn.execute("SELECT ?", (1,)).fetchall(), [(1,)])
+                        self.assertEqual(conn.execute("SELECT ?", (1,)).fetchall(), [(1,)])
+                    broken.close.assert_called_once()
+                    client.connect.assert_called_once_with(
+                        pipeline.TURSO_URL, auth_token=pipeline.TURSO_TOKEN)
+                    healthy.execute.assert_has_calls([call("SELECT ?", (1,)),
+                                                     call("SELECT ?", (1,))], any_order=True)
+                    sleep.assert_called_once_with(1)
+
+    def test_remote_retries_are_bounded_and_never_replay_writes_or_sql_errors(self):
+        cases = (("SELECT 1", "connection closed before message completed", 4),
+                 ("UPDATE scrape_tracker SET Mail_status='Sent'", "connection closed", 1),
+                 ("SELECT missing", "no such column: missing", 1))
+        for sql, message, attempts in cases:
+            with self.subTest(sql=sql, message=message):
+                raw, client = Mock(), Mock()
+                raw.execute.side_effect = ValueError(message)
+                client.connect.return_value = raw
+                with patch.object(pipeline, "libsql", client), \
+                        patch.object(pipeline.time, "sleep") as sleep:
+                    with self.assertRaisesRegex(ValueError, message):
+                        pipeline._Conn(raw).execute(sql)
+                self.assertEqual(raw.execute.call_count, attempts)
+                self.assertEqual(client.connect.call_count, attempts - 1)
+                self.assertEqual(sleep.call_args_list,
+                                 [call(1), call(2), call(4)] if attempts == 4 else [])
 
 
 if __name__ == "__main__":

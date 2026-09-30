@@ -3,9 +3,50 @@ import unittest
 from unittest.mock import Mock, patch
 
 import mailer
+import SRE
 
 
 class MailerTest(unittest.TestCase):
+    def test_launcher_runs_mailer_unbuffered_and_preserves_arguments_and_exit_code(self):
+        with patch.object(SRE.subprocess, "call", return_value=7) as launch:
+            self.assertEqual(SRE.main(["--send-mails", "--dry-run", "--limit", "3"]), 7)
+        launch.assert_called_once_with([
+            SRE.sys.executable, "-u", os.path.join(SRE.HERE, "Mail_Sender", "mailer.py"),
+            "--dry-run", "--limit", "3",
+        ])
+
+    def test_cache_read_failure_reports_partial_batch_without_claiming_remaining_mail(self):
+        verifier = Mock()
+        cached = {"result": "valid"}
+        with (
+            patch.dict(os.environ, {"GMAIL_USER": "sender@example.com",
+                                     "GMAIL_APP_PASSWORD": "secret"}),
+            patch.object(mailer.pipeline, "mail_status_appids", return_value=[]),
+            patch.object(mailer.pipeline, "mail_status_emails",
+                         return_value=[(1, "one@example.com"), (2, "two@example.com"),
+                                       (3, "three@example.com")]),
+            patch.object(mailer.pipeline, "get_email_verification",
+                         side_effect=[cached, ValueError("connection closed")]),
+            patch.object(mailer.pipeline, "claim_mail", return_value=True) as claim,
+            patch.object(mailer.pipeline, "mark_sent") as mark_sent,
+            patch.object(mailer.pipeline, "quarantine_verified_invalid") as quarantine,
+            patch.object(mailer.QuickEmailVerification, "from_env", return_value=verifier),
+            patch.object(mailer, "_load_mail", return_value=("subject", "body", "draft.txt")),
+            patch.object(mailer, "_send") as send,
+            patch.object(mailer, "_delete_media"),
+            patch("builtins.print") as output,
+        ):
+            with self.assertRaisesRegex(ValueError, "connection closed"):
+                mailer.main()
+        claim.assert_called_once_with(1)
+        mark_sent.assert_called_once_with(1)
+        send.assert_called_once()
+        quarantine.assert_not_called()
+        verifier.verify.assert_not_called()
+        output.assert_any_call(
+            "STOP 2: verification cache read failed after 1 sent. "
+            "Remaining mails stay Scheduled.", flush=True)
+
     def test_invalid_recipient_does_not_consume_send_limit(self):
         verifier = Mock()
         verifier.verify.return_value = {"result": "valid", "safe_to_send": True}

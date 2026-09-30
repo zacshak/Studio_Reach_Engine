@@ -50,7 +50,7 @@ def main(argv):
     if not argv or argv[0] not in ROUTES:
         sys.exit(__doc__)
     script, prefix = ROUTES[argv[0]]
-    cmd = [sys.executable, os.path.join(HERE, *script.split("/"))] + prefix + argv[1:]
+    cmd = [sys.executable, "-u", os.path.join(HERE, *script.split("/"))] + prefix + argv[1:]
     return subprocess.call(cmd)
 
 

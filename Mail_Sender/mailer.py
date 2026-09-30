@@ -207,7 +207,12 @@ def main(dry_run=False, limit=None):
             print(f"  [dry] {appid} -> {to} | {subject!r} | {os.path.basename(path)}")
             done += 1
             continue
-        result = pipeline.get_email_verification(to)
+        try:
+            result = pipeline.get_email_verification(to)
+        except Exception:
+            print(f"STOP {appid}: verification cache read failed after {done} sent. "
+                  "Remaining mails stay Scheduled.", flush=True)
+            raise
         if result is None:
             try:
                 result = verifier.verify(to)

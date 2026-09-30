@@ -212,7 +212,8 @@ class _Conn:
                 msg = str(exc).lower()
                 transient = any(s in msg for s in (
                     "dns error", "failed to lookup", "error trying to connect",
-                    "connection refused", "connection reset", "timed out", "timeout"))
+                    "connection refused", "connection reset", "connection closed",
+                    "stream not found", "timed out", "timeout"))
                 if not read or not transient or attempt == 3:
                     raise
                 delay = 2 ** attempt
