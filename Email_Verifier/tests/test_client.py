@@ -1,4 +1,5 @@
 import io
+import http.client
 import json
 import tempfile
 import unittest
@@ -73,6 +74,20 @@ class QuickEmailVerificationTest(unittest.TestCase):
         with self.assertRaises(QEVError) as raised:
             QuickEmailVerification("secret", opener=open_request).verify("a@example.com")
         self.assertEqual(raised.exception.status_code, 402)
+
+    def test_truncated_response_and_reset_connections_are_provider_failures(self):
+        for failure in (http.client.IncompleteRead(b"partial"), ConnectionResetError("reset")):
+            with self.subTest(failure=failure):
+                def open_request(request, timeout):
+                    raise failure
+                with self.assertRaises(QEVError):
+                    QuickEmailVerification("secret", opener=open_request).verify("a@example.com")
+
+    def test_invalid_json_and_non_object_response_cannot_be_used_as_verification(self):
+        for body in (b"not-json", b"[]", b'{"success":false,"message":"failed"}'):
+            with self.subTest(body=body):
+                with self.assertRaises(QEVError):
+                    QuickEmailVerification("secret", opener=lambda *a, **kw: Response(body)).verify("a@example.com")
 
 
 if __name__ == "__main__":

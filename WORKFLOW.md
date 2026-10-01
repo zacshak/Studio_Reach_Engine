@@ -101,9 +101,28 @@ R2 manifest, atomically claims `Scheduled → Sending`, flips `Sending → Sent`
 `Require_Socials`, and purges the lead's R2 media. No schedule — a human
 presses the button, so outbound always has a gate.
 
-If SMTP completed but its result could not be recorded, the lead remains `Sending` to
-prevent duplicates. Check Gmail Sent, then resolve it with
-`python SRE.py --send-mails --resolve-sending APPID sent|retry`.
+Temporary SMTP rejections (4xx) return the row to `Scheduled` and retry after 5 and
+15 minutes. If both retries fail, it stays `Scheduled` for a later run. A permanent
+message/recipient rejection returns it to `Drafted` for review. Authentication or
+sender setup errors stop the batch without leaving the current row in `Sending`.
+
+Every claimed send records an ownership token and Message-ID in `mail_send_attempt`.
+If SMTP acceptance is uncertain or Sent cannot be recorded, media is retained and the
+row remains `Sending`. The next send run checks Gmail Sent for that Message-ID and
+completes only confirmed matches. Unresolved rows are not resent and do not block other
+Scheduled rows. For legacy rows or unmatched messages, check Gmail Sent and resolve with
+`python SRE.py --send-mails --resolve-sending APPID sent|retry`. Never choose `retry`
+solely because an uncertain message is absent from search results.
+
+The Actions summary reports sent, deferred, unknown, invalid, uncertain, and unprocessed
+counts. There is no daily email-count cap. The job stops between mails after 330 minutes
+to avoid the runner's 350-minute hard timeout. Unprocessed rows stay `Scheduled`.
+QEV unknown/API failure never permits sending. Repeated addresses reuse verification
+within the batch, and only definitive valid/invalid results are persisted.
+`Sent` means Gmail accepted the message, not proof of final delivery to the recipient.
+The metadata table is additive and does not change dashboard columns. A code rollback
+can leave that table in place. Preserve unresolved `Sending` rows and their metadata
+during rollback so delivery evidence is not lost.
 
 ## 4. Review replies — automatic, nightly (`review-mails.yml`)
 Cron `0 2 * * *`. Read-only IMAP scan of the Gmail inbox: any `Sent` lead whose address

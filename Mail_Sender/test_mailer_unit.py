@@ -1,6 +1,6 @@
 import os
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 import mailer
 import SRE
@@ -36,16 +36,14 @@ class MailerTest(unittest.TestCase):
             patch.object(mailer, "_delete_media"),
             patch("builtins.print") as output,
         ):
-            with self.assertRaisesRegex(ValueError, "connection closed"):
-                mailer.main()
-        claim.assert_called_once_with(1)
-        mark_sent.assert_called_once_with(1)
+            self.assertEqual(mailer.main(), 1)
+        claim.assert_called_once_with(1, token=ANY, message_id=ANY, expected_email="one@example.com")
+        mark_sent.assert_called_once_with(1, token=ANY)
         send.assert_called_once()
         quarantine.assert_not_called()
         verifier.verify.assert_not_called()
         output.assert_any_call(
-            "STOP 2: verification cache read failed after 1 sent. "
-            "Remaining mails stay Scheduled.", flush=True)
+            "STOP: ValueError: connection closed. No further sends attempted.")
 
     def test_invalid_recipient_does_not_consume_send_limit(self):
         verifier = Mock()
@@ -72,8 +70,8 @@ class MailerTest(unittest.TestCase):
 
         quarantine.assert_called_once_with(1)
         send.assert_called_once_with("sender@example.com", "secret",
-                                     "studio@example.com", "subject", "body")
-        mark_sent.assert_called_once_with(2)
+                                     "studio@example.com", "subject", "body", message_id=ANY)
+        mark_sent.assert_called_once_with(2, token=ANY)
 
     def test_only_invalid_result_is_quarantined(self):
         verifier = Mock()
@@ -102,10 +100,10 @@ class MailerTest(unittest.TestCase):
         ):
             mailer.main(limit=1)
 
-        quarantine.assert_called_once_with(1)
+        quarantine.assert_called_once_with(1, expected_email="dead@example.com")
         send.assert_called_once_with("sender@example.com", "secret",
-                                     "studio@example.com", "subject", "body")
-        mark_sent.assert_called_once_with(2)
+                                     "studio@example.com", "subject", "body", message_id=ANY)
+        mark_sent.assert_called_once_with(2, token=ANY)
 
     def test_r2_cleanup_failure_does_not_stop_after_quarantine(self):
         verifier = Mock()
@@ -135,10 +133,10 @@ class MailerTest(unittest.TestCase):
         ):
             mailer.main()
 
-        quarantine.assert_called_once_with(1)
+        quarantine.assert_called_once_with(1, expected_email="dead@example.com")
         send.assert_called_once_with("sender@example.com", "secret",
-                                     "studio@example.com", "subject", "body")
-        mark_sent.assert_called_once_with(2)
+                                     "studio@example.com", "subject", "body", message_id=ANY)
+        mark_sent.assert_called_once_with(2, token=ANY)
 
     def test_verifier_failure_aborts_before_claim_or_send(self):
         verifier = Mock()
@@ -158,8 +156,7 @@ class MailerTest(unittest.TestCase):
                          return_value=("subject", "body", "draft.txt")),
             patch.object(mailer, "_send") as send,
         ):
-            with self.assertRaisesRegex(mailer.QEVError, "service unavailable"):
-                mailer.main(limit=1)
+            self.assertEqual(mailer.main(limit=1), 1)
 
         claim.assert_not_called()
         send.assert_not_called()
@@ -187,7 +184,7 @@ class MailerTest(unittest.TestCase):
 
         verifier.verify.assert_not_called()
         send.assert_called_once()
-        mark_sent.assert_called_once_with(1)
+        mark_sent.assert_called_once_with(1, token=ANY)
 
     def test_quota_error_stops_without_failing_or_claiming(self):
         verifier = Mock()

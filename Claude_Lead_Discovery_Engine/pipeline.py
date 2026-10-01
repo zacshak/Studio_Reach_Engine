@@ -16,6 +16,7 @@ import sqlite3
 import sys
 import threading
 import time
+import uuid
 from contextlib import closing
 from email.errors import HeaderParseError
 from email.headerregistry import Address
@@ -107,6 +108,14 @@ _EMAIL_VERIFICATION_CACHE_SCHEMA = """(
     verified_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 )"""
 
+# Separate metadata avoids rebuilding scrape_tracker and stays compatible with old readers.
+_MAIL_SEND_ATTEMPT_SCHEMA = """(
+    appid       INTEGER PRIMARY KEY REFERENCES scrape_tracker(appid) ON DELETE CASCADE,
+    token       TEXT NOT NULL,
+    message_id  TEXT,
+    started_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+)"""
+
 # tracker columns seeded from newly_added (the rest are filled by the scraper)
 SEED_COLS = ("appid", "game_name", "short_descript", "steam_url",
              "website", "support_info", "developers", "publishers", "genres")
@@ -195,6 +204,14 @@ class _Rows:
         return None
 
 
+def retryable_db_error(exc):
+    return any(s in str(exc).lower() for s in (
+        "dns error", "failed to lookup", "error trying to connect", "connection refused",
+        "connection reset", "connection closed", "stream not found", "timed out",
+        "timeout", "unexpected eof", "incomplete message", "broken pipe",
+        "status=502", "status=503", "status=504"))
+
+
 class _Conn:
     """Thin libsql connection proxy: execute() returns a buffered, iterable result
     (the only API gap vs sqlite3). commit/executescript/close pass through."""
@@ -209,22 +226,20 @@ class _Conn:
                     self._raw = libsql.connect(TURSO_URL, auth_token=TURSO_TOKEN)
                 return _Rows(self._raw.execute(*a))
             except Exception as exc:
-                msg = str(exc).lower()
-                transient = any(s in msg for s in (
-                    "dns error", "failed to lookup", "error trying to connect",
-                    "connection refused", "connection reset", "connection closed",
-                    "stream not found", "timed out", "timeout"))
-                if not read or not transient or attempt == 3:
+                if not read or not retryable_db_error(exc) or attempt == 3:
                     raise
                 delay = 2 ** attempt
                 print(f"Turso read failed; reconnecting in {delay}s ({exc})", file=sys.stderr)
-                try:
-                    if self._raw is not None:
-                        self._raw.close()
-                except Exception:
-                    pass
-                self._raw = None
+                self.invalidate()
                 time.sleep(delay)
+
+    def invalidate(self):
+        raw, self._raw = self._raw, None
+        try:
+            if raw is not None:
+                raw.close()
+        except Exception:
+            pass
 
     def close(self):
         pass  # shared process-wide connection (see _turso); real close is at exit.
@@ -248,6 +263,13 @@ def _turso():
         conn = _Conn(libsql.connect(TURSO_URL, auth_token=TURSO_TOKEN))
         _TLS.conn = conn
     return conn
+
+
+def reconnect():
+    """Discard this thread's remote handle before retrying an idempotent operation."""
+    conn = getattr(_TLS, "conn", None)
+    if conn is not None:
+        conn.invalidate()
 
 
 def _rw():
@@ -322,6 +344,8 @@ def init_tracker():
                          "TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(Socials_Data))")
         conn.execute("CREATE TABLE IF NOT EXISTS email_verification_cache "
                      f"{_EMAIL_VERIFICATION_CACHE_SCHEMA}")
+        conn.execute("CREATE TABLE IF NOT EXISTS mail_send_attempt "
+                     f"{_MAIL_SEND_ATTEMPT_SCHEMA}")
         # fix column order if it drifted (ALTER only appends, so mail_template lands
         # last). Rebuild from _SCHEMA, preserving every existing value. No-op once aligned.
         ordered = [c[1] for c in conn.execute("PRAGMA table_info(scrape_tracker)")]
@@ -367,6 +391,8 @@ def _jload(v):
 
 def normalize_email(raw):
     """Return the first deliverable address, or '' for missing/malformed input."""
+    if not isinstance(raw, str):
+        return ""
     addr = ((raw or "").split(",", 1)[0] or "").strip()
     if not addr or any(ch.isspace() for ch in addr):
         return ""
@@ -381,6 +407,8 @@ def normalize_email(raw):
 
 def email_state(raw):
     """Classify a stored email as missing, valid, or invalid."""
+    if raw is not None and not isinstance(raw, str):
+        return "invalid"
     value = (raw or "").strip()
     if not value:
         return "missing"
@@ -388,7 +416,7 @@ def email_state(raw):
 
 
 def _email_cache_key(email):
-    return (email or "").strip().casefold()
+    return email.strip().casefold() if isinstance(email, str) else ""
 
 
 def get_email_verification(email):
@@ -407,7 +435,11 @@ def get_email_verification(email):
         result = json.loads(row[0])
     except (TypeError, json.JSONDecodeError):
         return None
-    return result if isinstance(result, dict) else None
+    if not isinstance(result, dict) or str(result.get("result", "")).lower() not in ("valid", "invalid"):
+        return None
+    if "email" in result and _email_cache_key(result["email"]) != key:
+        return None
+    return result
 
 
 def cache_email_verification(email, result):
@@ -415,6 +447,8 @@ def cache_email_verification(email, result):
     key = _email_cache_key(email)
     outcome = str(result.get("result", "")).lower() if isinstance(result, dict) else ""
     if not key or outcome not in ("valid", "invalid"):
+        return False
+    if "email" in result and _email_cache_key(result["email"]) != key:
         return False
     try:
         encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
@@ -563,7 +597,7 @@ def write_result(appid, *, scrape_status, emails=None, website=None):
         current = conn.execute(
             "SELECT emails, Mail_status FROM scrape_tracker WHERE appid=?",
             (int(appid),)).fetchone()
-        if current and current[1] in ("Sent", "Replied"):
+        if current and current[1] in ("Sending", "Sent", "Replied"):
             raise ValueError(f"cannot alter completed outreach for appid {appid}")
         candidate = emails if emails is not None else (current[0] if current else None)
         if scrape_status in ("scraped", "invalid"):
@@ -761,17 +795,33 @@ def delete_newly_added(appid):
         conn.commit()
 
 
-def claim_mail(appid):
+def claim_mail(appid, *, token=None, message_id=None, expected_email=None):
     """Atomically reserve one Scheduled mail. False means another run/state owns it."""
     _ensure()
+    token = token or uuid.uuid4().hex
     with closing(_rw()) as conn:
+        email_guard = " AND emails=?" if expected_email is not None else ""
         row = conn.execute(
             "UPDATE scrape_tracker SET Mail_status='Sending' "
             "WHERE appid=? AND Mail_status='Scheduled' "
-            "AND scrape_status IN ('seeded','scraped') RETURNING appid",
-            (int(appid),)).fetchone()
+            f"AND scrape_status IN ('seeded','scraped'){email_guard} RETURNING appid",
+            (int(appid), expected_email) if email_guard else (int(appid),)).fetchone()
+        if row is not None:
+            conn.execute(
+                "INSERT INTO mail_send_attempt (appid,token,message_id) VALUES (?,?,?) "
+                "ON CONFLICT(appid) DO UPDATE SET token=excluded.token, "
+                "message_id=excluded.message_id, started_at=CURRENT_TIMESTAMP",
+                (int(appid), token, message_id))
         conn.commit()
     return row is not None
+
+
+def get_send_attempt(appid):
+    _ensure()
+    with closing(_ro()) as conn:
+        row = conn.execute("SELECT token,message_id FROM mail_send_attempt WHERE appid=?",
+                           (int(appid),)).fetchone()
+    return row
 
 
 def repair_invalid_rows():
@@ -786,7 +836,7 @@ def repair_invalid_rows():
             state = email_state(emails)
             outreach_state = mail_status in ("Writing", "Drafted", "Scheduled", "Sending")
             source_state = scrape_status in ("seeded", "scraped")
-            if mail_status in ("Sent", "Replied"):
+            if mail_status in ("Sending", "Sent", "Replied"):
                 continue
             if state == "invalid":
                 target = ("invalid", "Invalid")
@@ -815,57 +865,70 @@ def quarantine_unusable(appid):
         row = conn.execute(
             "SELECT emails, Mail_status FROM scrape_tracker WHERE appid=?", (int(appid),)
         ).fetchone()
-        if row and row[1] not in ("Sent", "Replied"):
+        if row and row[1] not in ("Sending", "Sent", "Replied"):
             state = email_state(row[0])
             if state != "valid":
                 target = ("pending", "Pending") if state == "missing" else (
                     "invalid", "Invalid")
                 conn.execute(
-                    "UPDATE scrape_tracker SET scrape_status=?, Mail_status=? WHERE appid=?",
-                    (*target, int(appid)))
+                    "UPDATE scrape_tracker SET scrape_status=?, Mail_status=? WHERE appid=? "
+                    "AND emails IS ? AND Mail_status NOT IN ('Sending','Sent','Replied')",
+                    (*target, int(appid), row[0]))
         conn.commit()
 
 
-def quarantine_verified_invalid(appid):
+def quarantine_verified_invalid(appid, *, expected_email=None):
     """Quarantine a Scheduled recipient rejected by external mailbox verification."""
     _ensure()
     with closing(_rw()) as conn:
+        guard = " AND emails=?" if expected_email is not None else ""
         row = conn.execute(
             "UPDATE scrape_tracker SET scrape_status='invalid', Mail_status='Invalid' "
-            "WHERE appid=? AND Mail_status='Scheduled' RETURNING appid",
-            (int(appid),),
+            f"WHERE appid=? AND Mail_status='Scheduled'{guard} RETURNING appid",
+            (int(appid), expected_email) if guard else (int(appid),),
         ).fetchone()
         conn.commit()
     return row is not None
 
 
-def reset_sending(appid, status):
+def reset_sending(appid, status, *, token=None):
     """Resolve a definitely-unsent claim without touching any other state."""
     if status not in ("Scheduled", "Drafted"):
         raise ValueError("Sending can only be reset to Scheduled or Drafted")
     _ensure()
     with closing(_rw()) as conn:
+        guard = (" AND EXISTS (SELECT 1 FROM mail_send_attempt a "
+                 "WHERE a.appid=scrape_tracker.appid AND a.token=?)") if token else ""
         conn.execute("UPDATE scrape_tracker SET Mail_status=? "
-                     "WHERE appid=? AND Mail_status='Sending'", (status, int(appid)))
+                     f"WHERE appid=? AND Mail_status='Sending'{guard}",
+                     (status, int(appid), token) if token else (status, int(appid)))
+        conn.execute("DELETE FROM mail_send_attempt WHERE appid=?" +
+                     (" AND token=?" if token else ""),
+                     (int(appid), token) if token else (int(appid),))
         conn.commit()
 
 
-def mark_sent(appid):
+def mark_sent(appid, *, token=None):
     """Mail was sent: Mail_status -> 'Sent', stamp sent_at (UTC) for audit,
     and drop the newly_added row (the scrape_tracker row stays as the record)."""
     _ensure()
     with closing(_rw()) as conn:
+        guard = (" AND EXISTS (SELECT 1 FROM mail_send_attempt a "
+                 "WHERE a.appid=scrape_tracker.appid AND a.token=?)") if token else ""
         row = conn.execute(
             "UPDATE scrape_tracker SET Mail_status='Sent', "
             "sent_at=COALESCE(sent_at,CURRENT_TIMESTAMP), Require_Socials=0 "
-            "WHERE appid=? AND Mail_status='Sending' RETURNING appid",
-            (int(appid),)).fetchone()
+            f"WHERE appid=? AND Mail_status='Sending'{guard} RETURNING appid",
+            (int(appid), token) if token else (int(appid),)).fetchone()
         if row is None:
             current = conn.execute("SELECT Mail_status FROM scrape_tracker WHERE appid=?",
                                    (int(appid),)).fetchone()
             if not current or current[0] != "Sent":
                 raise RuntimeError(f"cannot mark {appid} Sent from {current[0] if current else 'missing'}")
         conn.execute("DELETE FROM newly_added WHERE appid=?", (int(appid),))
+        conn.execute("DELETE FROM mail_send_attempt WHERE appid=?" +
+                     (" AND token=?" if token else ""),
+                     (int(appid), token) if token else (int(appid),))
         conn.commit()
 
 
@@ -875,6 +938,7 @@ def delete_lead(appid):
     otherwise re-insert newly_added and the trigger would re-create the row)."""
     _ensure()
     with closing(_rw()) as conn:
+        conn.execute("DELETE FROM mail_send_attempt WHERE appid=?", (int(appid),))
         conn.execute("DELETE FROM scrape_tracker WHERE appid=?", (int(appid),))
         conn.execute("DELETE FROM newly_added WHERE appid=?", (int(appid),))
         conn.commit()

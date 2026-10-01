@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import http.client
 import os
 import time
 import urllib.error
@@ -109,7 +110,7 @@ class QuickEmailVerification:
         try:
             with self._open(urllib.request.Request(url), timeout=self.timeout) as response:
                 data = response.read()
-        except (urllib.error.URLError, TimeoutError) as exc:
+        except (OSError, http.client.IncompleteRead) as exc:
             raise QEVError(f"report download failed: {exc.reason if hasattr(exc, 'reason') else exc}") from exc
         output.write_bytes(data)
         return output
@@ -124,7 +125,7 @@ class QuickEmailVerification:
                 f"QuickEmailVerification HTTP {exc.code}: {detail}",
                 status_code=exc.code,
             ) from exc
-        except (urllib.error.URLError, TimeoutError) as exc:
+        except (OSError, http.client.IncompleteRead) as exc:
             detail = exc.reason if hasattr(exc, "reason") else exc
             raise QEVError(f"QuickEmailVerification request failed: {detail}") from exc
 

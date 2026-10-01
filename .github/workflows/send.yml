@@ -27,6 +27,7 @@ jobs:
         run: pip install --quiet libsql==0.1.11 boto3==1.43.22
       - name: Send scheduled mails
         env:
+          SEND_TIME_BUDGET_SECONDS: "19800" # stop between mails before the 350-minute runner ceiling
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           QEV_API_KEY: ${{ secrets.QEV_API_KEY }}
