@@ -8,6 +8,7 @@ import json
 import pathlib
 import secrets
 import subprocess
+import time
 import urllib.request
 import urllib.error
 
@@ -15,7 +16,7 @@ ROOT = pathlib.Path(__file__).resolve().parent
 
 
 def command(args, data=None):
-    result = subprocess.run(args, input=data, capture_output=True, text=True, cwd=ROOT)
+    result = subprocess.run(args, input=data, capture_output=True, text=True, encoding='utf-8', cwd=ROOT)
     if result.returncode:
         # Token mint errors do not include token values. Do not dump subprocess output.
         raise RuntimeError(f"Command failed: {args[0]} {args[1]}. Check CLI login and permissions.")
@@ -58,7 +59,7 @@ def main():
     for table in ['scrape_tracker', 'newly_added', 'known_comingsoon']:
         if database(secret, f'SELECT * FROM {table} LIMIT 0')['type'] == 'error':
             raise RuntimeError(f'Read permission failed for {table}')
-    if database(secret, "SELECT name FROM pragma_table_info('scrape_tracker')")['type'] == 'error':
+    if database(secret, 'PRAGMA table_info(scrape_tracker)')['type'] == 'error':
         raise RuntimeError('Schema inspection is denied by Turso. Adjust schema implementation before deploying.')
     for sql in ['SELECT * FROM email_verification_cache LIMIT 0',
                 'UPDATE scrape_tracker SET game_name=game_name WHERE 0']:
@@ -75,7 +76,17 @@ def main():
             endpoint = line.strip() + '/mcp'
     if not endpoint:
         raise RuntimeError('Deployment returned no Worker URL. Inspect Wrangler deployment status.')
-    print(command(['node', 'smoke.mjs', endpoint]))
+    for attempt in range(3):
+        try:
+            print(command(['node', 'smoke.mjs', endpoint]))
+            break
+        except RuntimeError:
+            if attempt == 2:
+                raise
+            time.sleep(3)  # Allow the new Worker deployment to propagate.
+    (ROOT / 'mcp-client.json').write_text(json.dumps({'mcpServers': {'sre-database': {
+        'url': endpoint, 'headers': {'Authorization': 'Bearer ' + secret['MCP_AUTH_TOKEN']}
+    }}}, indent=2), encoding='utf-8')
     print(endpoint)
     print('Bearer credential saved locally in db-mcp/credentials.json, never in git.')
 

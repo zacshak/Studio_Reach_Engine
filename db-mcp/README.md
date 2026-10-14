@@ -21,7 +21,7 @@ Response budgets are about 1 MiB, upstream responses are bounded at 8 MiB, reque
 
 Use a separate Turso token with `--read-only` and `data_read` permissions only on `scrape_tracker`, `newly_added`, and `known_comingsoon` (the actual production spelling). This credential is the authorization boundary, including for joins, subqueries, and SQL functions. Never reuse the application's write token. The deployment script verifies that writes and access to a non-approved table are denied before deploying.
 
-The Worker requires `Authorization: Bearer <MCP_AUTH_TOKEN>`. Clients must support custom bearer headers. This is not an OAuth login server. Browser cross-origin access is rejected. Credentials and row contents are not logged. Authenticated clients can read personal/contact data in all three tables. Do not share the bearer token publicly.
+The Worker requires `Authorization: Bearer <MCP_AUTH_TOKEN>`. Clients must support custom bearer headers. This is not an OAuth login server. Browser cross-origin access is rejected. Credentials and row contents are not logged. Authenticated clients can read personal/contact data in all three tables. Do not share the bearer token publicly. Successful deployment generates a gitignored `mcp-client.json` connection file containing the URL and bearer header.
 
 ## Setup and deployment
 

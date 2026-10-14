@@ -98,7 +98,7 @@ export function makeServer(env) {
     });
   register('list_tables', 'List the three exposed Steam tables. Schema is available on demand.', {}, async () => ({ tables: TABLES }));
   register('describe_table', 'Get columns, types, defaults, and primary keys for one table.',
-    { table: z.enum(TABLES) }, async ({ table }) => execute(env, `SELECT name, type, "notnull", dflt_value, pk FROM pragma_table_info(?)`, [table]));
+    { table: z.enum(TABLES) }, async ({ table }) => execute(env, `PRAGMA table_info("${table}")`));
   register('query', 'Read SQLite SELECT/WITH SQL, including joins, search, sorting, batch IDs, aggregates and date filters. Use ? parameters. No semicolon. Page size is per response, not a total limit. Repeat with next_offset. Large integer values are strings and blobs are {base64}.',
     { sql: z.string().min(1).max(32000), params: z.array(z.union([z.string(), z.number().finite(), z.null()])).max(1000).default([]),
       page_size: z.number().int().min(1).max(2000).default(100), offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER - 2001).default(0) },
