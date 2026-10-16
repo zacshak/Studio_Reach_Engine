@@ -124,7 +124,7 @@ class ApprovalExporter:
             with open(os.path.join(folder, f"{appid}.json"), "w", encoding="utf-8") as f:
                 json.dump(_curate(lead, appid), f, ensure_ascii=False, indent=2)
             for i, shot in enumerate(_jload(lead.get("screenshots")) or []):
-                url = shot.get("path_thumbnail")
+                url = shot.get("path_thumbnail") or shot.get("path_full")
                 if url:
                     self._download(url, os.path.join(folder, f"screenshot_{i:02d}.jpg"))
             build_sheet(folder, force=True)
