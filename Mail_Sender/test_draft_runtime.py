@@ -57,9 +57,14 @@ class DraftRuntimeTest(unittest.TestCase):
         self.assertEqual(create.call_count,3)
 
     def test_failed_preflight_never_reads_queue_or_changes_records(self):
-        with patch.object(draft_cloud, 'configured_client', return_value=(None,'test')), patch.object(draft_cloud, 'preflight', side_effect=runtime.ProviderUnavailable('down')), patch.object(draft_cloud, 'run_queue') as queue:
+        with patch.object(draft_cloud.sys, 'argv', ['draft_cloud.py','--check-only']), patch.object(draft_cloud, 'configured_client', return_value=(None,'test')), patch.object(draft_cloud, 'preflight', side_effect=runtime.ProviderUnavailable('down')), patch.object(draft_cloud, 'run_queue') as queue:
             self.assertEqual(draft_cloud.main(), 1)
             queue.assert_not_called()
+
+    def test_empty_queue_never_calls_provider(self):
+        with patch.object(draft_cloud.sys, 'argv', ['draft_cloud.py']), patch.object(draft_cloud.pipeline,'mail_status_appids',return_value=[]), patch.object(draft_cloud,'configured_client') as client:
+            self.assertEqual(draft_cloud.main(),0)
+            client.assert_not_called()
 
     def test_three_provider_failures_stop_large_queue_without_status_changes(self):
         with patch.object(draft_cloud, '_load_templates', return_value=[(1,'<observation>')]), patch.object(draft_cloud.media_store, 'fetch_index', return_value={str(i):str(i) for i in range(100)}), patch.object(draft_cloud.pipeline,'mail_status_appids',return_value=list(range(100))), patch.object(draft_cloud.media_store,'fetch_manifest',return_value={'name':'Synthetic'}), patch.object(draft_cloud,'_draft',side_effect=runtime.ProviderUnavailable('unavailable')) as draft, patch.object(draft_cloud.pipeline,'set_mail_status') as status, patch.object(draft_cloud.media_store,'write_manifest') as write:

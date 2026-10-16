@@ -47,12 +47,23 @@ def rows():
         offset = page['next_offset']
 
 
-def inspect(row, index):
+def row_issues(row):
     issues = []
-    appid = row['appid']
+    if row['Mail_status'] not in ACTIVE | {'Invalid','Sent','Replied'}: issues.append('unknown_mail_status')
+    if row['scrape_status'] not in {'pending','seeded','scraped','no_email','invalid','failed'}: issues.append('unknown_scrape_status')
+    if (row['scrape_status']=='invalid') != (row['Mail_status']=='Invalid'): issues.append('invalid_state_mismatch')
+    if row.get('Require_Socials',0) not in (0,1): issues.append('invalid_social_flag')
+    if row['Mail_status'] in ACTIVE and row['scrape_status'] in {'seeded','scraped'} and email_state(row['emails']) != 'valid':
+        issues.append('email_ready_state_without_valid_email')
     if row['Mail_status'] in {'Writing','Drafted','Scheduled','Sending'}:
         if row['scrape_status'] not in {'seeded','scraped'}: issues.append('outreach_with_ineligible_scrape_status')
         if email_state(row['emails']) != 'valid': issues.append('outreach_without_syntactically_valid_email')
+    return issues
+
+
+def inspect(row, index):
+    issues = row_issues(row)
+    appid = row['appid']
     if row['Mail_status'] not in ACTIVE:
         return issues
     folder = index.get(str(appid))

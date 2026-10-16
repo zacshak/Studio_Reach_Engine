@@ -185,6 +185,10 @@ def _draft(client, model, manifest, folder):
 
 
 def main():
+    if '--check-only' not in sys.argv and '--preview-appid' not in sys.argv:
+        if not pipeline.mail_status_appids('Writing'):
+            print('No leads in Writing. Nothing to draft.', flush=True)
+            return 0
     try:
         client, model = configured_client()
         preflight(client, model)
