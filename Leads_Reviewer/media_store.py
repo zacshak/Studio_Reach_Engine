@@ -219,9 +219,14 @@ def upload_dir(folder, appid, card, client=None):
         with open(os.path.join(folder, name), "rb") as fh:
             cli.put_object(Bucket=BUCKET, Key=f"{prefix}/{name}", Body=fh,
                            ContentType=ctype)
-    cli.put_object(Bucket=BUCKET, Key=f"{prefix}/manifest.json",
-                   Body=json.dumps(manifest, ensure_ascii=False).encode("utf-8"),
-                   ContentType="application/json")
+    def merge(current):
+        updated = dict(manifest)
+        # Re-syncing media must not erase a draft written by the cloud drafter.
+        if (current.get('mail') or '').strip():
+            updated['mail'] = current['mail']
+            updated['mail_template'] = current.get('mail_template')
+        return updated
+    _update_json(f"{prefix}/manifest.json", {}, merge, client=cli)
     return prefix
 
 

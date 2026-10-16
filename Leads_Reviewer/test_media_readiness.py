@@ -14,6 +14,21 @@ import approval_export
 
 
 class MediaReadinessTest(unittest.TestCase):
+    def test_resync_publishes_manifest_last_and_preserves_cloud_draft(self):
+        with tempfile.TemporaryDirectory() as folder:
+            open(os.path.join(folder,'.complete'),'w').close()
+            with open(os.path.join(folder,'1.json'),'w') as file: json.dump({},file)
+            for name in ['screenshot_00.jpg',SPRITE_NAME]: Image.new('RGB',(4,4)).save(os.path.join(folder,name))
+            writes=[]
+            class Client:
+                def get_object(self,**kwargs):
+                    return {'Body':io.BytesIO(json.dumps({'mail':'Saved cloud draft','mail_template':3}).encode()),'ETag':'old'}
+                def put_object(self,**kwargs): writes.append(kwargs)
+            media_store.upload_dir(folder,1,{'name':'Synthetic'},Client())
+            self.assertTrue(writes[-1]['Key'].endswith('/manifest.json'))
+            self.assertEqual(json.loads(writes[-1]['Body'])['mail'],'Saved cloud draft')
+            self.assertEqual(writes[-1]['IfMatch'],'old')
+
     def test_partial_folder_is_never_uploaded(self):
         with tempfile.TemporaryDirectory() as folder:
             Image.new('RGB',(4,4)).save(os.path.join(folder,'screenshot_00.jpg'))
