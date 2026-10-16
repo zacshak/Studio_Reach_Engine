@@ -2,6 +2,8 @@
 
 Review actions remain public, as requested by the owner. Access is unchanged.
 
+Successful rejection starts a bounded cleanup pass in the background immediately. The persistent one-minute schedule resumes remaining jobs, retries failures, and recovers if the request's background work is interrupted. A newly configured Cloudflare schedule may take time to propagate, so deletion does not depend on its first activation.
+
 Reject deletes from scrape_tracker and newly_added and queues media_cleanup_jobs in one database transaction. known_comingsoon is never modified. Sending rows are protected. Cleanup jobs contain the captured R2 folder, so removing a row does not lose its cleanup target. No R2 deletion happens during the user request. Retrying a confirmed or uncertain delete is safe. Up to 10,000 IDs use a handful of set-based statements per request. The browser continues with additional requests for larger selections.
 
 Run `node migrate-cleanup.mjs` before the first deployment of this version. This adds a separate table and does not rebuild or change game tables. The table has no foreign key to the deleted row.

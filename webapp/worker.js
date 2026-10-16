@@ -197,13 +197,11 @@ async function act(env, body) {
     }
     case "reject": { // ❌ anywhere -> delete both tables + purge media
       const appid = oneId(body);
-      await rejectGames(env, [appid]);
-      break;
+      return rejectGames(env, [appid]);
     }
     case "reject_all": { // No-Mail bulk purge — same as reject, just no irrelevant.json involved
       const appids = manyIds(body);
-      await rejectGames(env, appids);
-      break;
+      return rejectGames(env, appids);
     }
     case "approve": { // Mail Approval ✅ -> 'Scheduled'
       const appid = oneId(body);
@@ -223,13 +221,11 @@ async function act(env, body) {
     }
     case "reject_irrelevant": { // Triage ❌: unflag + full delete
       const appid = oneId(body);
-      await rejectGames(env, [appid]);
-      break;
+      return rejectGames(env, [appid]);
     }
     case "reject_all_irrelevant": {
       const appids = manyIds(body);
-      await rejectGames(env, appids);
-      break;
+      return rejectGames(env, appids);
     }
     case "trigger": { // fire a GHA workflow (send / draft) on master
       const file = WORKFLOWS[body.workflow];
@@ -275,7 +271,7 @@ export default {
       throw error;
     }));
   },
-  async fetch(req, env) {
+  async fetch(req, env, ctx) {
     const path = new URL(req.url).pathname;
     // Public R2 passthrough.
     if (path.startsWith("/media/")) {
@@ -300,8 +296,14 @@ export default {
       let response;
       try {
         if (path === "/api/state") response = json(await state(env));
-        if (path === "/api/act" && req.method === "POST")
-          response = json(await act(env, await req.json()));
+        if (path === "/api/act" && req.method === "POST") {
+          const result = await act(env, await req.json());
+          response = json(result);
+          if (result.cleanup === 'queued' && ctx?.waitUntil) {
+            ctx.waitUntil(cleanupJobs(env, sql, updateJSON).catch(error =>
+              console.error(JSON.stringify({ event: 'media_cleanup_deferred', message: error.message }))));
+          }
+        }
         response ||= json({ error: "not found" }, 404);
       } catch (e) {
         console.error(JSON.stringify({ event: 'api_failed', path, message: String(e.message || e) }));
