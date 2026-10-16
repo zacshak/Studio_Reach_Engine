@@ -16,7 +16,7 @@ def main():
         try:
             runtime.preflight(client, model)
             result = {'model': model, 'result': 'image_and_json_passed'}
-        except runtime.ProviderUnavailable as error:
+        except (runtime.ProviderUnavailable, runtime.ModelOutputError) as error:
             cause = error.__cause__
             message = str(cause).lower()
             if 'does not accept image' in message or 'non-text content parts' in message:

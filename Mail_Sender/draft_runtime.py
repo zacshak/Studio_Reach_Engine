@@ -18,6 +18,10 @@ class ProviderUnavailable(RuntimeError):
         self.fatal = fatal
 
 
+class ModelOutputError(ValueError):
+    """A response arrived, but its output cannot safely fill the template."""
+
+
 def permanent_failure(error):
     message = str(error).lower()
     return getattr(error, 'status_code', None) in (400, 401, 403, 404, 422) or any(
@@ -26,11 +30,27 @@ def permanent_failure(error):
 
 
 def infer(client, model, messages, parse):
+    token_budget = 4096  # Includes thinking on some providers, not just visible JSON.
     for attempt in range(ATTEMPTS):
         try:
             response = client.chat.completions.create(
-                model=model, max_tokens=600, messages=messages, timeout=REQUEST_TIMEOUT)
-            return parse(response.choices[0].message.content)
+                model=model, max_tokens=token_budget, messages=messages, timeout=REQUEST_TIMEOUT)
+            if not response.choices:
+                raise ModelOutputError('model returned no choices')
+            choice = response.choices[0]
+            if getattr(choice, 'finish_reason', None) in ('length', 'max_tokens'):
+                token_budget = min(token_budget * 2, 8192)
+                raise ModelOutputError('model output truncated at token limit')
+            try:
+                return parse(choice.message.content)
+            except (ValueError, TypeError, IndexError, AttributeError) as error:
+                raise ModelOutputError(str(error)) from error
+        except ModelOutputError as error:
+            if attempt == ATTEMPTS - 1:
+                raise
+            print(f'mail-writer output validation: {error}; retry {attempt + 1}/{ATTEMPTS}', file=sys.stderr, flush=True)
+            messages = [*messages, {'role': 'user', 'content': f'Previous response failed validation: {error}. Return a complete, concise JSON object satisfying the requested schema and rules. No commentary.'}]
+            time.sleep(2 ** attempt)
         except Exception as error:
             fatal = permanent_failure(error)
             status = getattr(error, 'status_code', None)

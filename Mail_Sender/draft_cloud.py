@@ -18,7 +18,7 @@ import re
 import sys
 import time
 import urllib.request
-from draft_runtime import ProviderUnavailable, configured_client, infer, preflight
+from draft_runtime import ModelOutputError, ProviderUnavailable, configured_client, infer, preflight
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -193,6 +193,17 @@ def main():
     except Exception as error:
         print(f'Drafting stopped before processing leads: {error}', file=sys.stderr, flush=True)
         return 1
+    if '--preview-appid' in sys.argv:
+        appid = int(sys.argv[sys.argv.index('--preview-appid') + 1])
+        index = media_store.fetch_index(strict=True)
+        folder = index.get(str(appid))
+        if not folder:
+            raise ValueError('Preview game has no indexed media')
+        manifest = media_store.fetch_manifest(folder, strict=True)
+        manifest['__template'] = _load_templates()[0][1]
+        result = _draft(client, model, manifest, folder)
+        print(f'Real-game preview passed for {appid}: {len(result)} characters. No draft saved and no database status changed.', flush=True)
+        return 0
     if '--check-only' in sys.argv:
         return 0
     if not media_store.write_enabled():
@@ -250,6 +261,11 @@ def run_queue(client, model):
                 stopped = True
                 print('Provider circuit open. Stopping this run; remaining leads retain Writing.', file=sys.stderr, flush=True)
                 break
+            continue
+        except ModelOutputError as error:
+            consecutive_failures = 0  # A model answered; this is not a provider outage.
+            skipped += 1
+            print(f'{appid} -> output validation failed: {error}; retained for retry', file=sys.stderr, flush=True)
             continue
         except Exception as e:
             print(f"  {appid} -> draft failed ({type(e).__name__}: {e})", file=sys.stderr)

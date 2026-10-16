@@ -11,6 +11,10 @@ on:
         description: Optional JSON array of route IDs to audit with synthetic images (check_only only)
         type: string
         default: ""
+      preview_appid:
+        description: Optional game ID for a real-image/template test without saving (check_only only)
+        type: string
+        default: ""
 
 concurrency:
   group: draft
@@ -34,6 +38,7 @@ jobs:
         env:
           CHECK_ONLY: ${{ inputs.check_only }}
           CHECK_MODELS: ${{ inputs.check_models }}
+          PREVIEW_APPID: ${{ inputs.preview_appid }}
           TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
           MAIL_WRITER_BASE_URL: ${{ secrets.MAIL_WRITER_BASE_URL }}
@@ -46,7 +51,9 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: |
           if [ "$CHECK_ONLY" = "true" ]; then
-            if [ -n "$CHECK_MODELS" ]; then
+            if [ -n "$PREVIEW_APPID" ]; then
+              python -u Mail_Sender/draft_cloud.py --preview-appid "$PREVIEW_APPID"
+            elif [ -n "$CHECK_MODELS" ]; then
               python -u Mail_Sender/audit_vision.py
             else
               python -u Mail_Sender/draft_cloud.py --check-only

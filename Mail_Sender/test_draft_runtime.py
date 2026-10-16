@@ -37,8 +37,24 @@ class DraftRuntimeTest(unittest.TestCase):
         self.assertEqual(content[1]['type'], 'image_url')
         self.assertTrue(content[1]['image_url']['url'].startswith('data:image/png;base64,'))
         client, create = self.client([response] * 3)
-        with patch.object(runtime.secrets, 'choice', return_value=('blue',(0,0,255))), patch.object(runtime.time,'sleep'), self.assertRaises(runtime.ProviderUnavailable):
+        with patch.object(runtime.secrets, 'choice', return_value=('blue',(0,0,255))), patch.object(runtime.time,'sleep'), self.assertRaises(runtime.ModelOutputError):
             runtime.preflight(client, 'test')
+
+    def test_truncated_json_increases_budget_and_never_returns_partial_output(self):
+        partial = SimpleNamespace(choices=[SimpleNamespace(finish_reason='length', message=SimpleNamespace(content='{"observation_1": "cut'))])
+        complete = SimpleNamespace(choices=[SimpleNamespace(finish_reason='stop', message=SimpleNamespace(content='{"observation_1": "complete"}'))])
+        client, create = self.client([partial, complete])
+        with patch.object(runtime.time, 'sleep'):
+            result = runtime.infer(client, 'test', [], json.loads)
+        self.assertEqual(result, {'observation_1': 'complete'})
+        self.assertEqual([call.kwargs['max_tokens'] for call in create.call_args_list], [4096,8192])
+
+    def test_output_rejection_is_not_a_provider_failure(self):
+        response = SimpleNamespace(choices=[SimpleNamespace(finish_reason='stop', message=SimpleNamespace(content='not JSON'))])
+        client, create = self.client([response]*3)
+        with patch.object(runtime.time,'sleep'), self.assertRaises(runtime.ModelOutputError):
+            runtime.infer(client,'test',[],json.loads)
+        self.assertEqual(create.call_count,3)
 
     def test_failed_preflight_never_reads_queue_or_changes_records(self):
         with patch.object(draft_cloud, 'configured_client', return_value=(None,'test')), patch.object(draft_cloud, 'preflight', side_effect=runtime.ProviderUnavailable('down')), patch.object(draft_cloud, 'run_queue') as queue:
