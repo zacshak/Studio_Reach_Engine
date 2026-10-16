@@ -2,10 +2,82 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  approveStmt, keepStmt, NOMAIL_SQL, purgeMedia, requireSocialsStmt, secureEqual, sessionToken,
+  approveStmt, keepStmt, NOMAIL_SQL, requireSocialsStmt,
   SOCIALS_SQL, TRIAGE_KEPT_SQL, sql, updateJSON,
 } from "./worker.js";
 import worker from "./worker.js";
+
+test('oversized deletion batches fail before touching storage', async () => {
+  const response = await worker.fetch(new Request('https://example/api/act', { method: 'POST', body: JSON.stringify({ action: 'reject_all_irrelevant', appids: Array.from({length:10001}, (_,i)=>i+1) }) }), {});
+  assert.equal(response.status, 500);
+  assert.match((await response.json()).error, /at most 10000/);
+});
+
+test('confirmed rejection schedules cleanup without synchronous media deletion', async () => {
+  const original = globalThis.fetch;
+  const objects = { 'index.json': { 1: 'One_1', 2: 'Two_2' }, 'irrelevant.json': [1,2], 'mcp-triage.json': { 1: { decision: 'flag' }, 2: { decision: 'flag' } } };
+  let deletedRows = false;
+  globalThis.fetch = async (_url, options) => {
+    const steps = JSON.parse(options.body).requests[0].batch.steps;
+    assert.match(steps[1].stmt.sql, /INSERT INTO media_cleanup_jobs/);
+    assert.match(steps[3].stmt.sql, /DELETE FROM newly_added/);
+    assert.match(steps[4].stmt.sql, /DELETE FROM scrape_tracker/);
+    deletedRows = true;
+    return Response.json({ results: [{ type: 'ok', response: { result: { step_results: [{}, {}, {}, {}, {}, {rows:[]}, {}, null], step_errors: [] } } }] });
+  };
+  try {
+    const response = await worker.fetch(new Request('https://example/api/act', { method: 'POST', body: JSON.stringify({ action: 'reject_all_irrelevant', appids: [1] }) }), {
+      TURSO_URL: 'libsql://example', TURSO_TOKEN: 'test', MEDIA: {
+        get: async key => ({ etag: 'v1', json: async () => objects[key] }),
+        list: async () => ({ objects: [{ key: 'One_1/img.png' }], truncated: false }),
+        delete: async () => { throw new Error('must not delete media synchronously'); },
+        put: async (key, value) => { objects[key] = JSON.parse(value); return { etag: 'v2' }; }
+      }
+    });
+    assert.equal(response.status, 200); assert.equal(deletedRows, true);
+    assert.deepEqual(objects['index.json'], { 1: 'One_1', 2: 'Two_2' });
+    assert.deepEqual(objects['irrelevant.json'], [1,2]);
+  } finally { globalThis.fetch = original; }
+});
+
+test('transaction begin and commit errors are never reported as success', async () => {
+  const original = globalThis.fetch;
+  try {
+    for (const failedStep of [0,3]) {
+      globalThis.fetch = async () => {
+        const errors = [null,null,null,null,null]; errors[failedStep] = { message: 'transaction failed' };
+        return Response.json({ results: [{ type: 'ok', response: { result: { step_errors: errors, step_results: [{},{},{},{},null] } } }] });
+      };
+      await assert.rejects(sql({ TURSO_URL: 'libsql://example' }, [['DELETE FROM a'], ['DELETE FROM b']], true), /transaction failed/);
+    }
+  } finally { globalThis.fetch = original; }
+});
+
+test('dashboard state routes MCP flags and passes and excludes stale human decisions', async () => {
+  const originalFetch = globalThis.fetch;
+  const sets = [[[1], [2]], [], [[3, 0]], [], [[0]], [[0]], [[1], [2], [3]]];
+  globalThis.fetch = async () => Response.json({ results: [...sets.map(rows => ({ type: 'ok', response: { result: {
+    rows: rows.map(row => row.map(value => ({ type: 'integer', value: String(value) })))
+  } } })), { type: 'ok' }] });
+  const objects = {
+    'index.json': { 1: 'One_1', 2: 'Two_2', 3: 'Three_3' },
+    'irrelevant.json': [1, 4],
+    'mcp-triage.json': { 1: { decision: 'pass', reason: 'Fits', criteria: 'Custom' }, 2: { decision: 'flag', reason: 'Does not fit', criteria: 'Custom' }, 4: { decision: 'flag' } }
+  };
+  try {
+    const response = await worker.fetch(new Request('https://review.test/api/state'), {
+      TURSO_URL: 'libsql://example', TURSO_TOKEN: 'test',
+      MEDIA: { get: async key => ({ json: async () => objects[key] }) }
+    });
+    assert.equal(response.status, 200);
+    const state = await response.json();
+    assert.deepEqual(state.triage, [2]);
+    assert.deepEqual(state.approval, [1]);
+    assert.deepEqual(state.nomail, [3]);
+    assert.equal(state.triageReviews[1].reason, 'Fits');
+    assert.equal(state.triageReviews[4], undefined);
+  } finally { globalThis.fetch = originalFetch; }
+});
 
 test("No-Mail includes only pending outreach with unresolved scrape states", () => {
   assert.equal(
@@ -59,7 +131,7 @@ test("sql uses a guarded transaction for multi-statement mutations", async () =>
         type: "ok",
         response: {
           result: {
-            step_results: [null, { rows: [[{ value: "1" }]] }, { rows: [] }, null, null],
+            step_results: [{ rows: [] }, { rows: [[{ value: "1" }]] }, { rows: [] }, { rows: [] }, null],
             step_errors: [null, null, null, null, null],
           },
         },
@@ -93,41 +165,17 @@ test("updateJSON retries a failed conditional write", async () => {
   assert.equal(puts, 2);
 });
 
-test("media requires the authenticated browser session", async () => {
+test("media is available without authentication", async () => {
   const env = {
-    AUTH_SECRET: "secret",
     MEDIA: { get: async () => ({ body: "ok", httpMetadata: { contentType: "text/plain" } }) },
   };
-  assert.equal((await worker.fetch(new Request("https://example/media/a"), env)).status, 401);
-  const token = await sessionToken("secret");
-  const response = await worker.fetch(new Request("https://example/media/a", {
-    headers: { Cookie: `sre_session=${token}` },
-  }), env);
+  const response = await worker.fetch(new Request("https://example/media/a"), env);
   assert.equal(response.status, 200);
   assert.equal(await response.text(), "ok");
-  assert.equal(await secureEqual("secret", "secret"), true);
-  assert.equal(await secureEqual("wrong", "secret"), false);
 });
 
-test("a valid access key establishes the private media session", async () => {
-  const response = await worker.fetch(new Request("https://example/api/not-found", {
-    headers: { "x-auth": "secret" },
-  }), { AUTH_SECRET: "secret" });
+test("public API does not require or set an authentication cookie", async () => {
+  const response = await worker.fetch(new Request("https://example/api/not-found"), {});
   assert.equal(response.status, 404);
-  assert.match(response.headers.get("set-cookie"), /^sre_session=.*HttpOnly; Secure;/);
-});
-
-test("purge deletes objects before removing their index entry", async () => {
-  const events = [];
-  const media = {
-    get: async () => ({ etag: "v1", json: async () => ({ "1": "Game_1" }) }),
-    list: async () => ({ objects: [{ key: "Game_1/image.jpg" }], truncated: false }),
-    delete: async () => events.push("delete"),
-    put: async (_key, value) => {
-      events.push(`index:${value}`);
-      return { etag: "v2" };
-    },
-  };
-  await purgeMedia({ MEDIA: media }, [1]);
-  assert.deepEqual(events, ["delete", "index:{}"]);
+  assert.equal(response.headers.get("set-cookie"), null);
 });

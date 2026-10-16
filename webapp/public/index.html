@@ -87,42 +87,56 @@
 
 <script>
 "use strict";
-// ---- auth (single shared secret; stored once) ----
-let AUTH = localStorage.getItem("sre_auth") || "";
-function ensureAuth() {
-  while (!AUTH) { AUTH = (prompt("Access key:") || "").trim(); }
-  localStorage.setItem("sre_auth", AUTH);
-}
-ensureAuth();
 
 const enc = encodeURIComponent;
 const $ = (s) => document.querySelector(s);
 
-// ---- optimistic write engine ----
-const failed = [];                    // actions whose background write errored
+// Save intent before sending. A lost response stays visible after refresh.
+const failed = (() => { try { const value = JSON.parse(localStorage.getItem('sre_pending_writes') || '[]'); return Array.isArray(value) ? value.filter(item => Array.isArray(item) && typeof item[0] === 'string' && item[1] && typeof item[1] === 'object') : []; } catch { return []; } })();
+let writeBusy = false;
+function persistWrites() { localStorage.setItem('sre_pending_writes', JSON.stringify(failed)); }
 function showBanner() {
   $("#banner").hidden = failed.length === 0;
-  $("#bannerText").textContent = `${failed.length} write(s) failed — data may be out of sync.`;
+  $("#bannerText").textContent = failed.length ? `${failed.length} unconfirmed action(s). ${failed.at(-1)[2] || 'Retry to confirm the saved action.'}` : '';
 }
 async function api(action, extra = {}) {
+  if (writeBusy) return false;
+  writeBusy = true;
+  const key = JSON.stringify([action, extra]);
+  let entry = failed.find(item => JSON.stringify(item.slice(0,2)) === key);
+  if (!entry) { entry = [action, extra, 'Request awaiting confirmation']; failed.push(entry); }
   try {
+    persistWrites();
+    render();
     const r = await fetch("/api/act", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-auth": AUTH },
+      signal: AbortSignal.timeout(35000),
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action, ...extra }),
     });
-    if (r.status === 401) { localStorage.removeItem("sre_auth"); AUTH = ""; ensureAuth(); throw new Error("auth"); }
-    if (!r.ok) throw new Error((await r.json()).error || r.status);
+    const result = await r.json().catch(() => ({}));
+    if (!r.ok || result.ok !== true) throw new Error(result.error || `Server response ${r.status}`);
+    failed.splice(failed.indexOf(entry), 1);
+    persistWrites();
+    return true;
   } catch (e) {
     console.error(action, extra, e);
-    failed.push([action, extra]);
+    entry[2] = `${action}: ${e.message}${action === 'trigger' ? '. Check GitHub Actions before starting it again. Workflow dispatch is not automatically retried.' : ''}`;
+    try { persistWrites(); } catch {}
+    return false;
+  } finally {
+    writeBusy = false;
     showBanner();
+    render();
   }
 }
 async function retryFailed() {
-  const batch = failed.splice(0);
-  showBanner();
-  for (const [action, extra] of batch) await api(action, extra);
+  if (writeBusy || bulkBusy) return;
+  for (const [action, extra] of [...failed]) {
+    if (action === 'trigger') continue;
+    if (!await api(action, extra)) break;
+  }
+  await load();
 }
 
 // ---- state ----
@@ -152,15 +166,18 @@ const requiresSocials = (appid) => Boolean(S.requireSocials?.[String(appid)]);
 const socialsOf = (appid) => ((S.socials || []).find((item) => item.appid === appid) || {}).data || {};
 
 async function load() {
+  showBanner();
   $("#view").innerHTML = '<div class="empty">Loading…</div>';
-  const r = await fetch("/api/state", { headers: { "x-auth": AUTH } });
-  if (r.status === 401) { localStorage.removeItem("sre_auth"); AUTH = ""; ensureAuth(); return load(); }
+  let r;
+  try { r = await fetch("/api/state", { signal: AbortSignal.timeout(30000), cache: 'no-store' }); }
+  catch (e) { $("#view").textContent = `Could not refresh: ${e.message}. Reload to try again. Saved actions are retained.`; return; }
   if (!r.ok) {
     const error = await r.json().catch(() => ({}));
     $("#view").textContent = `Could not load data: ${error.error || r.status}`;
     return;
   }
-  S = await r.json();
+  try { S = await r.json(); }
+  catch { $("#view").textContent = 'Server returned invalid data. Refresh to retry.'; return; }
   Q = queues();
   if (!Q[tab].length) tab = ["triage", "approval", "mail", "nomail", "socials"].find((t) => Q[t].length) || tab;
   render();
@@ -171,9 +188,10 @@ async function manifest(folder) {
   if (!manifests.has(folder)) {
     manifests.set(folder, null);
     try {
-      const r = await fetch(`/media/${enc(folder)}/manifest.json`);
-      manifests.set(folder, r.ok ? await r.json() : { missing: true });
-    } catch { manifests.set(folder, { missing: true }); }
+      const r = await fetch(`/media/${enc(folder)}/manifest.json`, { signal: AbortSignal.timeout(25000) });
+      if (!r.ok) throw new Error(`Media request failed (${r.status})`);
+      manifests.set(folder, await r.json());
+    } catch (e) { manifests.set(folder, { missing: true, error: e.message }); }
     render();                          // repaint when the awaited card arrives
   }
   return manifests.get(folder);
@@ -199,13 +217,14 @@ function ghaBtn(label, wf) {
     ? `<button disabled>✓ ${label} — started</button>`
     : `<button onclick="fireGha('${wf}')">${label}</button>`;
 }
-function fireGha(wf) {
-  fired[wf] = true;
+async function fireGha(wf) {
+  if (writeBusy || bulkBusy) return;
+  if (await api("trigger", { workflow: wf })) fired[wf] = true;
   render();
-  api("trigger", { workflow: wf });
 }
 
 function render() {
+  if (!Q) return;
   document.querySelectorAll(".tab").forEach((b) => {
     const t = b.dataset.tab;
     b.classList.toggle("on", t === tab);
@@ -239,7 +258,7 @@ function render() {
   shot = Math.min(shot, Math.max(imgs.length - 1, 0));
   const img = imgs.length
     ? `<img class="hero" src="/media/${enc(card.folder)}/${enc(imgs[shot])}" alt="">`
-    : `<div class="hero"></div>`;
+    : m?.missing ? `<div class="empty">${escapeHtml(m.error || 'Media unavailable')}<br><button onclick="retryMedia()">Retry images</button></div>` : `<div class="hero"></div>`;
   const thumbs = imgs.length > 1
     ? `<div class="thumbs">${imgs.map((f, k) =>
         `<img src="/media/${enc(card.folder)}/${enc(f)}" class="${k === shot ? "on" : ""}"
@@ -261,7 +280,7 @@ function render() {
               socials: [null, null] }[tab];
   const R = tab === "triage" ? "reject_irrelevant" : "reject";
   // two-tap Reject-all with an explicit Cancel — triage (irrelevant) + no-mail (dead-end leads)
-  const bulkTriage = (tab !== "triage" && tab !== "nomail") ? "" : armed === "bulkR"
+  const bulkTriage = bulkBusy ? `<button disabled>Deleting confirmed batches… ${bulkDone} / ${bulkTotal}</button>` : (tab !== "triage" && tab !== "nomail") ? "" : armed === "bulkR"
     ? `<button class="armed" onclick="bulkReject()">⚠️ Tap again to purge all ${list.length} — can't be undone</button>
        <button onclick="armed=null;render()">Cancel</button>`
     : `<button onclick="bulkReject()">🗑 Reject all (${list.length})</button>`;
@@ -277,6 +296,7 @@ function render() {
       <div class="meta">${escapeHtml((m && m.meta) || "")} · appid ${card.appid} ·
         <a href="https://store.steampowered.com/app/${card.appid}/" target="_blank" rel="noopener">Steam page 🔗</a></div>
       ${img}${thumbs}${shotsCtl}${allShots}
+      ${S.triageReviews?.[card.appid] ? `<details><summary>AI recommendation: ${escapeHtml(S.triageReviews[card.appid].decision)}</summary><p>${escapeHtml(S.triageReviews[card.appid].reason || "")}</p><p>Criteria: ${escapeHtml(S.triageReviews[card.appid].criteria || "")}</p></details>` : ""}
       ${tab === "socials"
         ? socialLinks
         : `<div class="desc">${m ? escapeHtml(m.desc || "") : "Loading…"}</div>`}
@@ -293,6 +313,12 @@ function render() {
         <button class="bad" onclick="doAct('${R}')">❌ Reject</button>
       </div>
     </div>`;
+  if (writeBusy || bulkBusy) view.querySelectorAll('button').forEach(button => { button.disabled = true; });
+}
+
+function retryMedia() {
+  const card = Q[tab][idx[tab]];
+  if (card) { manifests.delete(card.folder); render(); }
 }
 
 function escapeHtml(s) {
@@ -306,33 +332,13 @@ function move(d) {
   render();
 }
 
-// ---- optimistic actions: mutate local state NOW, write in background ----
-// Local state also propagates across tabs so conditional buttons appear without a
-// reload: accept flags pendingDrafts (the Draft button's condition — the card itself
-// only reaches the Mail Approval queue once the drafter actually writes the mail and
-// a state refresh picks up its 'Drafted' row), keep returns the card to the Approval
-// queue — same as the Streamlit sections re-querying.
-function doAct(action) {
+// Confirm the write, then reload authoritative queues (including No-Mail Keep).
+async function doAct(action) {
+  if (writeBusy || bulkBusy) return;
   const card = Q[tab][idx[tab]];
-  Q[tab].splice(idx[tab], 1);
-  if (action === "reject") {
-    for (const queue of Object.values(Q))
-      for (let i = queue.length - 1; i >= 0; i--)
-        if (queue[i].appid === card.appid) queue.splice(i, 1);
-    S.mail = S.mail.filter((item) => item.appid !== card.appid);
-    S.socials = (S.socials || []).filter((item) => item.appid !== card.appid);
-  } else if (action === "approve") {
-    S.scheduled = true;
-    S.mail = S.mail.filter((x) => x.appid !== card.appid);
-  } else if (action === "accept") {
-    S.pendingDrafts = true;
-  } else if (action === "keep") {
-    Q.approval.push(card);
-    Q.approval.sort((x, y) => (x.folder.toLowerCase() < y.folder.toLowerCase() ? -1 : 1));
-  }
+  if (!card || !await api(action, { appid: card.appid })) return;
   shot = 0; armed = null; showAll = false;
-  render();
-  api(action, { appid: card.appid });
+  await load();
 }
 function renderSocials(data) {
   const links = Object.entries(data).filter(([, value]) => value).map(([label, value]) => {
@@ -351,25 +357,36 @@ function renderSocials(data) {
   return links ? `<div class="social-links">${links}</div>`
                : '<div class="social-empty">No socials found.</div>';
 }
-function toggleSocials(appid) {
+async function toggleSocials(appid) {
+  if (writeBusy || bulkBusy) return;
   const required = !requiresSocials(appid);
-  S.requireSocials[String(appid)] = required;
-  render();
-  api("require_socials", { appid, required });
+  if (await api("require_socials", { appid, required })) await load();
 }
-function approveAll() {
+async function approveAll() {
+  if (writeBusy || bulkBusy) return;
   const ids = Q.mail.map((c) => c.appid);
-  Q.mail = []; S.mail = []; S.scheduled = true;
-  render();
-  api("approve_all", { appids: ids });
+  if (await api("approve_all", { appids: ids })) await load();
 }
-function bulkReject() {                 // two-tap confirm + Cancel — triage + no-mail
+let bulkBusy = false, bulkDone = 0, bulkTotal = 0;
+async function bulkReject() {           // Only remove cards after server confirmation.
+  if (bulkBusy || writeBusy) return;
   if (armed !== "bulkR") { armed = "bulkR"; render(); return; }
   const ids = Q[tab].map((c) => c.appid);
   const action = tab === "triage" ? "reject_all_irrelevant" : "reject_all";
-  Q[tab] = []; armed = null;
-  render();
-  api(action, { appids: ids });
+  bulkBusy = true; bulkDone = 0; bulkTotal = ids.length; armed = null;
+  try {
+    for (let i = 0; i < ids.length; i += 10000) {
+      const batch = ids.slice(i, i + 10000);
+      render();
+      if (!await api(action, { appids: batch })) break;
+      const removed = new Set(batch);
+      for (const key of Object.keys(Q)) Q[key] = Q[key].filter(c => !removed.has(c.appid));
+      bulkDone += batch.length;
+    }
+  } finally {
+    bulkBusy = false;
+    await load();
+  }
 }
 
 // ---- touch swipe (phone navigation, like the Streamlit app) ----

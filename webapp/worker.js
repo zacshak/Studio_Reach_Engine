@@ -1,48 +1,24 @@
 // SRE review app — the entire backend, one Cloudflare Worker. No npm, no build step.
 //
 // The static page (public/index.html) is served by Workers Assets from this same
-// deployment; every click on the page is optimistic (instant) and lands here in
-// the background.
+// deployment; review actions update the page after server confirmation.
 //
-//   GET  /api/state   -> everything needed to render all four views (1 DB round-trip + 2 R2 gets)
+//   GET  /api/state   -> all review views (1 DB round-trip + 3 R2 gets)
 //   POST /api/act     -> {action, ...} — accept / reject / reject_all / approve / approve_all /
 //                        require_socials / keep / reject_irrelevant / reject_all_irrelevant / trigger
 //   GET  /media/<key> -> R2 passthrough (images + manifests), same-origin so no CORS/bot-block
 //
-// Secrets (wrangler secret put): TURSO_URL, TURSO_TOKEN, AUTH_SECRET, GH_REPO, GH_PAT.
+// Public dashboard, including review actions and workflow dispatch (owner requested).
+// Secrets (wrangler secret put): TURSO_URL, TURSO_TOKEN, GH_REPO, GH_PAT.
 // Bindings (wrangler.jsonc): MEDIA -> the existing sre-media R2 bucket.
 //
 // SQL here mirrors Claude_Lead_Discovery_Engine/pipeline.py exactly (same tables, same
 // status strings); R2 layout mirrors Leads_Reviewer/media_store.py (index.json,
 // irrelevant.json, <GameName>_<appid>/manifest.json + images).
 
+import { triageSnapshot } from './triage.js';
+import { rejectRows, cleanupJobs } from './deletion.js';
 const WORKFLOWS = { send: "send.yml", draft: "draft.yml", socials: "socials.yml" };
-const encoder = new TextEncoder();
-
-async function digest(value) {
-  return new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(value)));
-}
-
-async function secureEqual(provided, expected) {
-  if (!provided || !expected) return false;
-  const [a, b] = await Promise.all([digest(provided), digest(expected)]);
-  if (typeof crypto.subtle.timingSafeEqual === "function")
-    return crypto.subtle.timingSafeEqual(a, b);
-  let mismatch = 0; // Node's WebCrypto lacks timingSafeEqual; Workers uses the branch above.
-  for (let i = 0; i < a.length; i++) mismatch |= a[i] ^ b[i];
-  return mismatch === 0;
-}
-
-async function sessionToken(secret) {
-  return Array.from(await digest(`sre-session:${secret}`),
-    (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-function cookie(req, name) {
-  const prefix = `${name}=`;
-  return (req.headers.get("Cookie") || "").split(";").map((part) => part.trim())
-    .find((part) => part.startsWith(prefix))?.slice(prefix.length) || "";
-}
 
 // ---- Turso over HTTP (Hrana v2 pipeline; one fetch = N statements, no client lib) ----
 const hranaStmt = ([q, ...args]) => ({
@@ -79,6 +55,7 @@ async function sql(env, stmts, atomic = false) {
   requests.push({ type: "close" });
   const r = await fetch(url, {
     method: "POST",
+    signal: AbortSignal.timeout(25000),
     headers: { Authorization: `Bearer ${env.TURSO_TOKEN}`, "Content-Type": "application/json" },
     body: JSON.stringify({ requests }),
   });
@@ -88,9 +65,11 @@ async function sql(env, stmts, atomic = false) {
     const res = results[0];
     if (res.type === "error") throw new Error(res.error?.message || "turso batch error");
     const batch = res.response?.result || {};
-    const errors = (batch.step_errors || []).slice(1, stmts.length + 1);
+    const errors = (batch.step_errors || []);
     const failed = errors.find(Boolean);
     if (failed) throw new Error(failed.message || "turso statement error");
+    if (!batch.step_results?.[0] || !batch.step_results?.[stmts.length + 1])
+      throw new Error('turso transaction did not confirm BEGIN and COMMIT');
     return (batch.step_results || []).slice(1, stmts.length + 1).map((result) =>
       (result?.rows || []).map((row) => row.map((cell) => cell.value)));
   }
@@ -119,31 +98,13 @@ async function updateJSON(env, key, fallback, mutate) {
   throw new Error(`concurrent R2 update did not settle for ${key}`);
 }
 
-// Delete objects first so a failed purge remains indexed and retryable.
-async function purgeMedia(env, appids) {
-  const index = (await getJSON(env, "index.json")) || {};
-  const targets = new Map(appids.map((appid) => [String(appid), index[String(appid)]]));
-  for (const folder of new Set([...targets.values()].filter(Boolean))) {
-    let cursor;
-    do {
-      const l = await env.MEDIA.list({ prefix: folder + "/", cursor });
-      if (l.objects.length) await env.MEDIA.delete(l.objects.map((o) => o.key));
-      cursor = l.truncated ? l.cursor : undefined;
-    } while (cursor);
-  }
-  await updateJSON(env, "index.json", {}, (current) => {
-    const next = { ...current };
-    for (const [appid, folder] of targets)
-      if (next[appid] === folder) delete next[appid];
-    return next;
-  });
-}
 
 // ---- the four-view snapshot the page renders from ----
 async function state(env) {
-  const [index, irrelevant, db] = await Promise.all([
+  const [index, irrelevant, recommendations, db] = await Promise.all([
     getJSON(env, "index.json"),
     getJSON(env, "irrelevant.json"),
+    getJSON(env, "mcp-triage.json"),
     sql(env, [
       // has-email states only ('pending'/'no_email'/'failed' belong in No-Mail or
       // nowhere yet — a bare Mail_status check let those leak in here too, GH-bug).
@@ -154,12 +115,11 @@ async function state(env) {
       ["SELECT EXISTS(SELECT 1 FROM scrape_tracker WHERE Mail_status='Scheduled')"],
       // accepted but the drafter hasn't written the mail yet — gates the Draft button
       ["SELECT EXISTS(SELECT 1 FROM scrape_tracker WHERE Mail_status='Writing')"],
-      [TRIAGE_KEPT_SQL],
+      ["SELECT appid FROM scrape_tracker WHERE Mail_status='Pending' AND triage_kept=0"],
     ]),
   ]);
-  const [pending, drafted, nomail, socials, sched, writing, kept] = db;
-  const keptIds = new Set(kept.map((r) => Number(r[0])));
-  const triage = (irrelevant || []).map(Number).filter((a) => !keptIds.has(a));
+  const [pending, drafted, nomail, socials, sched, writing, eligible] = db;
+  const { triage, triageReviews } = triageSnapshot(irrelevant, recommendations, eligible.map(r => r[0]));
   const flagged = new Set(triage);
   const requireSocials = Object.fromEntries(
     [...drafted, ...nomail, ...socials].map((r) =>
@@ -168,6 +128,7 @@ async function state(env) {
   return {
     index: index || {},
     triage,
+    triageReviews,
     approval: pending.map((r) => Number(r[0])).filter((a) => !flagged.has(a)),
     mail: drafted.map((r) => ({ appid: Number(r[0]), emails: r[1] || "" })),
     nomail: nomail.map((r) => Number(r[0])).filter((a) => !flagged.has(a)),
@@ -178,7 +139,7 @@ async function state(env) {
   };
 }
 
-// ---- actions (all optimistic on the client; errors surface in its banner) ----
+// ---- confirmed actions ----
 const approveStmt = (appid) => [
   "UPDATE scrape_tracker SET Mail_status='Scheduled' WHERE appid=? AND Mail_status='Drafted' AND scrape_status IN ('seeded','scraped')",
   appid,
@@ -199,15 +160,10 @@ const keepStmt = (appid) => [
   appid,
 ];
 
-const deleteStmts = (appid) => [
-  ["DELETE FROM scrape_tracker WHERE appid=?", appid],
-  ["DELETE FROM newly_added WHERE appid=?", appid],
-];
 
-async function dropIrrelevant(env, appids) {
-  const gone = new Set(appids.map(Number));
-  await updateJSON(env, "irrelevant.json", [], (current) =>
-    current.filter((a) => !gone.has(Number(a))));
+
+async function rejectGames(env, appids) {
+  return rejectRows(env, appids, sql, getJSON);
 }
 
 function oneId(body) {
@@ -217,8 +173,8 @@ function oneId(body) {
 }
 
 function manyIds(body) {
-  if (!Array.isArray(body.appids) || body.appids.length > 500)
-    throw new Error("appids must be an array of at most 500 values");
+  if (!Array.isArray(body.appids) || body.appids.length > 10000)
+    throw new Error("appids must be an array of at most 10000 values per request");
   return [...new Set(body.appids.map((value) => {
     value = Number(value);
     if (!Number.isSafeInteger(value) || value <= 0) throw new Error("invalid appid");
@@ -241,14 +197,12 @@ async function act(env, body) {
     }
     case "reject": { // ❌ anywhere -> delete both tables + purge media
       const appid = oneId(body);
-      await purgeMedia(env, [appid]);
-      await sql(env, deleteStmts(appid), true);
+      await rejectGames(env, [appid]);
       break;
     }
     case "reject_all": { // No-Mail bulk purge — same as reject, just no irrelevant.json involved
       const appids = manyIds(body);
-      await purgeMedia(env, appids);
-      await sql(env, appids.flatMap(deleteStmts), true);
+      await rejectGames(env, appids);
       break;
     }
     case "approve": { // Mail Approval ✅ -> 'Scheduled'
@@ -258,27 +212,23 @@ async function act(env, body) {
     }
     case "approve_all": {
       const appids = manyIds(body);
-      await sql(env, appids.map(approveStmt), true);
+      await sql(env, [["UPDATE scrape_tracker SET Mail_status='Scheduled' WHERE appid IN (SELECT value FROM json_each(?)) AND Mail_status='Drafted' AND scrape_status IN ('seeded','scraped')", JSON.stringify(appids)]]);
       break;
     }
     case "keep": { // Triage: persist human Keep, then unflag into the normal queue
       const appid = oneId(body);
       await sql(env, [keepStmt(appid)]);
-      await dropIrrelevant(env, [appid]);
+      // triage_kept is authoritative. Stale R2 flags are hidden by state().
       break;
     }
     case "reject_irrelevant": { // Triage ❌: unflag + full delete
       const appid = oneId(body);
-      await purgeMedia(env, [appid]);
-      await dropIrrelevant(env, [appid]);
-      await sql(env, deleteStmts(appid), true);
+      await rejectGames(env, [appid]);
       break;
     }
     case "reject_all_irrelevant": {
       const appids = manyIds(body);
-      await purgeMedia(env, appids);
-      await dropIrrelevant(env, appids);
-      await sql(env, appids.flatMap(deleteStmts), true);
+      await rejectGames(env, appids);
       break;
     }
     case "trigger": { // fire a GHA workflow (send / draft) on master
@@ -315,21 +265,20 @@ const json = (obj, status = 200) =>
 
 export {
   approveStmt, keepStmt, NOMAIL_SQL, requireSocialsStmt, SOCIALS_SQL, TRIAGE_KEPT_SQL,
-  purgeMedia, secureEqual,
-  sessionToken, sql, updateJSON,
+  sql, updateJSON,
 };
 
 export default {
+  async scheduled(_event, env, ctx) {
+    ctx.waitUntil(cleanupJobs(env, sql, updateJSON).catch(error => {
+      console.error(JSON.stringify({ event: 'media_cleanup_failed', message: error.message }));
+      throw error;
+    }));
+  },
   async fetch(req, env) {
     const path = new URL(req.url).pathname;
-    const headerAuth = await secureEqual(req.headers.get("x-auth") || "", env.AUTH_SECRET);
-    const cookieAuth = env.AUTH_SECRET ? await secureEqual(
-      cookie(req, "sre_session"), await sessionToken(env.AUTH_SECRET)) : false;
-    const authorized = headerAuth || cookieAuth;
-
-    // Authenticated R2 passthrough. The browser receives its HttpOnly session below.
+    // Public R2 passthrough.
     if (path.startsWith("/media/")) {
-      if (!authorized) return new Response("unauthorized", { status: 401 });
       let key;
       try {
         key = decodeURIComponent(path.slice("/media/".length));
@@ -348,7 +297,6 @@ export default {
     }
 
     if (path.startsWith("/api/")) {
-      if (!authorized) return json({ error: "unauthorized" }, 401);
       let response;
       try {
         if (path === "/api/state") response = json(await state(env));
@@ -356,12 +304,9 @@ export default {
           response = json(await act(env, await req.json()));
         response ||= json({ error: "not found" }, 404);
       } catch (e) {
+        console.error(JSON.stringify({ event: 'api_failed', path, message: String(e.message || e) }));
         response = json({ error: String((e && e.message) || e) }, 500);
       }
-      if (headerAuth) response.headers.set(
-        "Set-Cookie",
-        `sre_session=${await sessionToken(env.AUTH_SECRET)}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=604800`,
-      );
       return response;
     }
 
