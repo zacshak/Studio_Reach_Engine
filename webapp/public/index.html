@@ -296,6 +296,7 @@ function render() {
       <div class="meta">${escapeHtml((m && m.meta) || "")} · appid ${card.appid} ·
         <a href="https://store.steampowered.com/app/${card.appid}/" target="_blank" rel="noopener">Steam page 🔗</a></div>
       ${img}${thumbs}${shotsCtl}${allShots}
+      ${tab === 'approval' && m && (!Array.isArray(m.images) || !m.images.includes('SpriteSheet_Screenshots.png')) ? '<p>Drafting unavailable: this game’s screenshot export needs repair.</p>' : ''}
       ${S.triageReviews?.[card.appid] ? `<details><summary>AI recommendation: ${escapeHtml(S.triageReviews[card.appid].decision)}</summary><p>${escapeHtml(S.triageReviews[card.appid].reason || "")}</p><p>Criteria: ${escapeHtml(S.triageReviews[card.appid].criteria || "")}</p></details>` : ""}
       ${tab === "socials"
         ? socialLinks
@@ -305,7 +306,7 @@ function render() {
         <button onclick="move(-1)">←</button><span>${i + 1} / ${list.length}</span><button onclick="move(1)">→</button>
       </div>
       <div class="actions">
-        ${A[0] ? `<button class="ok" onclick="doAct('${A[1]}')">${A[0]}</button>` : ""}
+        ${A[0] ? `<button class="ok" ${tab === 'approval' && (!m || !Array.isArray(m.images) || !m.images.includes('SpriteSheet_Screenshots.png')) ? 'disabled' : ''} onclick="doAct('${A[1]}')">${A[0]}</button>` : ""}
         ${(tab === "mail" || tab === "nomail")
           ? `<button class="reqsocial ${requiresSocials(card.appid) ? "on" : ""}"
               onclick="toggleSocials(${card.appid})">ReqSocial: ${requiresSocials(card.appid) ? "ON" : "OFF"}</button>`
