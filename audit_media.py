@@ -29,7 +29,7 @@ def request(url, data=None, head=False):
                 return json.loads(raw)
         except urllib.error.HTTPError as error:
             if error.code < 500 and error.code != 429 or attempt == 2: raise
-        except (urllib.error.URLError, TimeoutError):
+        except (urllib.error.URLError, TimeoutError, ConnectionError):
             if attempt == 2: raise
         time.sleep(attempt + 1)
 

@@ -14,6 +14,13 @@ import approval_export
 
 
 class MediaReadinessTest(unittest.TestCase):
+    def test_brackets_in_game_name_do_not_hide_source_images(self):
+        with tempfile.TemporaryDirectory() as root:
+            folder=os.path.join(root,'[The Archive]_1'); os.mkdir(folder)
+            Image.new('RGB',(4,4)).save(os.path.join(folder,'screenshot_00.jpg'))
+            self.assertTrue(approval_export.build_sheet(folder))
+            self.assertTrue(os.path.isfile(os.path.join(folder,SPRITE_NAME)))
+
     def test_resync_publishes_manifest_last_and_preserves_cloud_draft(self):
         with tempfile.TemporaryDirectory() as folder:
             open(os.path.join(folder,'.complete'),'w').close()

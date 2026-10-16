@@ -10,7 +10,6 @@ already well under Claude's 1.15 MP cap, so quality is preserved.
     python sprite_sheet.py --force         # rebuild even if a sheet exists
     python sprite_sheet.py --selftest
 """
-import glob
 import os
 import sys
 
@@ -46,9 +45,9 @@ def build_sheet(folder, force=False):
     out = os.path.join(folder, OUT_NAME)
     if os.path.exists(out) and not force:
         return False
-    shots = sorted(p for p in glob.glob(os.path.join(folder, "*"))
-                   if p.lower().endswith((".jpg", ".jpeg", ".png"))
-                   and os.path.basename(p) != OUT_NAME)
+    shots = sorted(entry.path for entry in os.scandir(folder)
+                   if entry.is_file() and entry.name.lower().endswith((".jpg", ".jpeg", ".png"))
+                   and entry.name != OUT_NAME)
     if not shots:
         return False                       # 0 screenshots -> no sheet at all
     tiles = [Image.open(p).convert("RGB") for p in _pick4(shots)]
