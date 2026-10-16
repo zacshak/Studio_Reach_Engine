@@ -20,6 +20,10 @@ import uuid
 from contextlib import closing
 from email.errors import HeaderParseError
 from email.headerregistry import Address
+if __package__:
+    from .discovery_recovery import SCHEMA as DISCOVERY_RECOVERY_SCHEMA
+else:
+    from discovery_recovery import SCHEMA as DISCOVERY_RECOVERY_SCHEMA
 
 try:
     import libsql                      # Turso/libSQL client (sqlite3 DBAPI drop-in)
@@ -96,12 +100,6 @@ _SCHEMA = """(
 _REBUILD_COLS = ("appid, game_name, short_descript, scrape_status, emails, "
                  "steam_url, website, support_info, developers, publishers, "
                  "genres, added_at")
-# canonical column order (matches _SCHEMA) — used to detect/fix layout drift
-_SCHEMA_COLS = ("appid", "game_name", "short_descript", "Mail_status",
-                "mail_template", "scrape_status", "emails", "steam_url", "website",
-                "support_info", "developers", "publishers", "genres", "added_at",
-                "sent_at", "triage_kept", "Require_Socials", "Socials_Data")
-
 _EMAIL_VERIFICATION_CACHE_SCHEMA = """(
     email        TEXT PRIMARY KEY,
     result_json  TEXT NOT NULL,
@@ -214,19 +212,28 @@ def retryable_db_error(exc):
 
 class _Conn:
     """Thin libsql connection proxy: execute() returns a buffered, iterable result
-    (the only API gap vs sqlite3). commit/executescript/close pass through."""
+    and closing a write scope rolls back unfinished work without losing a clean handle."""
     def __init__(self, raw):
         self._raw = raw
+        self._in_transaction = False
 
     def execute(self, *a):
-        read = str(a[0]).lstrip().upper().startswith(("SELECT", "PRAGMA"))
+        sql = str(a[0]).lstrip().upper()
+        read = sql.startswith(("SELECT", "PRAGMA"))
         for attempt in range(4):
             try:
                 if self._raw is None:
                     self._raw = libsql.connect(TURSO_URL, auth_token=TURSO_TOKEN)
-                return _Rows(self._raw.execute(*a))
+                if not read:
+                    # A failed response can still have opened or mutated a transaction.
+                    self._in_transaction = True
+                result = _Rows(self._raw.execute(*a))
+                if sql.split()[0] in ("COMMIT", "END", "ROLLBACK") and not sql.startswith("ROLLBACK TO"):
+                    self._in_transaction = False
+                return result
             except Exception as exc:
-                if not read or not retryable_db_error(exc) or attempt == 3:
+                active = self._in_transaction or getattr(self._raw, "in_transaction", False) is True
+                if active or not read or not retryable_db_error(exc) or attempt == 3:
                     raise
                 delay = 2 ** attempt
                 print(f"Turso read failed; reconnecting in {delay}s ({exc})", file=sys.stderr)
@@ -235,6 +242,7 @@ class _Conn:
 
     def invalidate(self):
         raw, self._raw = self._raw, None
+        self._in_transaction = False
         try:
             if raw is not None:
                 raw.close()
@@ -242,18 +250,47 @@ class _Conn:
             pass
 
     def close(self):
-        pass  # shared process-wide connection (see _turso); real close is at exit.
+        if self._in_transaction or getattr(self._raw, "in_transaction", False) is True:
+            try:
+                self.rollback()
+            except Exception:
+                # Never retain an uncertain transaction for the next caller to commit.
+                self.invalidate()
+
+    def commit(self):
+        self._raw.commit()
+        self._in_transaction = False
+
+    def rollback(self):
+        self._raw.rollback()
+        self._in_transaction = False
+
+    def executescript(self, script):
+        self._in_transaction = True
+        return self._raw.executescript(script)
 
     def __getattr__(self, n):
         return getattr(self._raw, n)
+
+
+class _ReadView:
+    """Borrow the shared connection without owning an enclosing write transaction."""
+    def __init__(self, conn):
+        self._conn = conn
+
+    def close(self):
+        pass
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
 
 
 # ponytail: one cached remote connection PER THREAD — a fresh libsql.connect() is a
 # ~1.1s handshake to ap-south-1, and every query paid it. libsql connections are
 # thread-bound (can't be used off the thread that opened them), so the web app's
 # optimistic-UI background threads each need their own. thread-local gives that: the
-# main script thread reuses one, each daemon worker lazily opens its own. close() is a
-# no-op so the closing() wrappers don't tear it down.
+# main script thread reuses one, each daemon worker lazily opens its own. close()
+# rolls back unfinished writes but preserves the clean connection for reuse.
 _TLS = threading.local()
 
 
@@ -282,7 +319,7 @@ def _ro():
     if TURSO_URL:
         # Turso has no local mode=ro handle; the read-only contract (guarding
         # newly_added from Hermes) is relaxed in cloud mode — Hermes runs locally.
-        return _turso()
+        return _ReadView(_turso())
     # read-only handle: any write raises sqlite3.OperationalError
     return sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=TIMEOUT)
 
@@ -303,6 +340,7 @@ def init_tracker():
             conn.execute("PRAGMA journal_mode=WAL")  # local: readers don't block writer
             # (Turso manages its own storage/concurrency — WAL pragma N/A there)
         conn.execute(f"CREATE TABLE IF NOT EXISTS scrape_tracker {_SCHEMA}")
+        conn.execute(DISCOVERY_RECOVERY_SCHEMA)
         # migrate older DBs whose table predates a column (IF NOT EXISTS won't add it)
         have = {c[1] for c in conn.execute("PRAGMA table_info(scrape_tracker)")}
         if "support_info" not in have:
@@ -346,19 +384,7 @@ def init_tracker():
                      f"{_EMAIL_VERIFICATION_CACHE_SCHEMA}")
         conn.execute("CREATE TABLE IF NOT EXISTS mail_send_attempt "
                      f"{_MAIL_SEND_ATTEMPT_SCHEMA}")
-        # fix column order if it drifted (ALTER only appends, so mail_template lands
-        # last). Rebuild from _SCHEMA, preserving every existing value. No-op once aligned.
-        ordered = [c[1] for c in conn.execute("PRAGMA table_info(scrape_tracker)")]
-        if ordered != list(_SCHEMA_COLS):
-            shared = ", ".join(c for c in _SCHEMA_COLS if c in ordered)
-            conn.executescript(
-                "DROP TRIGGER IF EXISTS trg_sync_scrape_tracker;"
-                "DROP TABLE IF EXISTS _scrape_tracker_new;"
-                f"CREATE TABLE _scrape_tracker_new {_SCHEMA};"
-                f"INSERT INTO _scrape_tracker_new ({shared}) "
-                f"SELECT {shared} FROM scrape_tracker;"
-                "DROP TABLE scrape_tracker;"
-                "ALTER TABLE _scrape_tracker_new RENAME TO scrape_tracker;")
+        # Column order is not a contract. Preserve additive columns, indexes and triggers.
         # guarantee the columns the trigger reads exist on newly_added, so an insert
         # can never abort with "no such column: NEW.x" (see _TRIGGER_NEEDS)
         na = {c[1] for c in conn.execute("PRAGMA table_info(newly_added)")}
@@ -532,12 +558,13 @@ def seed_pending():
 
 
 def get_pending(limit=None):
-    """Appids whose scrape_status is 'pending'. Hermes's work queue."""
+    """Unresolved and failed Pending leads eligible for scraping."""
     if limit is not None and (not isinstance(limit, int) or limit < 1):
         raise ValueError("limit must be a positive integer")
     _ensure()
     with closing(_ro()) as conn:
-        q = "SELECT appid FROM scrape_tracker WHERE scrape_status='pending' ORDER BY appid"
+        q = ("SELECT appid FROM scrape_tracker WHERE scrape_status IN ('pending','failed') "
+             "AND Mail_status='Pending' ORDER BY appid")
         if limit:
             rows = conn.execute(q + " LIMIT ?", (limit,)).fetchall()
         else:
@@ -595,10 +622,12 @@ def write_result(appid, *, scrape_status, emails=None, website=None):
     _ensure()
     with closing(_rw()) as conn:
         current = conn.execute(
-            "SELECT emails, Mail_status FROM scrape_tracker WHERE appid=?",
+            "SELECT emails, Mail_status, scrape_status FROM scrape_tracker WHERE appid=?",
             (int(appid),)).fetchone()
-        if current and current[1] in ("Sending", "Sent", "Replied"):
-            raise ValueError(f"cannot alter completed outreach for appid {appid}")
+        if current is None:
+            raise ValueError(f"lead {appid} no longer exists; discovery must seed it")
+        if current[1] != "Pending" or current[2] not in ("pending", "failed", "no_email"):
+            raise ValueError(f"stale scrape result for appid {appid}")
         candidate = emails if emails is not None else (current[0] if current else None)
         if scrape_status in ("scraped", "invalid"):
             scrape_status = "scraped" if normalize_email(candidate) else (
@@ -617,12 +646,13 @@ def write_result(appid, *, scrape_status, emails=None, website=None):
                 sets.append(f"{col}=?")
                 vals.append(val)
         vals.append(appid)
-        cur = conn.execute(
-            f"UPDATE scrape_tracker SET {','.join(sets)} WHERE appid=?", vals)
-        if cur.rowcount == 0:  # appid not tracked yet -> create then set
-            conn.execute("INSERT INTO scrape_tracker (appid) VALUES (?)", (appid,))
-            conn.execute(
-                f"UPDATE scrape_tracker SET {','.join(sets)} WHERE appid=?", vals)
+        row = conn.execute(
+            f"UPDATE scrape_tracker SET {','.join(sets)} WHERE appid=? "
+            "AND Mail_status='Pending' AND scrape_status IN ('pending','failed','no_email') "
+            "RETURNING appid",
+            vals).fetchone()
+        if row is None:
+            raise ValueError(f"lead {appid} was deleted or outreach advanced during scrape")
         conn.commit()
 
 
@@ -755,6 +785,22 @@ def set_mail_status(appid, status):
         raise ValueError(f"illegal transition to {status!r} for appid {appid}")
 
 
+def complete_mcp_draft(appid, template, expected_email, expected_scrape, selected_template=''):
+    """Recover a saved MCP draft only for the exact recipient it was prepared for."""
+    if expected_scrape not in ('seeded', 'scraped'):
+        raise ValueError('invalid draft scrape state')
+    _ensure()
+    with closing(_rw()) as conn:
+        row = conn.execute(
+            "UPDATE scrape_tracker SET Mail_status='Drafted',mail_template=? "
+            "WHERE appid=? AND Mail_status='Writing' AND emails=? AND scrape_status=? "
+            "AND COALESCE(CAST(mail_template AS TEXT),'')=? RETURNING appid",
+            (template, int(appid), expected_email, expected_scrape, selected_template)).fetchone()
+        conn.commit()
+    if row is None:
+        raise ValueError('Saved draft recipient or state changed; review required')
+
+
 def get_emails(appid):
     """The emails string stored for one lead (comma-separated, '' if none)."""
     _ensure()
@@ -817,11 +863,37 @@ def claim_mail(appid, *, token=None, message_id=None, expected_email=None):
 
 
 def get_send_attempt(appid):
+    """Active claim only. Completed evidence is available through reply_evidence()."""
     _ensure()
     with closing(_ro()) as conn:
-        row = conn.execute("SELECT token,message_id FROM mail_send_attempt WHERE appid=?",
+        row = conn.execute("SELECT a.token,a.message_id FROM mail_send_attempt a "
+                           "JOIN scrape_tracker s ON s.appid=a.appid "
+                           "WHERE a.appid=? AND s.Mail_status='Sending'",
                            (int(appid),)).fetchone()
     return row
+
+
+def reply_evidence():
+    """Sent leads with retained thread evidence, excluding legacy sends without an ID."""
+    _ensure()
+    with closing(_ro()) as conn:
+        return conn.execute(
+            "SELECT s.appid,s.emails,a.message_id,a.started_at FROM scrape_tracker s "
+            "JOIN mail_send_attempt a ON a.appid=s.appid "
+            "WHERE s.Mail_status='Sent' AND a.message_id IS NOT NULL "
+            "AND a.message_id!='' ORDER BY s.appid").fetchall()
+
+
+def requeue_missing_draft(appid):
+    """Return only an unclaimed Scheduled lead to the draft queue."""
+    _ensure()
+    with closing(_rw()) as conn:
+        row = conn.execute(
+            "UPDATE scrape_tracker SET Mail_status='Writing' WHERE appid=? "
+            "AND Mail_status='Scheduled' AND scrape_status IN ('seeded','scraped') "
+            "RETURNING appid", (int(appid),)).fetchone()
+        conn.commit()
+    return row is not None
 
 
 def repair_invalid_rows():
@@ -850,10 +922,12 @@ def repair_invalid_rows():
                 continue
             if target == (scrape_status, mail_status):
                 continue
-            conn.execute(
-                "UPDATE scrape_tracker SET scrape_status=?, Mail_status=? WHERE appid=?",
-                (*target, appid))
-            changed.append(appid)
+            row = conn.execute(
+                "UPDATE scrape_tracker SET scrape_status=?, Mail_status=? WHERE appid=? "
+                "AND Mail_status=? AND emails IS ? AND scrape_status=? RETURNING appid",
+                (*target, appid, mail_status, emails, scrape_status)).fetchone()
+            if row is not None:
+                changed.append(appid)
         conn.commit()
     return changed
 
@@ -903,7 +977,10 @@ def reset_sending(appid, status, *, token=None):
                      f"WHERE appid=? AND Mail_status='Sending'{guard}",
                      (status, int(appid), token) if token else (status, int(appid)))
         conn.execute("DELETE FROM mail_send_attempt WHERE appid=?" +
-                     (" AND token=?" if token else ""),
+                     (" AND token=?" if token else "") +
+                     " AND EXISTS (SELECT 1 FROM scrape_tracker s "
+                     "WHERE s.appid=mail_send_attempt.appid "
+                     "AND s.Mail_status IN ('Scheduled','Drafted'))",
                      (int(appid), token) if token else (int(appid),))
         conn.commit()
 
@@ -926,9 +1003,7 @@ def mark_sent(appid, *, token=None):
             if not current or current[0] != "Sent":
                 raise RuntimeError(f"cannot mark {appid} Sent from {current[0] if current else 'missing'}")
         conn.execute("DELETE FROM newly_added WHERE appid=?", (int(appid),))
-        conn.execute("DELETE FROM mail_send_attempt WHERE appid=?" +
-                     (" AND token=?" if token else ""),
-                     (int(appid), token) if token else (int(appid),))
+        # Retain Message-ID and attempt time for thread-specific reply attribution.
         conn.commit()
 
 
@@ -938,10 +1013,16 @@ def delete_lead(appid):
     otherwise re-insert newly_added and the trigger would re-create the row)."""
     _ensure()
     with closing(_rw()) as conn:
-        conn.execute("DELETE FROM mail_send_attempt WHERE appid=?", (int(appid),))
-        conn.execute("DELETE FROM scrape_tracker WHERE appid=?", (int(appid),))
-        conn.execute("DELETE FROM newly_added WHERE appid=?", (int(appid),))
-        conn.commit()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute("DELETE FROM pending_discovery WHERE appid=?", (int(appid),))
+            conn.execute("DELETE FROM mail_send_attempt WHERE appid=?", (int(appid),))
+            conn.execute("DELETE FROM scrape_tracker WHERE appid=?", (int(appid),))
+            conn.execute("DELETE FROM newly_added WHERE appid=?", (int(appid),))
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
 
 
 if __name__ == "__main__":

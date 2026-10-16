@@ -1,7 +1,7 @@
 # Steam SRE — Studio Reach Engine: workflow
 
-The pipeline now runs **in the cloud**. A nightly GitHub Actions chain runs discovery,
-triage, then email scraping; you review and drive the rest from the phone-friendly web app,
+The pipeline runs **in the cloud**. Nightly GitHub Actions runs discovery.
+Triage and email scraping are manual, not triggered by discovery. You review and drive the rest from the phone-friendly web app,
 which fires drafting and sending as on-demand GitHub Actions runs. Your PC no longer needs
 to be on.
 
@@ -10,9 +10,9 @@ All local/manual commands still exist through the one launcher: `python SRE.py <
 ```
  discover.yml  →  SRE --discover  →  Turso scrape_tracker + R2 media
       │
-      └──success──► triage.yml  →  triage_cloud.py  →  R2 irrelevant.json
+      └──manual───► triage.yml  →  triage_cloud.py  →  R2 irrelevant.json
                          │
-                         └──success──► kimchi.yml  →  pending leads get scraped
+                         └──manual───► kimchi.yml  →  pending leads get scraped
                                         │
                      Web app (Cloudflare Worker) — review on your phone
                                         │
@@ -40,15 +40,15 @@ All local/manual commands still exist through the one launcher: `python SRE.py <
 - **Social enrichment**: `Require_Socials=1` requests Hermes enrichment;
   `Socials_Data` stores the completed X/LinkedIn/Instagram/Discord/Email JSON.
 
-Media (screenshots, sprite sheet, manifest with the drafted mail) lives privately in
-**Cloudflare R2**, keyed by appid via `index.json`. The Worker uses its R2 binding and
-cloud jobs use S3 credentials; nightly sync removes media no active tracker row owns.
+Media (screenshots, sprite sheet, manifest with the drafted mail) lives in
+**Cloudflare R2**, keyed by appid via `index.json`. The public Worker serves it through
+its R2 binding. Cloud jobs use S3 credentials. Nightly sync queues inactive media for cleanup.
 
 ---
 
-## 1. Discover + Triage + Scrape — automatic chain (`discover.yml` → `triage.yml` → `kimchi.yml`)
-Discovery runs nightly at `30 22 * * *` (22:30 UTC = 04:00 IST), then successful runs
-automatically trigger Triage, whose success automatically triggers Kimchi:
+## 1. Discovery, with optional manual triage and scraping
+Discovery runs nightly at `30 22 * * *` (22:30 UTC = 04:00 IST).
+Triage and Kimchi run only on manual dispatch. Hermes and Kimchi share a concurrency group:
 - Diff Steam's app list vs `known_comingsoon`, fetch details for the new appids into
   `newly_added`, seed `scrape_tracker` (`seeded` if Steam gave an email, else `pending`),
   and mirror each lead's media to R2.
@@ -125,8 +125,9 @@ can leave that table in place. Preserve unresolved `Sending` rows and their meta
 during rollback so delivery evidence is not lost.
 
 ## 4. Review replies — automatic, nightly (`review-mails.yml`)
-Cron `0 2 * * *`. Read-only IMAP scan of the Gmail inbox: any `Sent` lead whose address
-replied flips `Sent → Replied`. No mail is sent.
+Cron `30 18 * * *` (00:00 IST). Read-only IMAP scan of the Gmail inbox.
+Verified replies to retained outgoing message IDs flip `Sent → Replied`. No mail is sent.
+Older sends without retained message IDs require manual confirmation.
 
 ---
 
@@ -165,7 +166,19 @@ No redeploy needed — the next draft run reads the new templates.
 `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `TRIAGE_BASE_URL`, `TRIAGE_MODEL`,
 `TRIAGE_API_KEY`, `GMAIL_USER`, `GMAIL_APP_PASSWORD`.
 
-**Streamlit app → Manage app → Settings → Secrets** (the review app + its buttons):
-the same `TURSO_*` and `R2_*` (R2 **write** keys too — triage Reject, Hermes/draft/send
-buttons need them), plus `GH_REPO` (= `Meshak2002/Studio_Reach_Engine`) and `GH_PAT` (a
-fine-grained token, **Actions: write**) so the buttons can dispatch the workflows.
+**Cloudflare review Worker secrets**: `TURSO_URL`, `TURSO_TOKEN`, `GH_REPO`
+(`zacshak/Studio_Reach_Engine`), and `GH_PAT` with Actions write permission.
+R2 access uses the `MEDIA` binding. The dashboard and MCP are intentionally public.
+
+### Cleanup deployment order
+
+Run `node webapp/migrate-cleanup.mjs` before deploying updated cleanup or discovery code.
+First stop old cleanup dispatch and allow in-flight cleanup invocations to finish.
+Do not overlap old tokenless cleanup with the new token-aware Worker.
+The migration adds lease ownership, an empty discovery retry table, and
+insert/reactivation guards while durable cleanup jobs own a game ID.
+It does not delete lead rows. If old cleanup jobs overlap live rows, it stops for review.
+Nightly reconciliation queues cleanup rather than deleting objects from a stale snapshot.
+The review Worker's minute cron removes objects and metadata before releasing the job.
+To roll back application code, leave the additive cleanup guards and queue in place.
+Do not restore tokenless cleanup while token-aware cleanup can run.

@@ -8,6 +8,52 @@ import media_store
 
 
 class MediaStoreTest(unittest.TestCase):
+    def test_recovery_checks_published_input_versions(self):
+        class Client:
+            def head_object(self, **kwargs):
+                return {'ETag':'"current"'}
+        submission={'inputs':[{'key':'cold_mails.txt','etag':'current'}, {'key':'Game/sprite.png','etag':'current'}]}
+        media_store.check_draft_inputs(submission,client=Client())
+        submission['inputs'][0]['etag']='old'
+        with self.assertRaises(media_store.MediaStoreError):
+            media_store.check_draft_inputs(submission,client=Client())
+
+    def test_draft_write_preserves_latest_images_and_does_not_recreate_deleted_manifest(self):
+        class Missing(Exception):
+            response = {'Error': {'Code': 'NoSuchKey'}}
+        class Client:
+            written = None
+            missing = False
+            def get_object(self, **kwargs):
+                if self.missing:
+                    raise Missing()
+                return {'Body': io.BytesIO(b'{"images":["new.png"],"name":"New"}'), 'ETag':'v2'}
+            def put_object(self, **kwargs):
+                self.written = json.loads(kwargs['Body'])
+        client = Client()
+        draft = {'images':['old.png'], 'mail':'Approved text', 'mail_template':2}
+        media_store.write_manifest('Game_1', draft, client=client)
+        self.assertEqual(client.written['images'], ['new.png'])
+        self.assertEqual(client.written['mail'], 'Approved text')
+        client.missing = True
+        client.written = None
+        with self.assertRaises(media_store.MediaStoreError):
+            media_store.write_manifest('Game_1', draft, client=client)
+        self.assertIsNone(client.written)
+
+    def test_gha_cannot_replace_an_mcp_draft(self):
+        saved = {'mail':'MCP draft','mail_template':1,'draft_submission':{'revision':'saved'}}
+        class Client:
+            def get_object(self, **kwargs):
+                return {'Body':io.BytesIO(json.dumps(saved).encode()),'ETag':'v1'}
+            def put_object(self, **kwargs):
+                self.written=json.loads(kwargs['Body'])
+        client=Client()
+        with self.assertRaises(media_store.MediaStoreError):
+            media_store.write_manifest('Game_1',{'mail':'Other draft','mail_template':1},client=client)
+        result=media_store.write_manifest('Game_1',{'mail':'MCP draft','mail_template':1},client=client)
+        self.assertEqual(result,saved)
+
     def test_strict_reads_fail_instead_of_erasing_remote_state(self):
         with patch.object(media_store, "write_enabled", return_value=False), \
                 patch.object(media_store.urllib.request, "urlopen", side_effect=URLError("offline")):

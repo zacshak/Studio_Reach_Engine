@@ -11,21 +11,17 @@ Three ways to run it:
   python lead_discovery.py                 # daily: process today's newly-found pages
   python lead_discovery.py --file out/new_appids_2026-06-20.txt   # a specific list
 
-(The daily mode reads out/new_appids_<today>.txt, which `find_new.py` produces.)
+(Daily mode drains pending_discovery, including unfinished work from prior runs.)
 """
 import argparse
 import csv
-import glob
 import os
 import sys
 from datetime import datetime
 
-from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font, PatternFill
-from openpyxl.utils import get_column_letter
-
 import batch_fetch as bf  # reuse the cached, rate-limited fetcher
 import pipeline  # shared DB connection (Turso when configured)
+import discovery_recovery as recovery
 from approval_export import ApprovalExporter, NOMAIL_BASE  # background staging
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -65,17 +61,8 @@ def load_appids(args, conn, stamp):
         return [r[0] for r in rows], f"random sample of {args.sample} pre-release pages"
     if args.file:
         path = args.file
-    elif args.stamp:
-        # runner mode: the finder wrote new_appids_<stamp>.txt this same run
-        path = os.path.join(bf.OUT_DIR, f"new_appids_{stamp}.txt")
     else:
-        # standalone: use the most recent finder output
-        candidates = sorted(glob.glob(os.path.join(bf.OUT_DIR, "new_appids_*.txt")))
-        if not candidates:
-            return None, ("no finder output found in out/.\n"
-                          "   Run the finder first:  python find_new.py\n"
-                          "   Or see data now:        python lead_discovery.py --sample 25")
-        path = candidates[-1]
+        return recovery.pending_appids(conn), "durable pending discovery"
     if not os.path.exists(path):
         return None, (f"no input list found at {path}\n"
                       f"   Run the finder first:  python find_new.py\n"
@@ -86,10 +73,15 @@ def load_appids(args, conn, stamp):
             line = line.strip()
             if line and not line.startswith("#"):
                 ids.append(int(line.split("#")[0].split()[0]))
-    return ids, f"newly-found pages ({os.path.basename(path)})"
+    pending = set(recovery.pending_appids(conn))
+    return list(dict.fromkeys(appid for appid in ids if appid in pending)), f"pending pages ({os.path.basename(path)})"
 
 
 def write_excel(rows, path):
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
     wb = Workbook()
     ws = wb.active
     ws.title = "Leads"
@@ -115,7 +107,7 @@ def write_excel(rows, path):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--sample", type=int, help="see data now: N random pre-release studios")
-    ap.add_argument("--file", help="a specific new_appids file")
+    ap.add_argument("--file", help="select still-pending IDs from a specific finder file")
     ap.add_argument("--stamp", help="shared run stamp (YYYY-MM-DD_HHMM) from the runner")
     ap.add_argument("--refresh", action="store_true", help="ignore cache, re-fetch")
     ap.add_argument("--include-released", action="store_true",
@@ -126,19 +118,25 @@ def main():
     conn = pipeline.connect()
     bf.init_db(conn)
     pipeline.init_tracker()
+    recovery.init_db(conn)
 
-    today = datetime.now(bf.IST).date().isoformat()
     stamp = args.stamp or datetime.now(bf.IST).strftime("%Y-%m-%d_%H%M")
 
     appids, source = load_appids(args, conn, stamp)
     if appids is None:
         print(f"\n  Nothing to do: {source}\n")
+        conn.close()
         return 1
+    if not appids:
+        print("\nNo pending discovery work.\n")
+        conn.close()
+        return 0
     print(f"Lead Discovery on {len(appids)} appids — {source}\n")
 
     # --sample is a PREVIEW tool: it must never write into newly_added.
     # Only real runs (a diff list or an explicit --file) persist leads.
     is_sample = bool(args.sample)
+    durable = not is_sample
     # Exporters stage folders + screenshots concurrently after source validation.
     exporter = None if is_sample else ApprovalExporter()
     # same staging for no-email leads, into No_Mail_Games (scrape_status 'pending')
@@ -155,9 +153,12 @@ def main():
         else:
             success, norm, raw = bf.fetch_one(appid, limiter)
             tracked = False
-            if not is_sample:  # cache_put itself guards to pre-release leads only
-                tracked = bool(bf.cache_put(
-                    conn, appid, success, raw, discovered_on=today) and norm)
+            if durable and recovery.finish_ineligible(conn, appid, success, raw):
+                dropped += 1
+                continue
+            if durable:  # cache_put itself guards to pre-release leads only
+                tracked = bool(recovery.cache_if_pending(
+                    conn, appid, success, raw, bf.cache_put) and norm)
             tag = "fetched"
         if not norm:
             dropped += 1
@@ -190,6 +191,8 @@ def main():
                 exporter.submit(appid)
             elif state == "invalid":
                 invalid += 1
+                if durable:
+                    recovery.finish_invalid(conn, appid)
             else:
                 nomail_exporter.submit(appid)
     else:

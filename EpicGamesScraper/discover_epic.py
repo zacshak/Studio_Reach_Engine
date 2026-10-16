@@ -48,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
         new_products = epic_db.apply_snapshot(
             conn, products, run_at, client.base_url, bootstrap=bootstrap
         )
-        detail_products = epic_db.detail_keys_needed(conn, products)
+        detail_products = epic_db.detail_keys_needed(conn)
         detail_ok = 0
         detail_failed = 0
         for product in detail_products:

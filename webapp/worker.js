@@ -18,6 +18,7 @@
 
 import { triageSnapshot } from './triage.js';
 import { rejectRows, cleanupJobs } from './deletion.js';
+import { draftRequest } from './drafting.js';
 const WORKFLOWS = { send: "send.yml", draft: "draft.yml", socials: "socials.yml" };
 
 // ---- Turso over HTTP (Hrana v2 pipeline; one fetch = N statements, no client lib) ----
@@ -274,6 +275,7 @@ export {
 
 export default {
   async scheduled(_event, env, ctx) {
+    if (env.ROLLOUT_PAUSED === 'true') return;
     ctx.waitUntil(cleanupJobs(env, sql, updateJSON).catch(error => {
       console.error(JSON.stringify({ event: 'media_cleanup_failed', message: error.message }));
       throw error;
@@ -281,6 +283,8 @@ export default {
   },
   async fetch(req, env, ctx) {
     const path = new URL(req.url).pathname;
+    if (env.ROLLOUT_PAUSED === 'true' && req.method === 'POST' && path.startsWith('/api/'))
+      return json({error:'Deployment in progress. Please retry shortly.'},503);
     // Public R2 passthrough.
     if (path.startsWith("/media/")) {
       let key;
@@ -303,6 +307,8 @@ export default {
     if (path.startsWith("/api/")) {
       let response;
       try {
+        if (req.method === 'POST' && ['/api/draft/context','/api/draft/save'].includes(path))
+          response = json(await draftRequest(req, env, sql, path.endsWith('/context') ? 'context' : 'save'));
         if (path === "/api/state") response = json(await state(env));
         if (path === "/api/act" && req.method === "POST") {
           const result = await act(env, await req.json());

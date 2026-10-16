@@ -35,8 +35,11 @@ import time
 import traceback
 import uuid
 from contextlib import suppress
+from datetime import datetime, timezone
+from email import policy
 from email.message import EmailMessage
-from email.utils import formatdate, make_msgid
+from email.parser import BytesParser
+from email.utils import formatdate, make_msgid, parsedate_to_datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -136,6 +139,8 @@ def _load_mail(appid):
         return None, None, None
     tpl = pipeline.get_mail_template(appid)
     path = os.path.join(folder, f"mail_{appid}_{tpl}.txt") if tpl else None
+    if tpl and not os.path.exists(path):
+        return None, None, None
     if not path or not os.path.exists(path):
         hits = sorted(glob.glob(os.path.join(folder, f"mail_{appid}_*.txt")))
         path = hits[0] if hits else None
@@ -401,9 +406,11 @@ def main(dry_run=False, limit=None):
                 stats["deferred"] += 1
                 continue
             if not isinstance(body, str) or not body.strip():
-                print(f"SKIP {appid}: missing or empty draft -> returned to Drafted")
+                print(f"SKIP {appid}: missing or empty draft -> queued for Writing")
                 if not dry_run:
-                    pipeline.set_mail_status(appid, "Drafted")
+                    if not pipeline.requeue_missing_draft(appid):
+                        stats["skipped"] += 1
+                        continue
                 stats["rejected"] += 1
                 continue
             if dry_run:
@@ -495,11 +502,30 @@ def purge_sent():
           f"newly_added rows dropped (scrape_tracker kept)")
 
 
+def _matches_reply(raw_headers, addr, message_id, started_at):
+    """Require exact sender, exact thread ID and a dated message after this attempt."""
+    try:
+        message = BytesParser(policy=policy.default).parsebytes(raw_headers)
+        if len(message.get_all("From", [])) != 1 or len(message.get_all("Date", [])) != 1:
+            return False
+        sender = message["From"]
+        if sender.defects or len(sender.addresses) != 1:
+            return False
+        if sender.addresses[0].addr_spec.casefold() != addr.casefold():
+            return False
+        received = parsedate_to_datetime(str(message["Date"]))
+        started = datetime.fromisoformat(started_at).replace(tzinfo=timezone.utc)
+        if received.tzinfo is None or received < started:
+            return False
+        references = " ".join(str(value) for name in ("In-Reply-To", "References")
+                              for value in message.get_all(name, []))
+        return message_id in re.findall(r"<[^<>\s]+>", references)
+    except (ValueError, TypeError, AttributeError, IndexError, OverflowError):
+        return False
+
+
 def review():
-    """For every already-sent lead (Mail_status == 'Sent'), look in the Gmail inbox
-    for a message FROM that lead's address. A hit = they replied -> flip the lead's
-    Mail_status to 'Replied'. Read-only on Gmail (IMAP), only the DB status changes.
-    Uses the same App password as sending (works for IMAP too)."""
+    """Read-only inbox scan for replies to retained outgoing Message-IDs."""
     _load_env()
     user = os.environ.get("GMAIL_USER", "")
     password = os.environ.get("GMAIL_APP_PASSWORD", "")
@@ -509,31 +535,45 @@ def review():
         sys.exit("GMAIL_APP_PASSWORD not set. Add it to the repo-root .env "
                  "(see this file's header).")
 
-    sent = pipeline.mail_status_appids("Sent")
+    sent = pipeline.reply_evidence()
     if not sent:
-        print("no leads in 'Sent' to review.")
+        print("no Sent leads with retained reply evidence to review.")
         return
 
-    imap = imaplib.IMAP4_SSL(IMAP_HOST)
-    imap.login(user, password)
-    imap.select("INBOX", readonly=True)
-
+    imap = imaplib.IMAP4_SSL(IMAP_HOST, timeout=30)
     replied = 0
-    for appid in sent:
-        addr = (pipeline.get_emails(appid).split(",")[0] or "").strip()
-        if not addr:
-            continue
-        # ponytail: INBOX-only search; replies land here. Add 'All Mail' if some slip past.
-        # bytes literal + UTF-8 charset so non-ASCII addresses (ø, IDN) don't crash imaplib.
-        try:
-            typ, data = imap.search("UTF-8", "FROM", f'"{addr}"'.encode("utf-8"))
-        except imaplib.IMAP4.error:
-            continue
-        if typ == "OK" and data and data[0].split():
-            pipeline.set_mail_status(appid, "Replied")
-            replied += 1
-            print(f"  REPLIED {appid} <- {addr}")
-    imap.logout()
+    try:
+        imap.login(user, password)
+        if imap.select("INBOX", readonly=True)[0] != "OK":
+            raise RuntimeError("cannot open Gmail inbox")
+        for appid, raw_email, message_id, started_at in sent:
+            addr = _recipient(raw_email)
+            if not addr or not re.fullmatch(r'<[^<>\s"\\]+>', message_id):
+                continue
+            # Search is only a candidate filter. Fetch headers without setting Seen.
+            try:
+                typ, data = imap.search(None, "OR", "HEADER", "In-Reply-To",
+                                        f'"{message_id}"', "HEADER", "References",
+                                        f'"{message_id}"')
+                if typ != "OK" or not data or not data[0]:
+                    continue
+                for number in data[0].split():
+                    typ, headers = imap.fetch(number,
+                        "(BODY.PEEK[HEADER.FIELDS (FROM DATE IN-REPLY-TO REFERENCES)])")
+                    if typ != "OK":
+                        continue
+                    if any(isinstance(item, tuple) and isinstance(item[1], bytes) and
+                           _matches_reply(item[1], addr, message_id, started_at)
+                           for item in headers or []):
+                        pipeline.set_mail_status(appid, "Replied")
+                        replied += 1
+                        print(f"  REPLIED {appid} <- {addr}")
+                        break
+            except imaplib.IMAP4.error:
+                continue
+    finally:
+        with suppress(Exception):
+            imap.logout()
     print(f"reviewed {len(sent)} sent lead(s): {replied} replied -> marked 'Replied'.")
 
 

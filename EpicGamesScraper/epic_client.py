@@ -199,13 +199,21 @@ class EpicCatalogClient:
             raise ValueError("page_size must be between 1 and 100")
 
         products = {}
+        offers = set()
         page = 1
         expected = None
         while page <= MAX_PAGES:
             data = self._post(page, page_size)
-            expected = data.get("total", expected)
+            total = data.get("total")
+            if total is not None:
+                if type(total) is not int or total < 0:
+                    raise EpicClientError("Epic catalog returned an invalid total")
+                if expected is not None and total != expected:
+                    raise EpicClientError("Epic catalog total changed during pagination")
+                expected = total
             for raw in data["elements"]:
                 product = normalize_product(raw)
+                offers.add((product["namespace"], product["offer_id"]))
                 products.setdefault(product["epic_key"], product)
 
             response_limit = data.get("limit") or page_size
@@ -216,7 +224,7 @@ class EpicCatalogClient:
             if response_limit < 1:
                 raise EpicClientError("Epic catalog returned an invalid page limit")
 
-            if not data["elements"] or (expected is not None and len(products) >= expected):
+            if not data["elements"] or (expected is not None and len(offers) >= expected):
                 break
             if len(data["elements"]) < response_limit:
                 break
@@ -224,6 +232,9 @@ class EpicCatalogClient:
         else:
             raise EpicClientError("Epic catalog exceeded the pagination safety limit")
 
+        if expected is not None and len(offers) != expected:
+            raise EpicClientError(
+                f"Epic catalog total mismatch: expected {expected}, fetched {len(offers)} offers")
         if not products:
             raise EpicClientError("Epic catalog returned no upcoming base games")
         return list(products.values())

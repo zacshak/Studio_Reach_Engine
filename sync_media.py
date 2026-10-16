@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.join(ROOT, "Leads_Reviewer"))
 sys.path.insert(0, os.path.join(ROOT, "Claude_Lead_Discovery_Engine"))
 import media_store  # noqa: E402
 import pipeline  # noqa: E402
+import discovery_recovery  # noqa: E402
 
 BASES = [os.path.join(ROOT, "Leads_Reviewer", "Studios_To_Review", "Approval_Pending_Games"),
          os.path.join(ROOT, "Leads_Reviewer", "Studios_To_Review", "No_Mail_Games")]
@@ -72,17 +73,45 @@ def _active_appids():
             if mail in ACTIVE_MAIL and scrape != "invalid"}
 
 
+def _queue_cleanup(candidates):
+    """Claim inactive media atomically. The Worker owns all destructive cleanup."""
+    with closing(pipeline._rw()) as conn:
+        guards = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger'")}
+        required = {'cleanup_blocks_scrape_tracker_insert',
+                    'cleanup_blocks_newly_added_insert', 'cleanup_blocks_reactivation'}
+        if not required <= guards:
+            raise RuntimeError('Run webapp/migrate-cleanup.mjs before queuing media cleanup')
+        queued = 0
+        for appid, folder in candidates:
+            row = conn.execute(
+                "INSERT INTO media_cleanup_jobs(appid,folder) SELECT ?,? "
+                "WHERE NOT EXISTS (SELECT 1 FROM scrape_tracker WHERE appid=? "
+                "AND Mail_status IN ('Pending','Writing','Drafted','Scheduled','Sending')) "
+                "ON CONFLICT(appid) DO NOTHING RETURNING appid",
+                (appid, folder, appid)).fetchone()
+            queued += row is not None
+        conn.commit()
+    return queued
+
+
 def cleanup_r2(client, apply=False):
-    """Remove media that no active scrape_tracker row owns. Objects are deleted
-    before index entries so any interrupted cleanup remains retryable."""
+    """Audit unowned media and optionally enqueue guarded, durable cleanup."""
     active = _active_appids()
     obj = client.get_object(Bucket=media_store.BUCKET, Key=media_store.INDEX_KEY)
     index = json.loads(obj["Body"].read())
     objects = [item for page in client.get_paginator("list_objects_v2").paginate(
         Bucket=media_store.BUCKET) for item in page.get("Contents", [])]
     prefixes = {item["Key"].split("/", 1)[0] for item in objects if "/" in item["Key"]}
+    # Listing can take time. Preserve leads activated while that listing ran,
+    # including uploads whose index entry has not been published yet.
+    if apply:
+        active |= _active_appids()
     keep = {folder for appid, folder in index.items()
             if appid.isdigit() and int(appid) in active and folder in prefixes}
+    keep.update(folder for folder in prefixes
+                if folder.rsplit("_", 1)[-1].isdigit()
+                and int(folder.rsplit("_", 1)[-1]) in active)
     doomed_prefixes = prefixes - keep
     doomed = [item for item in objects
               if "/" in item["Key"] and item["Key"].split("/", 1)[0] in doomed_prefixes]
@@ -93,22 +122,13 @@ def cleanup_r2(client, apply=False):
           f"{len(missing_prefixes)} stale index entry/entries")
     if not apply:
         return len(doomed)
-    for start in range(0, len(doomed), 1000):
-        result = client.delete_objects(
-            Bucket=media_store.BUCKET,
-            Delete={"Objects": [{"Key": item["Key"]} for item in doomed[start:start + 1000]]})
-        if result.get("Errors"):
-            raise media_store.MediaStoreError(f"R2 cleanup failed: {result['Errors']}")
-
-    def clean(current):
-        return {appid: folder for appid, folder in current.items()
-                if appid.isdigit() and int(appid) in active
-                and folder not in doomed_prefixes and folder not in missing_prefixes}
-
-    media_store.update_index(clean, client=client)
-    media_store.update_irrelevant(
-        lambda current: [appid for appid in current
-                         if str(appid).isdigit() and int(appid) in active], client=client)
+    candidates = []
+    for folder in sorted(doomed_prefixes | missing_prefixes):
+        suffix = folder.rsplit('_', 1)[-1]
+        if suffix.isdigit() and int(suffix) not in active:
+            candidates.append((int(suffix), folder))
+    queued = _queue_cleanup(candidates)
+    print(f'Queued {queued} durable cleanup job(s). No R2 objects deleted by sync.')
     return len(doomed)
 
 
@@ -140,6 +160,11 @@ def main(argv):
             print(f"  FAILED {appid}: {e!r}")
     # Merge only successful uploads; a failed folder must never enter the remote index.
     index = media_store.update_index(lambda current: {**current, **uploaded}, client=client)
+    if uploaded:
+        with closing(pipeline._rw()) as conn:
+            discovery_recovery.init_db(conn)
+            discovery_recovery.ack_published(conn, uploaded.keys())
+            conn.commit()
     cleanup_r2(client, apply=True)
     print(f"\ndone: {done} lead(s) -> R2 bucket '{media_store.BUCKET}'; "
           f"index {len(index)}"

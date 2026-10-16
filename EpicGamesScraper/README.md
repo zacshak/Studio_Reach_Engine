@@ -34,8 +34,12 @@ For the scheduled runner, set `EPIC_TURSO_DATABASE_URL` and
 workflow sets `EPIC_TURSO_REQUIRED=1` so a missing secret fails safely.
 
 Each discovery run uses two catalog routes: `/search` for the paginated upcoming
-list, then `/offers/{offer_id}` once for every new or previously failed detail
-record. Successful detail records are not fetched again on later runs.
+list, then `/offers/{offer_id}` for persisted tracker rows with missing or failed
+details, including products absent from the latest catalog. A changed offer ID
+also refreshes the details. Complete details for the same offer are not fetched again.
+When the provider reports a total, pagination must collect that many distinct
+offers before namespace deduplication. Incomplete or changing totals fail before
+the snapshot is saved.
 
 The collector uses the current Epic catalog search provider at
 `https://api.egdata.app` because Epic's storefront GraphQL is an undocumented,

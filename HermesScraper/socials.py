@@ -1,6 +1,8 @@
 """Sequential social enrichment for scrape_tracker rows explicitly requested by users."""
 import json
+import html
 import os
+import re
 import sys
 import time
 import urllib.parse
@@ -52,31 +54,43 @@ def _search(page, query):
 def _valid(field, value, evidence):
     if value is None:
         return None
-    value = str(value).strip()
-    if not value or value.casefold() not in evidence.casefold():
-        return None
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ValueError(f"invalid {field} value")
+    evidence = html.unescape(evidence)
     if field == "Email":
         match = hermes.EMAIL_RE.fullmatch(value)
-        return match.group(0) if match else None
+        boundary = r"[A-Za-z0-9._%+@-]"
+        if match and re.search(r"(?<!" + boundary + ")" + re.escape(value)
+                               + r"(?!" + boundary + ")", evidence):
+            return value
+        raise ValueError("Email is not a complete address in the evidence")
     try:
         parsed = urllib.parse.urlparse(value)
-    except ValueError:
-        return None
-    host = (parsed.hostname or "").casefold().removeprefix("www.")
-    if parsed.scheme not in ("http", "https"):
-        return None
-    return value if any(host == domain or host.endswith("." + domain)
-                        for domain in DOMAINS[field]) else None
+        host = (parsed.hostname or "").casefold().removeprefix("www.")
+    except ValueError as exc:
+        raise ValueError(f"invalid {field} URL") from exc
+    urls = re.findall(r'https?://[^\s<>"\']+', evidence)
+    if (parsed.scheme in ("http", "https") and not parsed.username
+            and not parsed.password and value in urls
+            and any(host == domain or host.endswith("." + domain)
+                    for domain in DOMAINS[field])):
+        return value
+    raise ValueError(f"{field} is not a supported complete URL in the evidence")
 
 
 def _parse(answer, evidence):
-    start, end = answer.find("{"), answer.rfind("}")
-    if start < 0 or end < start:
-        raise ValueError("model did not return JSON")
-    data = json.loads(answer[start:end + 1])
-    if not isinstance(data, dict):
-        raise ValueError("model JSON is not an object")
-    return {field: _valid(field, data.get(field), evidence) for field in FIELDS}
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate social field: {key}")
+            result[key] = value
+        return result
+
+    data = json.loads(answer, object_pairs_hook=unique_object)
+    if not isinstance(data, dict) or set(data) != set(FIELDS):
+        raise ValueError("social JSON must contain exactly the five requested fields")
+    return {field: _valid(field, data[field], evidence) for field in FIELDS}
 
 
 def _extract(client, model, row, evidence):
@@ -87,7 +101,7 @@ def _extract(client, model, row, evidence):
             response = client.chat.completions.create(
                 model=model, max_tokens=300,
                 messages=[{"role": "user", "content": prompt}])
-            return _parse(response.choices[0].message.content or "", prompt)
+            return _parse(response.choices[0].message.content or "", evidence[:50_000])
         except Exception as exc:
             if attempt == hermes.RETRIES - 1:
                 raise

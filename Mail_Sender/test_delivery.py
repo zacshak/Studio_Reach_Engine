@@ -8,6 +8,7 @@ from contextlib import ExitStack, closing
 from unittest.mock import Mock, patch
 
 import mailer
+import draft_cloud
 
 REAL_SEND = mailer._send
 REAL_LOAD = mailer._load_mail
@@ -71,6 +72,17 @@ class DeliveryTest(unittest.TestCase):
                 ids = [c.kwargs["message_id"] for c in self.send.call_args_list]
                 self.assertEqual(ids[0], ids[1])
                 self.assertIsNone(mailer.pipeline.get_send_attempt(code))
+
+    def test_mcp_recovery_requires_original_recipient_and_writing_state(self):
+        self.seed(1)
+        self.sql("UPDATE scrape_tracker SET Mail_status='Writing' WHERE appid=1")
+        with self.assertRaises(ValueError):
+            mailer.pipeline.complete_mcp_draft(1, 2, 'other@example.com', 'seeded')
+        self.assertEqual(self.state(1), 'Writing')
+        mailer.pipeline.complete_mcp_draft(1, 2, 'studio1@example.com', 'seeded')
+        self.assertEqual(self.state(1), 'Drafted')
+        with self.assertRaises(ValueError):
+            mailer.pipeline.complete_mcp_draft(1, 3, 'studio1@example.com', 'seeded')
 
     def test_exhausted_temporary_rejection_defers_and_other_rows_continue(self):
         self.seed(1)
@@ -166,12 +178,15 @@ class DeliveryTest(unittest.TestCase):
             self.assertEqual(mailer.main(), 1)
         self.assertEqual(self.state(1), "Sending")
         message_id = mailer.pipeline.get_send_attempt(1)[1]
+        started_at = self.sql("SELECT started_at FROM mail_send_attempt WHERE appid=1")[0][0]
         self.cleanup.assert_not_called()
         imap = self.sent_mailbox(b"7")
         with patch.object(mailer.imaplib, "IMAP4_SSL", return_value=imap):
             self.assertEqual(mailer.main(), 0)  # only reconciliation work remains
         imap.search.assert_called_once_with(None, "HEADER", "Message-ID", f'"{message_id}"')
         self.assertEqual(self.state(1), "Sent")
+        self.assertIsNone(mailer.pipeline.get_send_attempt(1))
+        self.assertEqual(mailer.pipeline.reply_evidence()[0][2:], (message_id, started_at))
         self.send.assert_called_once()
 
     def sent_mailbox(self, ids):
@@ -258,7 +273,67 @@ class DeliveryTest(unittest.TestCase):
         self.drafts.side_effect = [(None, None, None), mailer.media_store.MediaStoreError("R2 down"),
                                    ("Subject", "Body", "draft.txt")]
         self.assertEqual(mailer.main(), 0)
-        self.assertEqual([self.state(i) for i in (1, 2, 3)], ["Drafted", "Scheduled", "Sent"])
+        self.assertEqual([self.state(i) for i in (1, 2, 3)], ["Writing", "Scheduled", "Sent"])
+        self.assertIn(1, mailer.pipeline.mail_status_appids("Writing"))
+        mailer.pipeline.set_mail_template(1, 1)
+        mailer.pipeline.set_mail_status(1, "Drafted")
+        mailer.pipeline.set_mail_status(1, "Scheduled")
+        self.drafts.side_effect = None
+        self.assertEqual(mailer.main(), 0)
+        self.assertEqual(self.state(1), "Sent")
+
+    def test_missing_draft_requeue_cannot_rewind_a_send_claim(self):
+        self.seed(1)
+        mailer.pipeline.claim_mail(1, token="owner", message_id="<active@example.com>")
+        self.assertFalse(mailer.pipeline.requeue_missing_draft(1))
+        self.assertEqual(self.state(1), "Sending")
+        self.assertEqual(mailer.pipeline.get_send_attempt(1)[0], "owner")
+
+    def test_missing_draft_is_regenerated_by_cloud_queue_before_reapproval(self):
+        self.seed(1)
+        self.drafts.return_value = (None, None, None)
+        self.assertEqual(mailer.main(), 0)
+        self.assertEqual(self.state(1), "Writing")
+        self.send.assert_not_called()
+        with patch.object(draft_cloud, "_load_templates", return_value=[(1, "template")]), \
+                patch.object(draft_cloud.media_store, "fetch_index", return_value={"1": "folder"}), \
+                patch.object(draft_cloud.media_store, "fetch_manifest", return_value={"name": "Game", "mail": ""}), \
+                patch.object(draft_cloud, "_draft", return_value="Subject: New\n\nRegenerated"), \
+                patch.object(draft_cloud.media_store, "write_manifest") as write:
+            self.assertEqual(draft_cloud.run_queue(None, "fake"), 0)
+        self.assertEqual(self.state(1), "Drafted")
+        self.assertEqual(write.call_args.args[1]["mail"], "Subject: New\n\nRegenerated")
+        self.send.assert_not_called()
+        mailer.pipeline.set_mail_status(1, "Scheduled")
+        self.drafts.return_value = ("New", "Regenerated", "R2:folder")
+        self.assertEqual(mailer.main(), 0)
+        self.assertEqual(self.state(1), "Sent")
+
+    def test_completed_send_retains_reply_evidence_without_exposing_an_active_claim(self):
+        email = self.seed(1)
+        self.assertEqual(self.deliver(1, email), "sent")
+        self.assertIsNone(mailer.pipeline.get_send_attempt(1))
+        evidence = mailer.pipeline.reply_evidence()
+        self.assertEqual(evidence[0][:2], (1, email))
+        self.assertEqual(evidence[0][2], self.send.call_args.kwargs["message_id"])
+        self.assertTrue(evidence[0][3])
+        mailer.pipeline.init_tracker()
+        self.assertEqual(mailer.pipeline.reply_evidence(), evidence)
+        mailer.pipeline.mark_sent(1)
+        mailer.pipeline.reset_sending(1, "Scheduled")  # late reset cannot erase evidence
+        self.assertEqual(mailer.pipeline.reply_evidence(), evidence)
+        mailer.pipeline.set_mail_status(1, "Replied")
+        self.assertEqual(mailer.pipeline.reply_evidence(), [])
+        mailer.pipeline.delete_lead(1)
+        self.assertEqual(self.sql("SELECT * FROM mail_send_attempt"), [])
+
+    def test_legacy_sent_without_message_id_has_no_reply_evidence(self):
+        self.seed(1)
+        mailer.pipeline.claim_mail(1)
+        mailer.pipeline.mark_sent(1)
+        self.seed(2)
+        self.sql("UPDATE scrape_tracker SET Mail_status='Sent' WHERE appid=2")
+        self.assertEqual(mailer.pipeline.reply_evidence(), [])
 
     def test_cleanup_failure_cannot_undo_sent_or_stop_other_rows(self):
         self.seed(1)

@@ -28,3 +28,7 @@ jobs:
         with:
           node-version: "22"
       - run: node --test webapp/*.test.js
+      - run: npm ci --ignore-scripts
+        working-directory: db-mcp
+      - run: npm test
+        working-directory: db-mcp

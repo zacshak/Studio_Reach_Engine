@@ -243,9 +243,19 @@ def run_queue(client, model):
         if (manifest.get("mail") or "").strip():
             # Recover a crash after the manifest write but before the DB transition.
             n = manifest.get("mail_template")
-            if n is not None:
-                pipeline.set_mail_template(appid, n)
-            pipeline.set_mail_status(appid, "Drafted")
+            try:
+                submission = manifest.get('draft_submission')
+                if submission:
+                    media_store.check_draft_inputs(submission)
+                    pipeline.complete_mcp_draft(appid, n, submission['email'], submission['scrape_status'], submission['selected_template'])
+                else:
+                    if n is not None:
+                        pipeline.set_mail_template(appid, n)
+                    pipeline.set_mail_status(appid, "Drafted")
+            except Exception as error:
+                print(f'{appid} -> saved draft recovery deferred: {error}', flush=True)
+                skipped += 1
+                continue
             drafted += 1
             if n in tally:
                 tally[n] += 1
@@ -277,9 +287,19 @@ def run_queue(client, model):
         manifest.pop("__template", None)
         manifest["mail"] = mail
         manifest["mail_template"] = n
-        media_store.write_manifest(folder, manifest)
-        pipeline.set_mail_template(appid, n)
-        pipeline.set_mail_status(appid, "Drafted")
+        try:
+            persisted = media_store.write_manifest(folder, manifest)
+            submission = persisted.get('draft_submission') if isinstance(persisted, dict) else None
+            if submission:
+                media_store.check_draft_inputs(submission)
+                pipeline.complete_mcp_draft(appid, n, submission['email'], submission['scrape_status'], submission['selected_template'])
+            else:
+                pipeline.set_mail_template(appid, n)
+                pipeline.set_mail_status(appid, "Drafted")
+        except Exception as error:
+            print(f'{appid} -> draft persistence deferred: {error}', flush=True)
+            skipped += 1
+            continue
         drafted += 1
         tally[n] += 1
         print(f"  {appid} {manifest.get('name', '')!r:.40} -> drafted (template {n})")

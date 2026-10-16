@@ -225,6 +225,8 @@ def upload_dir(folder, appid, card, client=None):
         if (current.get('mail') or '').strip():
             updated['mail'] = current['mail']
             updated['mail_template'] = current.get('mail_template')
+            if current.get('draft_submission'):
+                updated['draft_submission'] = current['draft_submission']
         return updated
     _update_json(f"{prefix}/manifest.json", {}, merge, client=cli)
     return prefix
@@ -276,14 +278,31 @@ def update_irrelevant(mutate, client=None):
     return _update_json(IRRELEVANT_KEY, [], mutate, client)
 
 
-def write_manifest(folder, manifest, client=None):
-    """Overwrite a lead's manifest.json in R2 (by folder name). Used by the cloud mail
-    drafter to write the generated 'mail' + 'mail_template' back into the manifest the
-    review app and the sender both read."""
+def check_draft_inputs(submission, client=None):
+    """MCP recovery must still refer to the same published template and image."""
+    inputs = submission.get('inputs')
+    if not isinstance(inputs, list) or len(inputs) != 2:
+        raise MediaStoreError('Saved MCP draft has no input versions')
     cli = client or _client()
-    cli.put_object(Bucket=BUCKET, Key=f"{os.path.basename(folder.rstrip('/'))}/manifest.json",
-                   Body=json.dumps(manifest, ensure_ascii=False).encode("utf-8"),
-                   ContentType="application/json")
+    for item in inputs:
+        current = cli.head_object(Bucket=BUCKET, Key=item['key'])
+        if current.get('ETag', '').strip('"') != item['etag'].strip('"'):
+            raise MediaStoreError('Draft input changed; review required')
+
+
+def write_manifest(folder, manifest, client=None):
+    """Save a draft without resurrecting deleted media or replacing newer images."""
+    def merge(current):
+        if not current:
+            raise MediaStoreError('Manifest disappeared while drafting; refusing to recreate it')
+        if (current.get('mail') or '').strip():
+            if current['mail'] == manifest['mail'] and current.get('mail_template') == manifest['mail_template']:
+                return current
+            raise MediaStoreError('Another writer already saved a draft; refusing to overwrite it')
+        return {**current, 'mail': manifest['mail'],
+                'mail_template': manifest['mail_template']}
+    return _update_json(f"{os.path.basename(folder.rstrip('/'))}/manifest.json",
+                        {}, merge, client=client)
 
 
 def write_templates(text, client=None):

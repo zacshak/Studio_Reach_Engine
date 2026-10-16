@@ -9,6 +9,7 @@ first, then indexes/triggers/views — so triggers don't fire during the bulk lo
 import os
 import sqlite3
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "Claude_Lead_Discovery_Engine"))
@@ -25,12 +26,14 @@ EPIC_OUT = os.path.join(HERE, "last_epic_cache.sqlite")
 
 def snapshot(src, out, label):
     """Copy one remote SQLite-compatible database into a standalone file."""
-    tmp = out + ".new"
-    if os.path.exists(tmp):
-        os.remove(tmp)
-
+    fd, tmp = tempfile.mkstemp(prefix=os.path.basename(out) + '.', suffix='.sqlite',
+                               dir=os.path.dirname(os.path.abspath(out)))
+    os.close(fd)
     dst = sqlite3.connect(tmp)
+    started = False
     try:
+        src.execute('BEGIN')
+        started = True
         objs = src.execute(
             "SELECT type, name, sql FROM sqlite_master "
             "WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' "
@@ -44,10 +47,11 @@ def snapshot(src, out, label):
 
         counts = {}
         for table in tables:
-            rows = src.execute(f'SELECT * FROM "{table}"').fetchall()
+            identifier = '"' + table.replace('"', '""') + '"'
+            rows = src.execute(f'SELECT * FROM {identifier}').fetchall()
             if rows:
                 placeholders = ",".join("?" * len(rows[0]))
-                dst.executemany(f'INSERT INTO "{table}" VALUES ({placeholders})', rows)
+                dst.executemany(f'INSERT INTO {identifier} VALUES ({placeholders})', rows)
             counts[table] = len(rows)
 
         for typ, name, sql in objs:
@@ -59,6 +63,8 @@ def snapshot(src, out, label):
         dst.commit()
     finally:
         dst.close()
+        if started:
+            src.rollback()
 
     dest = out
     try:

@@ -73,6 +73,18 @@ class DraftRuntimeTest(unittest.TestCase):
             status.assert_not_called()
             write.assert_not_called()
 
+    def test_one_persistence_failure_does_not_abort_remaining_drafts(self):
+        with patch.object(draft_cloud, '_load_templates', return_value=[(1,'<observation>')]), \
+             patch.object(draft_cloud.media_store, 'fetch_index', return_value={'1':'One','2':'Two'}), \
+             patch.object(draft_cloud.pipeline, 'mail_status_appids', return_value=[1,2]), \
+             patch.object(draft_cloud.media_store, 'fetch_manifest', side_effect=[{'name':'One'},{'name':'Two'}]), \
+             patch.object(draft_cloud, '_draft', return_value='Subject: hello\n\nBody'), \
+             patch.object(draft_cloud.pipeline, 'set_mail_template'), \
+             patch.object(draft_cloud.pipeline, 'set_mail_status') as status, \
+             patch.object(draft_cloud.media_store, 'write_manifest', side_effect=[RuntimeError('storage down'),None]):
+            self.assertEqual(draft_cloud.run_queue(None,'test'),1)
+            status.assert_called_once_with(2,'Drafted')
+
 
 if __name__ == '__main__':
     unittest.main()

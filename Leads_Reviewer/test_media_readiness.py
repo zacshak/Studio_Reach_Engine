@@ -29,11 +29,12 @@ class MediaReadinessTest(unittest.TestCase):
             writes=[]
             class Client:
                 def get_object(self,**kwargs):
-                    return {'Body':io.BytesIO(json.dumps({'mail':'Saved cloud draft','mail_template':3}).encode()),'ETag':'old'}
+                    return {'Body':io.BytesIO(json.dumps({'mail':'Saved cloud draft','mail_template':3,'draft_submission':{'revision':'keep'}}).encode()),'ETag':'old'}
                 def put_object(self,**kwargs): writes.append(kwargs)
             media_store.upload_dir(folder,1,{'name':'Synthetic'},Client())
             self.assertTrue(writes[-1]['Key'].endswith('/manifest.json'))
             self.assertEqual(json.loads(writes[-1]['Body'])['mail'],'Saved cloud draft')
+            self.assertEqual(json.loads(writes[-1]['Body'])['draft_submission'],{'revision':'keep'})
             self.assertEqual(writes[-1]['IfMatch'],'old')
 
     def test_partial_folder_is_never_uploaded(self):

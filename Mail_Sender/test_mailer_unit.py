@@ -1,12 +1,23 @@
 import os
 import unittest
-from unittest.mock import ANY, Mock, patch
+from unittest.mock import ANY, Mock, patch, mock_open
 
 import mailer
 import SRE
 
 
 class MailerTest(unittest.TestCase):
+    def test_missing_selected_template_never_falls_back_to_another_variant(self):
+        with patch.object(mailer, "_CLOUD", False), \
+                patch.object(mailer, "_folder_for", return_value="folder"), \
+                patch.object(mailer.pipeline, "get_mail_template", return_value=2), \
+                patch.object(mailer.os.path, "exists", return_value=False), \
+                patch.object(mailer.glob, "glob", return_value=["folder/mail_1_1.txt"]) as glob, \
+                patch("builtins.open", mock_open(read_data="Subject: Wrong\n\nUnapproved")) as opened:
+            self.assertEqual(mailer._load_mail(1), (None, None, None))
+        glob.assert_not_called()
+        opened.assert_not_called()
+
     def test_launcher_runs_mailer_unbuffered_and_preserves_arguments_and_exit_code(self):
         with patch.object(SRE.subprocess, "call", return_value=7) as launch:
             self.assertEqual(SRE.main(["--send-mails", "--dry-run", "--limit", "3"]), 7)

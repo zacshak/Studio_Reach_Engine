@@ -80,7 +80,7 @@
 </header>
 <main>
   <div id="banner" class="banner" hidden>
-    <span id="bannerText"></span><button onclick="retryFailed()">Retry</button>
+    <span id="bannerText"></span><button id="retryWrites" onclick="retryFailed()">Retry</button>
   </div>
   <div id="view"></div>
 </main>
@@ -94,14 +94,22 @@ const $ = (s) => document.querySelector(s);
 // Save intent before sending. A lost response stays visible after refresh.
 const failed = (() => { try { const value = JSON.parse(localStorage.getItem('sre_pending_writes') || '[]'); return Array.isArray(value) ? value.filter(item => Array.isArray(item) && typeof item[0] === 'string' && item[1] && typeof item[1] === 'object') : []; } catch { return []; } })();
 let writeBusy = false;
+let actionNotice = '';
 function persistWrites() { localStorage.setItem('sre_pending_writes', JSON.stringify(failed)); }
 function showBanner() {
-  $("#banner").hidden = failed.length === 0;
-  $("#bannerText").textContent = failed.length ? `${failed.length} unconfirmed action(s). ${failed.at(-1)[2] || 'Retry to confirm the saved action.'}` : '';
+  $("#banner").hidden = failed.length === 0 && !actionNotice;
+  $("#retryWrites").hidden = failed.length === 0;
+  $("#bannerText").textContent = [actionNotice, failed.length ? `${failed.length} unconfirmed action(s). ${failed.at(-1)[2] || 'Retry to confirm the saved action.'}` : ''].filter(Boolean).join(' ');
 }
 async function api(action, extra = {}) {
   if (writeBusy) return false;
   writeBusy = true;
+  if (!bulkBusy) actionNotice = '';
+  if (action === 'require_socials') {
+    for (let i = failed.length - 1; i >= 0; i--) {
+      if (failed[i][0] === action && String(failed[i][1].appid) === String(extra.appid)) failed.splice(i, 1);
+    }
+  }
   const key = JSON.stringify([action, extra]);
   let entry = failed.find(item => JSON.stringify(item.slice(0,2)) === key);
   if (!entry) { entry = [action, extra, 'Request awaiting confirmation']; failed.push(entry); }
@@ -118,7 +126,8 @@ async function api(action, extra = {}) {
     if (!r.ok || result.ok !== true) throw new Error(result.error || `Server response ${r.status}`);
     failed.splice(failed.indexOf(entry), 1);
     persistWrites();
-    return true;
+    if (result.blocked?.length) actionNotice += `Not deleted because currently Sending: ${result.blocked.join(', ')}. Review their current state before trying again. `;
+    return result;
   } catch (e) {
     console.error(action, extra, e);
     entry[2] = `${action}: ${e.message}${action === 'trigger' ? '. Check GitHub Actions before starting it again. Workflow dispatch is not automatically retried.' : ''}`;
@@ -144,6 +153,13 @@ let S = null;                          // /api/state payload
 let tab = "triage";
 const idx = { triage: 0, approval: 0, mail: 0, nomail: 0, socials: 0 };
 const manifests = new Map();           // folder -> manifest (or null while loading)
+let mediaGeneration = 0, loadGeneration = 0, imageRetry = 0;
+const imageFailures = new Set();
+function invalidateMedia() {
+  mediaGeneration++;
+  manifests.clear();
+  imageFailures.clear();
+}
 let shot = 0;                          // selected screenshot on current card
 let armed = null;                      // two-tap confirm for bulk buttons
 let showAll = false;                   // "All N screenshots" toggle on current card
@@ -166,18 +182,25 @@ const requiresSocials = (appid) => Boolean(S.requireSocials?.[String(appid)]);
 const socialsOf = (appid) => ((S.socials || []).find((item) => item.appid === appid) || {}).data || {};
 
 async function load() {
+  const generation = ++loadGeneration;
   showBanner();
   $("#view").innerHTML = '<div class="empty">Loading…</div>';
   let r;
   try { r = await fetch("/api/state", { signal: AbortSignal.timeout(30000), cache: 'no-store' }); }
-  catch (e) { $("#view").textContent = `Could not refresh: ${e.message}. Reload to try again. Saved actions are retained.`; return; }
+  catch (e) { if (generation === loadGeneration) $("#view").textContent = `Could not refresh: ${e.message}. Reload to try again. Saved actions are retained.`; return; }
+  if (generation !== loadGeneration) return;
   if (!r.ok) {
     const error = await r.json().catch(() => ({}));
+    if (generation !== loadGeneration) return;
     $("#view").textContent = `Could not load data: ${error.error || r.status}`;
     return;
   }
-  try { S = await r.json(); }
-  catch { $("#view").textContent = 'Server returned invalid data. Refresh to retry.'; return; }
+  let next;
+  try { next = await r.json(); }
+  catch { if (generation === loadGeneration) $("#view").textContent = 'Server returned invalid data. Refresh to retry.'; return; }
+  if (generation !== loadGeneration) return;
+  S = next;
+  invalidateMedia();
   Q = queues();
   if (!Q[tab].length) tab = ["triage", "approval", "mail", "nomail", "socials"].find((t) => Q[t].length) || tab;
   render();
@@ -186,12 +209,18 @@ async function load() {
 // ---- manifests: fetch on view, prefetch the next card ----
 async function manifest(folder) {
   if (!manifests.has(folder)) {
+    const generation = mediaGeneration;
     manifests.set(folder, null);
     try {
-      const r = await fetch(`/media/${enc(folder)}/manifest.json`, { signal: AbortSignal.timeout(25000) });
+      const r = await fetch(`/media/${enc(folder)}/manifest.json`, { signal: AbortSignal.timeout(25000), cache: 'no-store' });
       if (!r.ok) throw new Error(`Media request failed (${r.status})`);
-      manifests.set(folder, await r.json());
-    } catch (e) { manifests.set(folder, { missing: true, error: e.message }); }
+      const value = await r.json();
+      if (generation !== mediaGeneration) return null;
+      manifests.set(folder, value);
+    } catch (e) {
+      if (generation !== mediaGeneration) return null;
+      manifests.set(folder, { missing: true, error: e.message });
+    }
     render();                          // repaint when the awaited card arrives
   }
   return manifests.get(folder);
@@ -257,19 +286,18 @@ function render() {
   imgs = [...imgs].sort((a, b) => b.includes("SpriteSheet") - a.includes("SpriteSheet"));
   shot = Math.min(shot, Math.max(imgs.length - 1, 0));
   const img = imgs.length
-    ? `<img class="hero" src="/media/${enc(card.folder)}/${enc(imgs[shot])}" alt="">`
+    ? imageTag(card.folder, imgs[shot], 'class="hero"')
     : m?.missing ? `<div class="empty">${escapeHtml(m.error || 'Media unavailable')}<br><button onclick="retryMedia()">Retry images</button></div>` : `<div class="hero"></div>`;
   const thumbs = imgs.length > 1
     ? `<div class="thumbs">${imgs.map((f, k) =>
-        `<img src="/media/${enc(card.folder)}/${enc(f)}" class="${k === shot ? "on" : ""}"
-              onclick="shot=${k};render()">`).join("")}</div>` : "";
+        imageTag(card.folder, f, `class="${k === shot ? "on" : ""}" onclick="shot=${k};render()"`)).join("")}</div>` : "";
   // "All N screenshots" toggle from the Streamlit card — stacks every image full-width
   const shotsCtl = imgs.length > 1
     ? `<div class="bulk"><button onclick="showAll=!showAll;render()">${
         showAll ? "🖼 Hide screenshots" : `🖼 All ${imgs.length} screenshots`}</button></div>` : "";
   const allShots = showAll
     ? `<div class="shotsall">${imgs.map((f) =>
-        `<img loading="lazy" src="/media/${enc(card.folder)}/${enc(f)}">`).join("")}</div>` : "";
+        imageTag(card.folder, f, 'loading="lazy"')).join("")}</div>` : "";
   const mail = tab === "mail"
     ? `<div class="mail"><div class="to">To: ${escapeHtml(emailsOf(card.appid) || "(no recipient!)")}</div>${
         (m && m.mail) ? escapeHtml(m.mail) : "<i>(not drafted yet)</i>"}</div>` : "";
@@ -317,9 +345,19 @@ function render() {
   if (writeBusy || bulkBusy) view.querySelectorAll('button').forEach(button => { button.disabled = true; });
 }
 
+function imageTag(folder, name, attributes) {
+  const key = `/media/${enc(folder)}/${enc(name)}`;
+  if (imageFailures.has(key)) return `<span role="status">Could not load image: ${escapeHtml(name)} <button onclick="retryMedia()">Retry images</button></span>`;
+  return `<img ${attributes} src="${escapeHtml(key)}${imageRetry ? `?retry=${imageRetry}` : ''}" alt="${escapeHtml(name)}" data-media-key="${escapeHtml(key)}" data-generation="${mediaGeneration}" onerror="imageFailed(this)">`;
+}
+function imageFailed(image) {
+  if (!image.isConnected || Number(image.dataset.generation) !== mediaGeneration || imageFailures.has(image.dataset.mediaKey)) return;
+  imageFailures.add(image.dataset.mediaKey);
+  render();
+}
 function retryMedia() {
   const card = Q[tab][idx[tab]];
-  if (card) { manifests.delete(card.folder); render(); }
+  if (card) { imageRetry++; invalidateMedia(); render(); }
 }
 
 function escapeHtml(s) {
@@ -379,10 +417,11 @@ async function bulkReject() {           // Only remove cards after server confir
     for (let i = 0; i < ids.length; i += 10000) {
       const batch = ids.slice(i, i + 10000);
       render();
-      if (!await api(action, { appids: batch })) break;
-      const removed = new Set(batch);
+      const result = await api(action, { appids: batch });
+      if (!result) break;
+      const removed = new Set(result.deleted ?? batch);
       for (const key of Object.keys(Q)) Q[key] = Q[key].filter(c => !removed.has(c.appid));
-      bulkDone += batch.length;
+      bulkDone += removed.size;
     }
   } finally {
     bulkBusy = false;

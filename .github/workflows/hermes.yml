@@ -8,7 +8,7 @@ on:
   workflow_dispatch: {}
 
 concurrency:
-  group: hermes                 # never overlap two scrape runs (they share the queue)
+  group: email-scrape            # Hermes and Kimchi share the same pending queue
   cancel-in-progress: false
 
 permissions:

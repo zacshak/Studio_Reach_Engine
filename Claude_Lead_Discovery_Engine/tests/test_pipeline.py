@@ -11,6 +11,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from unittest.mock import Mock, call, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -377,17 +378,19 @@ class PipelineTest(unittest.TestCase):
         with self._raw() as c:
             insert_lead(c, 600, name="Keep")
         pipeline.write_result(600, scrape_status="scraped", emails="a@b.com")
-        pipeline.write_result(600, scrape_status="no_email")  # no emails
+        with self.assertRaises(ValueError):
+            pipeline.write_result(600, scrape_status="no_email")  # stale result
         with self._raw() as c:
             row = c.execute("SELECT scrape_status,emails,game_name "
                             "FROM scrape_tracker WHERE appid=600").fetchone()
-        self.assertEqual(row[0], "no_email")
-        self.assertEqual(row[1], "")            # no_email cannot retain a recipient
+        self.assertEqual(row[0], "scraped")
+        self.assertEqual(row[1], "a@b.com")     # a late miss cannot erase a contact
         self.assertEqual(row[2], "Keep")      # seeded data intact
 
     def test_delete_lead_removes_from_both_tables(self):
         with self._raw() as c:
             insert_lead(c, 650)                    # trigger seeds scrape_tracker
+            c.execute("INSERT INTO pending_discovery VALUES (650,'Game','2026-10-16')")
         pipeline.delete_lead(650)
         with self._raw() as c:
             in_tracker = c.execute("SELECT COUNT(*) FROM scrape_tracker "
@@ -395,17 +398,121 @@ class PipelineTest(unittest.TestCase):
             in_added = c.execute("SELECT COUNT(*) FROM newly_added "
                                  "WHERE appid=650").fetchone()[0]
         self.assertEqual((in_tracker, in_added), (0, 0))
+        with self._raw() as c:
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM pending_discovery WHERE appid=650")
+                             .fetchone(), (0,))
+        with self.assertRaises(ValueError):
+            pipeline.write_result(650, scrape_status="scraped", emails="late@example.com")
+
+    def test_delete_lead_rolls_back_discovery_queue_on_later_failure(self):
+        with self._raw() as c:
+            insert_lead(c, 651)
+            c.execute("INSERT INTO pending_discovery VALUES (651,'Game','2026-10-16')")
+            c.execute("CREATE TRIGGER reject_delete BEFORE DELETE ON scrape_tracker "
+                      "BEGIN SELECT RAISE(ABORT,'injected failure'); END")
+        with self.assertRaises(sqlite3.IntegrityError):
+            pipeline.delete_lead(651)
+        with self._raw() as c:
+            for table in ("pending_discovery", "scrape_tracker", "newly_added"):
+                self.assertEqual(c.execute(f"SELECT COUNT(*) FROM {table} WHERE appid=651")
+                                 .fetchone(), (1,))
 
     def test_write_result_rejects_bad_status(self):
         with self.assertRaises(ValueError):
             pipeline.write_result(700, scrape_status="bogus")
 
-    def test_write_result_autocreates_untracked(self):
-        pipeline.write_result(800, scrape_status="failed")  # never seeded
+    def test_write_result_rejects_missing_leads_without_resurrection(self):
+        for status in ("failed", "no_email", "scraped"):
+            with self.assertRaises(ValueError):
+                pipeline.write_result(800, scrape_status=status, emails="late@example.com")
         with self._raw() as c:
             row = c.execute("SELECT scrape_status FROM scrape_tracker "
                             "WHERE appid=800").fetchone()
-        self.assertEqual(row[0], "failed")
+        self.assertIsNone(row)
+
+    def test_init_preserves_additive_columns_indexes_and_triggers(self):
+        with self._raw() as c:
+            insert_lead(c, 801)
+            c.execute("ALTER TABLE scrape_tracker ADD COLUMN custom_field TEXT")
+            c.execute("UPDATE scrape_tracker SET custom_field='keep' WHERE appid=801")
+            c.execute("CREATE INDEX custom_index ON scrape_tracker(custom_field)")
+            c.execute("CREATE TRIGGER custom_trigger AFTER UPDATE OF game_name ON "
+                      "scrape_tracker BEGIN UPDATE scrape_tracker SET custom_field='triggered' "
+                      "WHERE appid=NEW.appid; END")
+        pipeline.init_tracker()
+        with self._raw() as c:
+            self.assertEqual(c.execute("SELECT custom_field FROM scrape_tracker WHERE appid=801")
+                             .fetchone(), ("keep",))
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM sqlite_master WHERE name IN "
+                                       "('custom_index','custom_trigger')").fetchone(), (2,))
+            c.execute("UPDATE scrape_tracker SET game_name='new' WHERE appid=801")
+            self.assertEqual(c.execute("SELECT custom_field FROM scrape_tracker WHERE appid=801")
+                             .fetchone(), ("triggered",))
+
+    def test_failed_pending_leads_are_retried_but_advanced_rows_are_not(self):
+        with self._raw() as c:
+            for appid in (802, 803, 804):
+                insert_lead(c, appid)
+            c.execute("UPDATE scrape_tracker SET scrape_status='failed' WHERE appid IN (802,803)")
+            c.execute("UPDATE scrape_tracker SET Mail_status='Writing' WHERE appid=803")
+        self.assertEqual(pipeline.get_pending(), [802, 804])
+        self.assertEqual(pipeline.get_pending(limit=1), [802])
+        pipeline.write_result(802, scrape_status="scraped", emails="ok@example.com")
+        self.assertEqual(pipeline.get_pending(), [804])
+
+    def test_scrape_update_cannot_overwrite_concurrent_progress_or_resurrect_deleted_row(self):
+        # Commit a competing change after the initial SELECT, before the guarded UPDATE.
+        for change in (
+            "UPDATE scrape_tracker SET Mail_status='Sending' WHERE appid=805",
+            "UPDATE scrape_tracker SET Mail_status='Sent' WHERE appid=805",
+            "UPDATE scrape_tracker SET Mail_status='Writing' WHERE appid=805",
+            "UPDATE scrape_tracker SET scrape_status='scraped', emails='winner@example.com' WHERE appid=805",
+            "DELETE FROM scrape_tracker WHERE appid=805",
+        ):
+            with self.subTest(change=change):
+                with self._raw() as c:
+                    c.execute("DELETE FROM scrape_tracker WHERE appid=805")
+                    c.execute("INSERT INTO scrape_tracker (appid) VALUES (805)")
+                raw = self._raw()
+                test = self
+                class Interleaved:
+                    def execute(self, sql, args=()):
+                        cursor = raw.execute(sql, args)
+                        if sql.startswith("SELECT emails, Mail_status"):
+                            rows = cursor.fetchall()
+                            with test._raw() as competing:
+                                competing.execute(change)
+                            return Mock(fetchone=lambda: rows[0] if rows else None)
+                        return cursor
+                    def close(self):
+                        raw.close()
+                    def commit(self):
+                        raw.commit()
+                with patch.object(pipeline, "_rw", return_value=Interleaved()):
+                    with self.assertRaises(ValueError):
+                        pipeline.write_result(805, scrape_status="no_email")
+                with self._raw() as c:
+                    actual = c.execute("SELECT Mail_status,scrape_status,emails FROM scrape_tracker "
+                                       "WHERE appid=805").fetchone()
+                if change.startswith("DELETE"):
+                    self.assertIsNone(actual)
+                elif "winner@example.com" in change:
+                    self.assertEqual(actual, ("Pending", "scraped", "winner@example.com"))
+                else:
+                    self.assertEqual(actual[0], change.split("'")[1])
+
+    def test_seeded_scraped_and_advanced_rows_reject_late_scrape_results(self):
+        for scrape, mail in (("seeded", "Pending"), ("scraped", "Pending"),
+                             ("pending", "Writing"), ("failed", "Drafted")):
+            with self.subTest(scrape=scrape, mail=mail):
+                with self._raw() as c:
+                    c.execute("INSERT OR REPLACE INTO scrape_tracker "
+                              "(appid,scrape_status,Mail_status,emails) VALUES (806,?,?,?)",
+                              (scrape, mail, "keep@example.com"))
+                for result in ("failed", "no_email", "scraped"):
+                    with self.assertRaises(ValueError):
+                        pipeline.write_result(806, scrape_status=result, emails="late@example.com")
+                self.assertEqual(pipeline.get_emails(806), "keep@example.com")
 
     def test_added_at_copies_fetched_at(self):
         # added_at is the lead's newly_added.fetched_at, set at row creation...
@@ -537,6 +644,116 @@ class PipelineTest(unittest.TestCase):
                 self.assertEqual(client.connect.call_count, attempts - 1)
                 self.assertEqual(sleep.call_args_list,
                                  [call(1), call(2), call(4)] if attempts == 4 else [])
+
+    def test_remote_read_failure_inside_transaction_never_reconnects(self):
+        for start in ("BEGIN IMMEDIATE", "UPDATE scrape_tracker SET game_name='new'"):
+            for stage in ("execute", "fetchall"):
+                with self.subTest(start=start, stage=stage):
+                    raw, client = Mock(), Mock()
+                    raw.execute.return_value.fetchall.return_value = []
+                    conn = pipeline._Conn(raw)
+                    conn.execute(start)
+                    error = ValueError("Hrana: api error: status=404 stream not found")
+                    if stage == "execute":
+                        raw.execute.side_effect = error
+                    else:
+                        raw.execute.return_value.fetchall.side_effect = error
+                    with patch.object(pipeline, "libsql", client), patch.object(pipeline.time, "sleep") as sleep:
+                        with self.assertRaisesRegex(ValueError, "stream not found"):
+                            conn.execute("SELECT appid FROM pending_discovery")
+                    client.connect.assert_not_called()
+                    raw.close.assert_not_called()
+                    sleep.assert_not_called()
+
+    def test_driver_transaction_flag_prevents_read_reconnect(self):
+        raw, client = Mock(), Mock()
+        raw.in_transaction = True
+        raw.execute.side_effect = ValueError("connection closed")
+        with patch.object(pipeline, "libsql", client):
+            with self.assertRaises(ValueError):
+                pipeline._Conn(raw).execute("SELECT 1")
+        client.connect.assert_not_called()
+
+    def test_transaction_end_restores_standalone_read_retry(self):
+        for finish in ("commit", "rollback", "COMMIT", "ROLLBACK"):
+            with self.subTest(finish=finish):
+                raw, healthy, client = Mock(), Mock(), Mock()
+                raw.execute.return_value.fetchall.return_value = []
+                healthy.execute.return_value.fetchall.return_value = [(1,)]
+                client.connect.return_value = healthy
+                conn = pipeline._Conn(raw)
+                conn.execute("BEGIN IMMEDIATE")
+                if finish.islower():
+                    getattr(conn, finish)()
+                else:
+                    conn.execute(finish)
+                raw.execute.side_effect = ValueError("connection closed")
+                with patch.object(pipeline, "libsql", client), patch.object(pipeline.time, "sleep"):
+                    self.assertEqual(conn.execute("SELECT 1").fetchall(), [(1,)])
+                client.connect.assert_called_once()
+
+    def test_failed_write_scope_rolls_back_before_shared_handle_is_reused(self):
+        raw = sqlite3.connect(":memory:")
+        self.addCleanup(raw.close)
+        raw.execute("CREATE TABLE changes (value TEXT UNIQUE)")
+        conn = pipeline._Conn(raw)
+        with patch.object(pipeline, "TURSO_URL", "libsql://test"), \
+                patch.object(pipeline, "_turso", return_value=conn):
+            with self.assertRaises(sqlite3.IntegrityError):
+                with closing(pipeline._rw()) as writer:
+                    writer.execute("INSERT INTO changes VALUES ('failed')")
+                    writer.execute("INSERT INTO changes VALUES ('failed')")
+            self.assertFalse(raw.in_transaction)
+            with closing(pipeline._rw()) as writer:
+                writer.execute("INSERT INTO changes VALUES ('next')")
+                writer.commit()
+        self.assertEqual(raw.execute("SELECT value FROM changes").fetchall(), [("next",)])
+        self.assertIs(conn._raw, raw)
+
+    def test_nested_read_close_does_not_rollback_outer_write(self):
+        raw = sqlite3.connect(":memory:")
+        self.addCleanup(raw.close)
+        raw.execute("CREATE TABLE changes (value TEXT)")
+        conn = pipeline._Conn(raw)
+        with patch.object(pipeline, "TURSO_URL", "libsql://test"), \
+                patch.object(pipeline, "_turso", return_value=conn):
+            with closing(pipeline._rw()) as writer:
+                writer.execute("INSERT INTO changes VALUES ('keep')")
+                with closing(pipeline._ro()) as reader:
+                    self.assertEqual(reader.execute("SELECT value FROM changes").fetchall(), [("keep",)])
+                self.assertTrue(raw.in_transaction)
+                writer.commit()
+        self.assertEqual(raw.execute("SELECT value FROM changes").fetchall(), [("keep",)])
+
+    def test_rollback_failure_discards_handle_and_preserves_original_error(self):
+        raw, healthy, client = Mock(), Mock(), Mock()
+        raw.execute.return_value.fetchall.return_value = []
+        raw.rollback.side_effect = RuntimeError("rollback failed")
+        healthy.execute.return_value.fetchall.return_value = [(1,)]
+        client.connect.return_value = healthy
+        conn = pipeline._Conn(raw)
+        with self.assertRaisesRegex(ValueError, "original failure"):
+            with closing(conn):
+                conn.execute("BEGIN IMMEDIATE")
+                raise ValueError("original failure")
+        raw.rollback.assert_called_once()
+        raw.close.assert_called_once()
+        self.assertIsNone(conn._raw)
+        with patch.object(pipeline, "libsql", client):
+            self.assertEqual(conn.execute("SELECT 1").fetchall(), [(1,)])
+        client.connect.assert_called_once()
+
+    def test_clean_close_reuses_handle_and_driver_transaction_is_rolled_back(self):
+        raw = Mock()
+        raw.in_transaction = False
+        conn = pipeline._Conn(raw)
+        conn.close()
+        raw.rollback.assert_not_called()
+        raw.close.assert_not_called()
+        raw.in_transaction = True
+        conn.close()
+        raw.rollback.assert_called_once()
+        raw.close.assert_not_called()
 
 
 if __name__ == "__main__":

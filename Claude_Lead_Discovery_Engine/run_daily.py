@@ -34,21 +34,31 @@ def sync_media(*args):
     return subprocess.call([PY, script, *args]) if os.path.exists(script) else 0
 
 
+def report_pending():
+    from contextlib import closing
+    import pipeline
+
+    with closing(pipeline.connect()) as conn:
+        remaining = conn.execute("SELECT COUNT(*) FROM pending_discovery").fetchone()[0]
+    print(f"Pending discovery after media sync: {remaining} job(s).")
+    if remaining:
+        print("Unfinished work remains durable and will retry on the next run.")
+    return remaining
+
+
 def main():
     stamp = datetime.now(IST).strftime("%Y-%m-%d_%H%M")
     print(f"=== Daily run {stamp} IST ===\n")
 
     rc = run("find_new.py", "--stamp", stamp)
+    finder_rc = rc
     if rc == 2:
-        print("\nFinder FAILED — nothing built. Try again later.")
-        return rc
+        print("\nFinder failed. Draining previously queued discovery work.")
     if rc == 10:
-        print("\nBaseline memorised (first run). No leads to build yet — run again next time.")
-        return 0
+        print("\nBaseline memorised. Checking existing pending discovery work.")
     if rc == 11:
-        print("\nNo new pre-release pages this run. No leads file created.")
-        return 0
-    if rc != 0:
+        print("\nNo new pages. Draining pending discovery work.")
+    if rc not in (0, 2, 10, 11):
         print(f"\nFinder exited with code {rc}; stopping.")
         return rc
 
@@ -61,6 +71,7 @@ def main():
     # batch, then remove media no active tracker row owns. No-op if creds aren't set.
     print("\nMirroring media to R2 ...")
     rc = sync_media()
+    remaining = report_pending()
     if rc:
         print(f"Media sync exited with code {rc}; stopping before triage.")
         return rc
@@ -72,7 +83,7 @@ def main():
             os.startfile(xlsx)  # Windows
         except Exception:
             pass  # non-Windows or no associated app — file is still written
-    return 0
+    return 2 if finder_rc == 2 else (1 if remaining else 0)
 
 
 if __name__ == "__main__":

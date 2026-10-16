@@ -3,5 +3,8 @@
   "main": "worker.js",
   "compatibility_date": "2026-10-14",
   "compatibility_flags": ["nodejs_compat"],
+  "vars": { "PUBLIC_ACCESS": "true" },
+  "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "sre-media" }],
+  "services": [{ "binding": "REVIEW", "service": "sre-review" }],
   "observability": { "enabled": true, "traces": { "enabled": true } }
 }

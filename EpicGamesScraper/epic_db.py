@@ -200,13 +200,14 @@ def apply_snapshot(
     return new_products
 
 
-def detail_keys_needed(conn, products: list[dict]) -> list[dict]:
-    """Return products without a successful detail record."""
-    statuses = {
-        row[0]: row[1]
-        for row in conn.execute("SELECT epic_key, status FROM epic_details").fetchall()
-    }
-    return [p for p in products if statuses.get(p["epic_key"]) != "complete"]
+def detail_keys_needed(conn) -> list[dict]:
+    """Recover unfinished details, including products no longer in the catalog."""
+    rows = conn.execute(
+        "SELECT t.epic_key, t.offer_id FROM epic_tracker t "
+        "LEFT JOIN epic_details d ON d.epic_key=t.epic_key "
+        "WHERE d.epic_key IS NULL OR d.status<>'complete' OR d.offer_id<>t.offer_id "
+        "ORDER BY t.epic_key").fetchall()
+    return [{"epic_key": key, "offer_id": offer_id} for key, offer_id in rows]
 
 
 def record_detail(

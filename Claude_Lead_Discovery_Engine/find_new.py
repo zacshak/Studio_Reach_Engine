@@ -37,6 +37,7 @@ if hasattr(sys.stdout, "reconfigure"):
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import pipeline  # noqa: E402  shared DB connection (Turso when configured)
+import discovery_recovery as recovery
 
 OUT_DIR = os.path.join(HERE, "out")
 SEARCH_URL = "https://store.steampowered.com/search/results/"
@@ -69,7 +70,7 @@ def init_db(conn):
             mode       TEXT
         )"""
     )
-    conn.commit()
+    recovery.init_db(conn)
 
 
 def get_page(start):
@@ -140,9 +141,6 @@ def main():
     conn = pipeline.connect()
     init_db(conn)
 
-    known_before = conn.execute("SELECT COUNT(*) FROM known_comingsoon").fetchone()[0]
-    bootstrap = args.bootstrap or known_before == 0
-
     try:
         total, items = fetch_comingsoon()
     except FinderError as e:
@@ -153,20 +151,10 @@ def main():
         conn.close()
         return 2
 
-    existing = {row[0] for row in conn.execute("SELECT appid FROM known_comingsoon")}
-    new_apps = [(appid, name) for appid, name in items if appid not in existing]
-
     today = datetime.now(IST).date().isoformat()
     now_iso = datetime.now(IST).isoformat(timespec="seconds")
-    conn.executemany(
-        "INSERT OR IGNORE INTO known_comingsoon(appid, name, first_seen) VALUES (?,?,?)",
-        [(appid, name, today) for appid, name in new_apps],
-    )
-    conn.execute(
-        "INSERT INTO snapshot_runs(run_at, total_apps, new_apps, mode) VALUES (?,?,?,?)",
-        (now_iso, total, len(new_apps), "bootstrap" if bootstrap else "diff"),
-    )
-    conn.commit()
+    bootstrap, new_apps = recovery.record_snapshot(
+        conn, total, items, today, now_iso, bootstrap=args.bootstrap)
 
     print("\n" + "=" * 56)
     if bootstrap:
@@ -179,7 +167,7 @@ def main():
         print("  No new pre-release pages since the last run.")
         print("=" * 56)
         conn.close()
-        return 11  # runner: nothing new, skip lead discovery
+        return 11  # runner still drains durable pending discovery
 
     out_file = os.path.join(OUT_DIR, f"new_appids_{stamp}.txt")
     with open(out_file, "w", encoding="utf-8") as f:

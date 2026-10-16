@@ -85,10 +85,10 @@ def main():
                 raise
             time.sleep(3)  # Allow the new Worker deployment to propagate.
     (ROOT / 'mcp-client.json').write_text(json.dumps({'mcpServers': {'sre-database': {
-        'url': endpoint, 'headers': {'Authorization': 'Bearer ' + secret['MCP_AUTH_TOKEN']}
+        'url': endpoint
     }}}, indent=2), encoding='utf-8')
     print(endpoint)
-    print('Bearer credential saved locally in db-mcp/credentials.json, never in git.')
+    print('Public client configuration saved in db-mcp/mcp-client.json. No client credential required.')
 
 
 if __name__ == '__main__':

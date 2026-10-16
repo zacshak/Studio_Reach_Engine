@@ -37,7 +37,7 @@ test('confirmed rejection schedules cleanup without synchronous media deletion',
     assert.match(steps[3].stmt.sql, /DELETE FROM newly_added/);
     assert.match(steps[4].stmt.sql, /DELETE FROM scrape_tracker/);
     deletedRows = true;
-    return Response.json({ results: [{ type: 'ok', response: { result: { step_results: [{}, {}, {}, {}, {}, {rows:[]}, {}, null], step_errors: [] } } }] });
+    return Response.json({ results: [{ type: 'ok', response: { result: { step_results: [{}, {}, {}, {}, {}, {}, {rows:[]}, {}, null], step_errors: [] } } }] });
   };
   try {
     const response = await worker.fetch(new Request('https://example/api/act', { method: 'POST', body: JSON.stringify({ action: 'reject_all_irrelevant', appids: [1] }) }), {

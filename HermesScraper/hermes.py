@@ -63,7 +63,7 @@ def _same_site(base, href):
 
 def _scrape_site(page, url):
     """Render `url`, then follow up to a few same-site contact-ish links. Returns the
-    concatenated text of every page we managed to load (empty string if none loaded)."""
+    collected text. Raises on incomplete navigation so callers retain retry work."""
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
     chunks, to_visit, seen = [], [url], set()
@@ -72,17 +72,13 @@ def _scrape_site(page, url):
         if u in seen:
             continue
         seen.add(u)
-        try:
-            page.goto(u, timeout=GOTO_TIMEOUT, wait_until="domcontentloaded")
-        except Exception:
-            continue
+        response = page.goto(u, timeout=GOTO_TIMEOUT, wait_until="domcontentloaded")
+        if response is not None and response.status >= 400:
+            raise RuntimeError(f"site navigation returned HTTP {response.status}: {u}")
         chunks.append(f"--- {u} ---\n{_text(page)}")
         if len(seen) == 1:                        # from the landing page, queue contact pages
-            try:
-                hrefs = page.eval_on_selector_all(
-                    "a[href]", "els => els.map(e => e.href)")
-            except Exception:
-                hrefs = []
+            hrefs = page.eval_on_selector_all(
+                "a[href]", "els => els.map(e => e.href)")
             for h in hrefs:
                 if (len(to_visit) + len(seen) < MAX_PAGES and _same_site(u, h)
                         and any(k in h.lower() for k in CONTACT_HINTS) and h not in seen):
@@ -94,13 +90,12 @@ def _find_site(page, query):
     """No website on the lead — search DuckDuckGo's HTML endpoint (keyless) for the
     studio and return the first few result URLs to try. ponytail: HTML scrape of one
     search page; swap for a real search API if DDG ever changes its markup."""
-    try:
-        page.goto("https://html.duckduckgo.com/html/?q=" + urllib.parse.quote(query),
-                  timeout=GOTO_TIMEOUT, wait_until="domcontentloaded")
-        hrefs = page.eval_on_selector_all(
-            "a.result__a", "els => els.map(e => e.href)")
-    except Exception:
-        return []
+    response = page.goto("https://html.duckduckgo.com/html/?q=" + urllib.parse.quote(query),
+                         timeout=GOTO_TIMEOUT, wait_until="domcontentloaded")
+    if response is not None and response.status >= 400:
+        raise RuntimeError(f"site search returned HTTP {response.status}")
+    hrefs = page.eval_on_selector_all(
+        "a.result__a", "els => els.map(e => e.href)")
     out = []
     for h in hrefs:
         # DDG wraps results in a redirect (uddg=<encoded real url>); unwrap it.
@@ -205,13 +200,18 @@ def main():
                     nomail += 1
                     print(f"  {appid} {studio!r:.40} -> no_email")
             except Exception as e:
-                leads.write_result(appid, scrape_status="failed")
+                try:
+                    leads.write_result(appid, scrape_status="failed")
+                except ValueError:
+                    # The reviewer or another scraper already changed this row.
+                    # Never recreate it or abort the remaining queue to record failure.
+                    pass
                 failed += 1
                 print(f"  {appid} -> failed ({type(e).__name__}: {e})", file=sys.stderr)
         browser.close()
 
     print(f"done: {found} scraped, {nomail} no_email, {failed} failed")
-    return 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
