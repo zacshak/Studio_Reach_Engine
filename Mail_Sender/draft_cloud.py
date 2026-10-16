@@ -150,15 +150,13 @@ def _render_template(template, game, studio, observations):
 
 def _sheet_b64(folder, images):
     """Base64 of the lead's sprite sheet from R2 (for the visual observation), or None."""
-    name = next((f for f in images if "SpriteSheet" in f), None)
+    name = next((f for f in images if f == 'SpriteSheet_Screenshots.png'), None)
     if not name:
-        return None
-    try:
-        req = urllib.request.Request(media_store.public_url(folder, name), headers=_UA)
-        with urllib.request.urlopen(req, timeout=15) as r:
-            return base64.b64encode(r.read()).decode()
-    except Exception:
-        return None
+        raise ValueError('incomplete media manifest: sprite sheet was not published')
+    data = media_store.fetch_bytes(folder, name, strict=True)
+    if not data or not data.startswith(b'\x89PNG\r\n\x1a\n'):
+        raise ValueError('sprite sheet is empty or not a PNG')
+    return base64.b64encode(data).decode()
 
 
 def _draft(client, model, manifest, folder):

@@ -192,6 +192,14 @@ async function act(env, body) {
     }
     case "accept": { // Game Approval ✅ -> Mail_status 'Writing'
       const appid = oneId(body);
+      const index = await getJSON(env, 'index.json') || {};
+      const folder = index[String(appid)];
+      const manifest = folder ? await getJSON(env, `${folder}/manifest.json`) : null;
+      if (!Array.isArray(manifest?.images) || !manifest.images.includes('SpriteSheet_Screenshots.png'))
+        throw new Error(`Cannot draft ${appid}: screenshot export is incomplete. Repair media first.`);
+      const sprite = await env.MEDIA.head(`${folder}/SpriteSheet_Screenshots.png`);
+      if (!sprite || sprite.size <= 0)
+        throw new Error(`Cannot draft ${appid}: sprite sheet is missing or empty. Repair media first.`);
       await sql(env, [["UPDATE scrape_tracker SET Mail_status='Writing' WHERE appid=? AND Mail_status='Pending' AND scrape_status IN ('seeded','scraped')", appid]]);
       break;
     }

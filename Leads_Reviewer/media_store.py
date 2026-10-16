@@ -209,6 +209,8 @@ def upload_dir(folder, appid, card, client=None):
     """Mirror one lead folder to R2 under its basename ('<GameName>_<appid>/'): the
     images + a derived manifest.json (card text + image list + mail draft) the cloud
     app reads. Idempotent — re-uploads overwrite. Returns the R2 folder prefix used."""
+    from media_readiness import validate_export
+    validate_export(folder, appid=appid)  # Never overwrite a good remote manifest with a partial local export.
     cli = client or _client()
     prefix = os.path.basename(folder.rstrip("/\\"))      # "Boompaw_4889770"
     manifest = build_manifest(folder, appid, card)

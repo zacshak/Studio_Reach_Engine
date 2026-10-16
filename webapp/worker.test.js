@@ -7,6 +7,20 @@ import {
 } from "./worker.js";
 import worker from "./worker.js";
 
+test('accept never advances a lead with an incomplete or absent sprite', async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = () => { throw new Error('database must not be called'); };
+  try {
+    for (const images of [[], ['SpriteSheet_Screenshots.png']]) {
+      const response = await worker.fetch(new Request('https://example/api/act', {method:'POST',body:JSON.stringify({action:'accept',appid:1})}), {
+        MEDIA: { get: async key => ({json: async () => key==='index.json' ? {1:'Game_1'} : {images}}), head:async()=>null }
+      });
+      assert.equal(response.status,500);
+      assert.match((await response.json()).error,/Cannot draft 1/);
+    }
+  } finally { globalThis.fetch=original; }
+});
+
 test('oversized deletion batches fail before touching storage', async () => {
   const response = await worker.fetch(new Request('https://example/api/act', { method: 'POST', body: JSON.stringify({ action: 'reject_all_irrelevant', appids: Array.from({length:10001}, (_,i)=>i+1) }) }), {});
   assert.equal(response.status, 500);

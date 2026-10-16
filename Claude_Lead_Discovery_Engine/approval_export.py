@@ -35,6 +35,8 @@ UA = "claude-lead-discovery/1.0 (approval-export)"
 # sprite_sheet.py lives in the reviewer folder; reuse its 2x2 contact-sheet builder
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "Leads_Reviewer"))
 from sprite_sheet import build_sheet  # noqa: E402
+from media_readiness import validate_export
+from PIL import Image
 
 _ILLEGAL = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
@@ -113,7 +115,11 @@ class ApprovalExporter:
             folder = os.path.join(self.base_dir, f"{_safe(lead.get('name'))}_{appid}")
             marker = os.path.join(folder, ".complete")
             if os.path.exists(marker):
-                return False                # already exported — idempotent skip
+                try:
+                    validate_export(folder, appid=appid)
+                    return False
+                except (OSError, ValueError):
+                    os.remove(marker)  # Invalid old exports must be rebuilt, not skipped forever.
             os.makedirs(folder, exist_ok=True)
             with open(os.path.join(folder, f"{appid}.json"), "w", encoding="utf-8") as f:
                 json.dump(_curate(lead, appid), f, ensure_ascii=False, indent=2)
@@ -121,7 +127,8 @@ class ApprovalExporter:
                 url = shot.get("path_thumbnail")
                 if url:
                     self._download(url, os.path.join(folder, f"screenshot_{i:02d}.jpg"))
-            build_sheet(folder)             # 2x2 sprite so the lead is agent-scannable
+            build_sheet(folder, force=True)
+            validate_export(folder, require_marker=False, appid=appid)
             open(marker, "w").close()       # write LAST: marks the folder complete
             return True
         except Exception as e:              # never let one lead kill the pool
@@ -130,15 +137,28 @@ class ApprovalExporter:
 
     def _download(self, url, dest):
         if os.path.exists(dest):
-            return
+            try:
+                with Image.open(dest) as image:
+                    image.load()
+                return
+            except (OSError, ValueError):
+                os.remove(dest)
+        temporary = dest + '.part'
         req = urllib.request.Request(url, headers={"User-Agent": UA})
         for attempt in range(self.retries):
             try:
                 with urllib.request.urlopen(req, timeout=self.timeout) as r, \
-                        open(dest, "wb") as f:
+                        open(temporary, "wb") as f:
                     shutil.copyfileobj(r, f)
+                with Image.open(temporary) as image:
+                    image.verify()
+                with Image.open(temporary) as image:
+                    image.load()
+                os.replace(temporary, dest)
                 return
             except Exception:
+                if os.path.exists(temporary):
+                    os.remove(temporary)
                 if attempt == self.retries - 1:
                     if os.path.exists(dest):
                         os.remove(dest)     # don't leave a half-written file
