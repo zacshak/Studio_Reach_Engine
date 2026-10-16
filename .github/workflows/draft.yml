@@ -1,14 +1,10 @@
 name: Draft mails
 
-# AI-drafts cold mails for accepted leads awaiting one (Mail_status='Writing'), writing each
-# into the lead's R2 manifest so the app's Mail-Approval section can show it. NOT scheduled —
-# fired on demand by the app's "Draft pending mails" button. Idempotent: skips leads that
-# already have a draft.
 on:
   workflow_dispatch:
     inputs:
       check_only:
-        description: Verify the configured model without drafting queued leads
+        description: Verify real image inference and JSON without drafting leads
         type: boolean
         default: false
 
@@ -22,7 +18,7 @@ permissions:
 jobs:
   draft:
     runs-on: ubuntu-latest
-    timeout-minutes: 350         # safety ceiling — a rate-limited free key may wait it out.
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -30,49 +26,22 @@ jobs:
           python-version: "3.12"
       - name: Install deps
         run: pip install --quiet libsql==0.1.11 boto3==1.43.22 openai==2.43.0
-      - name: Verify mail-writer endpoint
+      - name: Verify vision endpoint and draft mails
         env:
+          CHECK_ONLY: ${{ inputs.check_only }}
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
           MAIL_WRITER_BASE_URL: ${{ secrets.MAIL_WRITER_BASE_URL }}
           MAIL_WRITER_MODEL: ${{ secrets.MAIL_WRITER_MODEL }}
           MAIL_WRITER_API_KEY: ${{ secrets.MAIL_WRITER_API_KEY }}
-        run: |
-          python - <<'PY'
-          import json, os, time, urllib.error, urllib.request
-
-          url = f"{os.environ['MAIL_WRITER_BASE_URL'].rstrip('/')}/models"
-          request = urllib.request.Request(url, headers={
-              "Authorization": f"Bearer {os.environ['MAIL_WRITER_API_KEY']}"})
-          for attempt in range(1, 4):
-              try:
-                  with urllib.request.urlopen(request, timeout=30) as response:
-                      models = {item["id"] for item in json.load(response).get("data", [])}
-                  break
-              except urllib.error.HTTPError as exc:
-                  retryable = exc.code in (408, 425, 429) or exc.code >= 500
-                  if not retryable or attempt == 3:
-                      raise
-                  error = exc
-              except (urllib.error.URLError, TimeoutError) as exc:
-                  if attempt == 3:
-                      raise
-                  error = exc
-              wait = 5 * 2 ** (attempt - 1)
-              print(f"mail-writer preflight failed ({error}); retrying in {wait}s "
-                    f"({attempt}/3)")
-              time.sleep(wait)
-          assert os.environ["MAIL_WRITER_MODEL"] in models, "mail-writer model unavailable"
-          PY
-      - name: Draft mails -> R2 manifests
-        if: ${{ !inputs.check_only }}
-        env:
-          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
-          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
-          TRIAGE_BASE_URL: ${{ secrets.MAIL_WRITER_BASE_URL }}
-          TRIAGE_MODEL: ${{ secrets.MAIL_WRITER_MODEL }}
-          TRIAGE_API_KEY: ${{ secrets.MAIL_WRITER_API_KEY }}
           R2_PUBLIC_BASE: ${{ secrets.R2_PUBLIC_BASE }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-        run: python SRE.py --draft-mails
+        run: |
+          if [ "$CHECK_ONLY" = "true" ]; then
+            python -u Mail_Sender/draft_cloud.py --check-only
+          else
+            python -u SRE.py --draft-mails
+          fi

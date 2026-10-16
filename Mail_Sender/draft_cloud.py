@@ -1,5 +1,5 @@
 """Cloud cold-mail drafter: for every accepted lead awaiting a draft (Mail_status
-'Writing') that has no mail yet, Gemini fills one of the 4 templates — personalising the
+'Writing') that has no mail yet, the configured vision model fills a template — personalising the
 critique/observation slot from the game's sprite sheet + blurb — and the finished mail is
 written into the lead's R2 manifest ('mail' + 'mail_template'), then Mail_status flips to
 'Drafted'. The review app's Mail-Approval section only shows 'Drafted' leads; Approve ->
@@ -18,6 +18,7 @@ import re
 import sys
 import time
 import urllib.request
+from draft_runtime import ProviderUnavailable, configured_client, infer, preflight
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -30,7 +31,6 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 TEMPLATES_FILE = os.path.join(HERE, "cold_mail_templates.txt")   # local fallback / seed
-RETRIES = 6
 _UA = {"User-Agent": "Mozilla/5.0"}
 _PLACEHOLDER = re.compile(r"<([^<>]+)>")
 _GAME_SLOTS = {"game", "game name"}
@@ -182,31 +182,25 @@ def _draft(client, model, manifest, folder):
     )}, {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}]
     msgs = [{"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": content}]
-    for attempt in range(RETRIES):
-        try:
-            resp = client.chat.completions.create(model=model, max_tokens=600, messages=msgs)
-            values = _parse_observations(resp.choices[0].message.content, len(slots))
-            return _render_template(template, game, studio, values)
-        except Exception as e:
-            if attempt == RETRIES - 1:
-                raise
-            wait = min(60, 2 ** attempt) + attempt
-            print(f"    mail-writer error ({type(e).__name__}), retry "
-                  f"{attempt + 1}/{RETRIES} in {wait}s", file=sys.stderr)
-            time.sleep(wait)
+    values = infer(client, model, msgs, lambda raw: _parse_observations(raw, len(slots)))
+    return _render_template(template, game, studio, values)
 
 
 def main():
-    base = os.environ.get("TRIAGE_BASE_URL")
-    key = os.environ.get("TRIAGE_API_KEY")
-    model = os.environ.get("TRIAGE_MODEL")
-    if not (base and key and model):
-        sys.exit("set TRIAGE_BASE_URL / TRIAGE_API_KEY / TRIAGE_MODEL")
+    try:
+        client, model = configured_client()
+        preflight(client, model)
+    except Exception as error:
+        print(f'Drafting stopped before processing leads: {error}', file=sys.stderr, flush=True)
+        return 1
+    if '--check-only' in sys.argv:
+        return 0
     if not media_store.write_enabled():
         sys.exit("R2 write creds missing — can't write drafts to the manifest.")
-    from openai import OpenAI
-    client = OpenAI(base_url=base, api_key=key, max_retries=0)
+    return run_queue(client, model)
 
+
+def run_queue(client, model):
     templates = _load_templates()
     if not templates:
         sys.exit("no valid '#Cold Mail - N' templates found")
@@ -214,11 +208,22 @@ def main():
     queue = pipeline.mail_status_appids("Writing")
     print(f"{len(queue)} lead(s) in 'Writing'; {len(templates)} templates")
 
-    drafted = skipped = 0
+    drafted = skipped = consecutive_failures = 0
+    stopped = False
+    deadline = time.monotonic() + 330 * 60
     tally = {n: 0 for n, _ in templates}
     for appid in queue:
+        if time.monotonic() + 3 * 60 + 5 >= deadline:
+            print('Stopping before the workflow deadline. Remaining leads retain Writing.', flush=True)
+            stopped = True
+            break
         folder = index.get(str(appid))
-        manifest = media_store.fetch_manifest(folder, strict=True) if folder else None
+        try:
+            manifest = media_store.fetch_manifest(folder, strict=True) if folder else None
+        except Exception as error:
+            print(f'{appid} -> media unavailable ({type(error).__name__}); retained for retry', flush=True)
+            skipped += 1
+            continue
         if not manifest:
             skipped += 1
             continue
@@ -237,10 +242,20 @@ def main():
         manifest["__template"] = template
         try:
             mail = _draft(client, model, manifest, folder)
+        except ProviderUnavailable as error:
+            consecutive_failures += 1
+            skipped += 1
+            print(f'{appid} -> provider failure: {error}', file=sys.stderr, flush=True)
+            if error.fatal or consecutive_failures >= 3:
+                stopped = True
+                print('Provider circuit open. Stopping this run; remaining leads retain Writing.', file=sys.stderr, flush=True)
+                break
+            continue
         except Exception as e:
             print(f"  {appid} -> draft failed ({type(e).__name__}: {e})", file=sys.stderr)
             skipped += 1
             continue
+        consecutive_failures = 0
         manifest.pop("__template", None)
         manifest["mail"] = mail
         manifest["mail_template"] = n
@@ -253,7 +268,12 @@ def main():
 
     print(f"done: {drafted} drafted, {skipped} skipped")
     print(", ".join(f"cold_mail_{n}: {tally[n]}" for n in sorted(tally)))
-    return 0
+    print(f'Provider halted: {stopped}. Failed/unprocessed leads remain eligible for retry.', flush=True)
+    summary = os.environ.get('GITHUB_STEP_SUMMARY')
+    if summary:
+        with open(summary, 'a', encoding='utf-8') as output:
+            output.write(f'\nDrafting: {drafted} completed/recovered, {skipped} skipped/failed. Provider/deadline stop: {stopped}. Initial queue: {len(queue)}.\n')
+    return 1 if skipped or stopped else 0
 
 
 if __name__ == "__main__":

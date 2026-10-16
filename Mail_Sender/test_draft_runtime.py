@@ -1,0 +1,57 @@
+import json
+import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+
+import draft_runtime as runtime
+import draft_cloud
+
+
+class DraftRuntimeTest(unittest.TestCase):
+    def client(self, side_effect):
+        create = Mock(side_effect=side_effect)
+        return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))), create
+
+    def test_incompatible_vision_route_stops_immediately(self):
+        error = RuntimeError('endpoint does not accept image/non-text content parts')
+        client, create = self.client(error)
+        with self.assertRaises(runtime.ProviderUnavailable) as result:
+            runtime.infer(client, 'test', [], json.loads)
+        self.assertTrue(result.exception.fatal)
+        self.assertEqual(create.call_count, 1)
+
+    def test_transient_errors_and_bad_json_have_bounded_retries(self):
+        for failure in (TimeoutError('timeout'), ValueError('bad JSON')):
+            client, create = self.client(failure)
+            with patch.object(runtime.time, 'sleep'), self.assertRaises(runtime.ProviderUnavailable):
+                runtime.infer(client, 'test', [], json.loads)
+            self.assertEqual(create.call_count, 3)
+            self.assertEqual(create.call_args.kwargs['timeout'], 60)
+
+    def test_real_image_preflight_requires_correct_json_color(self):
+        response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"color":"red"}'))])
+        client, create = self.client([response])
+        with patch.object(runtime.secrets, 'choice', return_value=('red',(255,0,0))):
+            runtime.preflight(client, 'test')
+        content = create.call_args.kwargs['messages'][0]['content']
+        self.assertEqual(content[1]['type'], 'image_url')
+        self.assertTrue(content[1]['image_url']['url'].startswith('data:image/png;base64,'))
+        client, create = self.client([response] * 3)
+        with patch.object(runtime.secrets, 'choice', return_value=('blue',(0,0,255))), patch.object(runtime.time,'sleep'), self.assertRaises(runtime.ProviderUnavailable):
+            runtime.preflight(client, 'test')
+
+    def test_failed_preflight_never_reads_queue_or_changes_records(self):
+        with patch.object(draft_cloud, 'configured_client', return_value=(None,'test')), patch.object(draft_cloud, 'preflight', side_effect=runtime.ProviderUnavailable('down')), patch.object(draft_cloud, 'run_queue') as queue:
+            self.assertEqual(draft_cloud.main(), 1)
+            queue.assert_not_called()
+
+    def test_three_provider_failures_stop_large_queue_without_status_changes(self):
+        with patch.object(draft_cloud, '_load_templates', return_value=[(1,'<observation>')]), patch.object(draft_cloud.media_store, 'fetch_index', return_value={str(i):str(i) for i in range(100)}), patch.object(draft_cloud.pipeline,'mail_status_appids',return_value=list(range(100))), patch.object(draft_cloud.media_store,'fetch_manifest',return_value={'name':'Synthetic'}), patch.object(draft_cloud,'_draft',side_effect=runtime.ProviderUnavailable('unavailable')) as draft, patch.object(draft_cloud.pipeline,'set_mail_status') as status, patch.object(draft_cloud.media_store,'write_manifest') as write:
+            self.assertEqual(draft_cloud.run_queue(None,'test'),1)
+            self.assertEqual(draft.call_count,3)
+            status.assert_not_called()
+            write.assert_not_called()
+
+
+if __name__ == '__main__':
+    unittest.main()
