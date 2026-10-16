@@ -7,6 +7,10 @@ on:
         description: Verify real image inference and JSON without drafting leads
         type: boolean
         default: false
+      check_models:
+        description: Optional JSON array of route IDs to audit with synthetic images (check_only only)
+        type: string
+        default: ""
 
 concurrency:
   group: draft
@@ -29,6 +33,7 @@ jobs:
       - name: Verify vision endpoint and draft mails
         env:
           CHECK_ONLY: ${{ inputs.check_only }}
+          CHECK_MODELS: ${{ inputs.check_models }}
           TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
           MAIL_WRITER_BASE_URL: ${{ secrets.MAIL_WRITER_BASE_URL }}
@@ -41,7 +46,11 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: |
           if [ "$CHECK_ONLY" = "true" ]; then
-            python -u Mail_Sender/draft_cloud.py --check-only
+            if [ -n "$CHECK_MODELS" ]; then
+              python -u Mail_Sender/audit_vision.py
+            else
+              python -u Mail_Sender/draft_cloud.py --check-only
+            fi
           else
             python -u SRE.py --draft-mails
           fi
