@@ -37,6 +37,13 @@ def infer(client, model, messages, parse):
             category = 'invalid model output' if isinstance(error, (ValueError, IndexError, AttributeError)) else type(error).__name__
             detail = f'{category}' + (f' (HTTP {status})' if status else '')
             if fatal or attempt == ATTEMPTS - 1:
+                message = str(error).lower()
+                if 'does not accept image' in message or 'non-text content parts' in message:
+                    detail += ': the selected provider route rejects images'
+                elif any(part in message for part in ('all_accounts_inactive', 'all upstream accounts are inactive', 'no active accounts')):
+                    detail += ': no active provider accounts are connected'
+                elif 'valid api key' in message or status in (401, 403):
+                    detail += ': provider authentication failed'
                 hint = 'Check OmniRoute vision routes and connected provider accounts.' if fatal else 'Inference failed after bounded retries.'
                 raise ProviderUnavailable(f'{detail}. {hint}', fatal=fatal) from error
             print(f'mail-writer {detail}; retry {attempt + 1}/{ATTEMPTS} in {2 ** attempt}s', file=sys.stderr, flush=True)
