@@ -1,5 +1,29 @@
 # Production reliability review, 16 October 2026
 
+## Deployment update, 17 October 2026
+
+Code release `a73c095` is pushed and its CI run `38955433071` passed.
+The additive migration completed after write/cleanup maintenance mode was confirmed
+and old cleanup leases were drained. Normal dashboard writes and cleanup resumed.
+
+- Review Worker version: `31704d9f-55ee-4e32-8781-8b9beca31f65`.
+- MCP Worker version: `b0ca7833-cb7b-493f-823a-cc5b9dd98bc9`.
+- All eight MCP tools were called against the public deployed server.
+- Actual synthetic drafts were saved and appeared in the dashboard state.
+- Concurrent distinct saves produced one winner. Identical retries were idempotent.
+- Concurrent dashboard rejection and MCP saving did not resurrect a row.
+- Human Keep prevented a later MCP flag from restoring the game to Triage.
+- A synthetic-row-only database trigger forced completion failure after the R2 save.
+  After removing the trigger, the original saved draft recovered without regeneration.
+- Social requests survived drafting. Malformed values and deleted-game contexts were rejected.
+- MCP and dashboard returned identical image bytes. The official MCP client smoke test passed.
+- No sending workflow was dispatched and no actual email was sent.
+
+The four synthetic leads were rejected through the normal dashboard API. Their
+cleanup runs through the normal durable queue. The test-only failure trigger was
+removed and verified absent. The original checkpoint below describes the state
+before this rollout, not the current deployment state.
+
 ## Verdict
 
 The local patch addresses the concrete failures reproduced in this review.
