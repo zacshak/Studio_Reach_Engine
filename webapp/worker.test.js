@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  approveStmt, keepStmt, NOMAIL_SQL, requireSocialsStmt,
-  SOCIALS_SQL, TRIAGE_KEPT_SQL, sql, updateJSON,
+  approveStmt, keepStmt, NOMAIL_SQL,
+  TRIAGE_KEPT_SQL, sql, updateJSON,
 } from "./worker.js";
 import worker from "./worker.js";
 
@@ -69,7 +69,7 @@ test('transaction begin and commit errors are never reported as success', async 
 
 test('dashboard state routes MCP flags and passes and excludes stale human decisions', async () => {
   const originalFetch = globalThis.fetch;
-  const sets = [[[1], [2]], [], [[3, 0]], [], [[0]], [[0]], [[1], [2], [3]]];
+  const sets = [[[1], [2]], [], [[3]], [[0]], [[0]], [[1], [2], [3]]];
   globalThis.fetch = async () => Response.json({ results: [...sets.map(rows => ({ type: 'ok', response: { result: {
     rows: rows.map(row => row.map(value => ({ type: 'integer', value: String(value) })))
   } } })), { type: 'ok' }] });
@@ -90,30 +90,44 @@ test('dashboard state routes MCP flags and passes and excludes stale human decis
     assert.deepEqual(state.nomail, [3]);
     assert.equal(state.triageReviews[1].reason, 'Fits');
     assert.equal(state.triageReviews[4], undefined);
+    assert.equal('socials' in state,false);
+    assert.equal('requireSocials' in state,false);
   } finally { globalThis.fetch = originalFetch; }
 });
 
 test("No-Mail includes only pending outreach with unresolved scrape states", () => {
   assert.equal(
     NOMAIL_SQL,
-    "SELECT appid, Require_Socials FROM scrape_tracker WHERE scrape_status IN ('pending','no_email','failed') AND Mail_status='Pending' ORDER BY appid",
+    "SELECT appid FROM scrape_tracker WHERE scrape_status IN ('pending','no_email','failed') AND Mail_status='Pending' ORDER BY appid",
   );
 });
 
-test("ReqSocial stores an explicit boolean without changing queue state", () => {
-  assert.deepEqual(requireSocialsStmt(42, true), [
-    "UPDATE scrape_tracker SET Require_Socials=? WHERE appid=?", 1, 42,
-  ]);
-  assert.deepEqual(requireSocialsStmt(42, false), [
-    "UPDATE scrape_tracker SET Require_Socials=? WHERE appid=?", 0, 42,
-  ]);
+test('obsolete dashboard socials actions are rejected without external requests',async()=>{
+  for(const body of [{action:'require_socials',appid:1,required:true},{action:'trigger',workflow:'socials'}]){
+    const r=await worker.fetch(new Request('https://test/api/act',{method:'POST',body:JSON.stringify(body)}),{});
+    assert.equal(r.status,500);
+  }
 });
 
-test("Socials shows completed requests that still await send or rejection", () => {
-  assert.equal(
-    SOCIALS_SQL,
-    "SELECT appid, Socials_Data, Require_Socials FROM scrape_tracker WHERE Require_Socials=1 AND Socials_Data<>'{}' ORDER BY appid",
-  );
+test('Send click queues socials before dispatch, but Draft click never does',async()=>{
+  const original=globalThis.fetch;
+  try{
+    for(const workflow of ['send','draft']){
+      const calls=[];
+      globalThis.fetch=async(url,options)=>{
+        calls.push(String(url));
+        if(String(url).includes('api.github.com'))return new Response(null,{status:204});
+        const statement=JSON.parse(options.body).requests[0].stmt.sql;
+        assert.match(statement,/Socials_Request_ID IS NULL/);
+        assert.match(statement,/Mail_status='Scheduled'/);
+        return Response.json({results:[{type:'ok',response:{result:{rows:[]}}},{type:'ok'}]});
+      };
+      const r=await worker.fetch(new Request('https://test/api/act',{method:'POST',body:JSON.stringify({action:'trigger',workflow})}),{TURSO_URL:'https://db.invalid',GH_REPO:'example/repo',GH_PAT:'synthetic'});
+      assert.equal(r.status,200);
+      assert.equal(calls.length,workflow==='send'?2:1);
+      assert.ok(calls.at(-1).includes('api.github.com'));
+    }
+  }finally{globalThis.fetch=original;}
 });
 
 test("mail approval is one guarded database update", () => {

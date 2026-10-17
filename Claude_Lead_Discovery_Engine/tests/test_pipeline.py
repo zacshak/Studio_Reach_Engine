@@ -88,18 +88,45 @@ class PipelineTest(unittest.TestCase):
     def test_social_columns_default_and_survive_reinit(self):
         with self._raw() as c:
             insert_lead(c, 106)
-            row = c.execute("SELECT Require_Socials, Socials_Data FROM scrape_tracker "
+            row = c.execute("SELECT Require_Socials, Socials_Data, Socials_Request_ID FROM scrape_tracker "
                             "WHERE appid=106").fetchone()
-            c.execute("UPDATE scrape_tracker SET Require_Socials=1, Socials_Data=? "
-                      "WHERE appid=106", ('{"x":"studio"}',))
+            c.execute("UPDATE scrape_tracker SET Require_Socials=1, Socials_Data=?, "
+                      "Socials_Request_ID='request-106' WHERE appid=106",
+                      ('{"Website":"https://studio.test"}',))
             c.commit()
-        self.assertEqual(row, (0, "{}"))
+        self.assertEqual(row, (0, "{}", None))
         pipeline._ensured = False
         pipeline.init_tracker()
         with self._raw() as c:
-            saved = c.execute("SELECT Require_Socials, Socials_Data FROM scrape_tracker "
+            saved = c.execute("SELECT Require_Socials, Socials_Data, Socials_Request_ID FROM scrape_tracker "
                               "WHERE appid=106").fetchone()
-        self.assertEqual(saved, (1, '{"x":"studio"}'))
+        self.assertEqual(saved, (1, '{"Website":"https://studio.test"}', "request-106"))
+
+    def test_request_id_migration_is_additive_and_preserves_socials(self):
+        with self._raw() as c:
+            insert_lead(c, 107)
+            c.execute("ALTER TABLE scrape_tracker DROP COLUMN Socials_Request_ID")
+            c.execute("ALTER TABLE scrape_tracker ADD COLUMN custom_field TEXT")
+            c.execute("UPDATE scrape_tracker SET Require_Socials=1, "
+                      "Socials_Data='{}', custom_field='keep' WHERE appid=107")
+            c.execute("CREATE INDEX custom_tracker_index ON scrape_tracker(custom_field)")
+            c.execute("CREATE TRIGGER custom_tracker_trigger AFTER UPDATE ON scrape_tracker "
+                      "BEGIN SELECT 1; END")
+            rootpage = c.execute("SELECT rootpage FROM sqlite_master "
+                                 "WHERE name='scrape_tracker'").fetchone()
+        pipeline.init_tracker()
+        pipeline.init_tracker()
+        with self._raw() as c:
+            column = next(r for r in c.execute("PRAGMA table_info(scrape_tracker)")
+                          if r[1] == "Socials_Request_ID")
+            self.assertEqual(column[2:5], ("TEXT", 0, None))
+            self.assertEqual(c.execute("SELECT Require_Socials, Socials_Data, "
+                                      "Socials_Request_ID, custom_field FROM scrape_tracker "
+                                      "WHERE appid=107").fetchone(), (1, "{}", None, "keep"))
+            self.assertEqual(c.execute("SELECT rootpage FROM sqlite_master "
+                                      "WHERE name='scrape_tracker'").fetchone(), rootpage)
+            self.assertEqual(c.execute("SELECT count(*) FROM sqlite_master WHERE name IN "
+                                      "('custom_tracker_index','custom_tracker_trigger')").fetchone(), (2,))
 
     def test_rebuild_migration_adds_mail_status_preserving_data(self):
         # simulate an OLD scrape_tracker (no Mail_status), with a row, then re-init:
@@ -329,24 +356,6 @@ class PipelineTest(unittest.TestCase):
             c.commit()
         self.assertEqual(pipeline.nomail_ready_appids(), [410, 411, 412])
 
-    def test_social_request_stores_complete_result_and_stays_requested(self):
-        with self._raw() as c:
-            insert_lead(c, 416, name="Social Game")
-            c.execute("UPDATE scrape_tracker SET Require_Socials=1 WHERE appid=416")
-            c.commit()
-        requests = pipeline.social_requests()
-        self.assertEqual([row["appid"] for row in requests], [416])
-        self.assertEqual(requests[0]["game_name"], "Social Game")
-        result = {field: None for field in pipeline.SOCIAL_FIELDS}
-        result["X"] = "https://x.com/studio"
-        self.assertTrue(pipeline.write_socials(416, result))
-        self.assertEqual(pipeline.social_requests(), [])
-        with self._raw() as c:
-            row = c.execute("SELECT Require_Socials, Socials_Data FROM scrape_tracker "
-                            "WHERE appid=416").fetchone()
-        self.assertEqual(row[0], 1)
-        self.assertEqual(json.loads(row[1]), result)
-
     def test_human_kept_lead_never_reenters_ai_triage(self):
         with self._raw() as c:
             insert_lead(c, 420)
@@ -541,7 +550,9 @@ class PipelineTest(unittest.TestCase):
         pipeline.set_mail_template(950, 2)
         pipeline.set_mail_status(950, "Scheduled")
         with self._raw() as c:
-            c.execute("UPDATE scrape_tracker SET Require_Socials=1 WHERE appid=950")
+            c.execute("UPDATE scrape_tracker SET Require_Socials=1, "
+                      "Socials_Data=?, Socials_Request_ID='send-950' WHERE appid=950",
+                      ('{"Website":"https://studio.test"}',))
             c.commit()
         with self.assertRaises(ValueError):
             pipeline.set_mail_template(950, 3)
@@ -555,13 +566,37 @@ class PipelineTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             pipeline.write_result(950, scrape_status="failed")
         with self._raw() as c:
-            row = c.execute("SELECT Mail_status, sent_at, Require_Socials FROM scrape_tracker "
+            row = c.execute("SELECT Mail_status, sent_at, Require_Socials, Socials_Data, "
+                            "Socials_Request_ID FROM scrape_tracker "
                             "WHERE appid=950").fetchone()
             cached = c.execute("SELECT COUNT(*) FROM newly_added WHERE appid=950").fetchone()[0]
         self.assertEqual(row[0], "Sent")
         self.assertIsNotNone(row[1])
-        self.assertEqual(row[2], 0)
+        self.assertEqual(row[2:], (1, '{"Website":"https://studio.test"}', 'send-950'))
         self.assertEqual(cached, 0)
+
+    def test_send_completion_and_resets_preserve_social_state(self):
+        data = json.dumps(dict.fromkeys(("X", "LinkedIn", "Instagram", "Discord", "Website")))
+        for flag in (0, 1):
+            for outcome in ("Sent", "Scheduled", "Drafted"):
+                with self.subTest(flag=flag, outcome=outcome):
+                    appid = 960 + flag * 3 + ("Sent", "Scheduled", "Drafted").index(outcome)
+                    with self._raw() as c:
+                        insert_lead(c, appid, support_email="hello@example.com")
+                        c.execute("UPDATE scrape_tracker SET Mail_status='Scheduled', "
+                                  "Require_Socials=?, Socials_Data=?, Socials_Request_ID=? "
+                                  "WHERE appid=?", (flag, data, str(appid), appid))
+                    self.assertTrue(pipeline.claim_mail(appid))
+                    if outcome == "Sent":
+                        pipeline.mark_sent(appid)
+                        pipeline.mark_sent(appid)
+                    else:
+                        pipeline.reset_sending(appid, outcome)
+                    with self._raw() as c:
+                        self.assertEqual(c.execute(
+                            "SELECT Mail_status, Require_Socials, Socials_Data, Socials_Request_ID "
+                            "FROM scrape_tracker WHERE appid=?", (appid,)).fetchone(),
+                            (outcome, flag, data, str(appid)))
 
     def test_sending_can_only_be_reset_explicitly(self):
         with self._raw() as c:

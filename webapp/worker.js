@@ -5,7 +5,7 @@
 //
 //   GET  /api/state   -> all review views (1 DB round-trip + 3 R2 gets)
 //   POST /api/act     -> {action, ...} — accept / reject / reject_all / approve / approve_all /
-//                        require_socials / keep / reject_irrelevant / reject_all_irrelevant / trigger
+//                        keep / reject_irrelevant / reject_all_irrelevant / trigger
 //   GET  /media/<key> -> R2 passthrough (images + manifests), same-origin so no CORS/bot-block
 //
 // Public dashboard, including review actions and workflow dispatch (owner requested).
@@ -19,7 +19,8 @@
 import { triageSnapshot } from './triage.js';
 import { rejectRows, cleanupJobs } from './deletion.js';
 import { draftRequest } from './drafting.js';
-const WORKFLOWS = { send: "send.yml", draft: "draft.yml", socials: "socials.yml" };
+import { queueSocialsStatement, saveSocials, readSocialRequestBody } from './socials.js';
+const WORKFLOWS = { send: "send.yml", draft: "draft.yml" };
 
 // ---- Turso over HTTP (Hrana v2 pipeline; one fetch = N statements, no client lib) ----
 const hranaStmt = ([q, ...args]) => ({
@@ -110,22 +111,17 @@ async function state(env) {
       // has-email states only ('pending'/'no_email'/'failed' belong in No-Mail or
       // nowhere yet — a bare Mail_status check let those leak in here too, GH-bug).
       ["SELECT appid FROM scrape_tracker WHERE Mail_status='Pending' AND scrape_status IN ('seeded','scraped') ORDER BY appid"],
-      ["SELECT appid, emails, Require_Socials FROM scrape_tracker WHERE Mail_status='Drafted' ORDER BY appid"],
+      ["SELECT appid, emails FROM scrape_tracker WHERE Mail_status='Drafted' ORDER BY appid"],
       [NOMAIL_SQL],
-      [SOCIALS_SQL],
       ["SELECT EXISTS(SELECT 1 FROM scrape_tracker WHERE Mail_status='Scheduled')"],
       // accepted but the drafter hasn't written the mail yet — gates the Draft button
       ["SELECT EXISTS(SELECT 1 FROM scrape_tracker WHERE Mail_status='Writing')"],
       ["SELECT appid FROM scrape_tracker WHERE Mail_status='Pending' AND triage_kept=0"],
     ]),
   ]);
-  const [pending, drafted, nomail, socials, sched, writing, eligible] = db;
+  const [pending, drafted, nomail, sched, writing, eligible] = db;
   const { triage, triageReviews } = triageSnapshot(irrelevant, recommendations, eligible.map(r => r[0]));
   const flagged = new Set(triage);
-  const requireSocials = Object.fromEntries(
-    [...drafted, ...nomail, ...socials].map((r) =>
-      [String(r[0]), Number(r.at(-1)) === 1]),
-  );
   return {
     index: index || {},
     triage,
@@ -133,8 +129,6 @@ async function state(env) {
     approval: pending.map((r) => Number(r[0])).filter((a) => !flagged.has(a)),
     mail: drafted.map((r) => ({ appid: Number(r[0]), emails: r[1] || "" })),
     nomail: nomail.map((r) => Number(r[0])).filter((a) => !flagged.has(a)),
-    socials: socials.map((r) => ({ appid: Number(r[0]), data: JSON.parse(r[1]) })),
-    requireSocials,
     scheduled: Number(sched[0]?.[0]) === 1,
     pendingDrafts: Number(writing[0]?.[0]) === 1,
   };
@@ -146,15 +140,9 @@ const approveStmt = (appid) => [
   appid,
 ];
 
-const NOMAIL_SQL = "SELECT appid, Require_Socials FROM scrape_tracker WHERE scrape_status IN ('pending','no_email','failed') AND Mail_status='Pending' ORDER BY appid";
-const SOCIALS_SQL = "SELECT appid, Socials_Data, Require_Socials FROM scrape_tracker WHERE Require_Socials=1 AND Socials_Data<>'{}' ORDER BY appid";
+const NOMAIL_SQL = "SELECT appid FROM scrape_tracker WHERE scrape_status IN ('pending','no_email','failed') AND Mail_status='Pending' ORDER BY appid";
 const TRIAGE_KEPT_SQL = "SELECT appid FROM scrape_tracker WHERE triage_kept=1";
 
-const requireSocialsStmt = (appid, required) => [
-  "UPDATE scrape_tracker SET Require_Socials=? WHERE appid=?",
-  required ? 1 : 0,
-  appid,
-];
 
 const keepStmt = (appid) => [
   "UPDATE scrape_tracker SET triage_kept=1 WHERE appid=? AND Mail_status='Pending'",
@@ -185,12 +173,6 @@ function manyIds(body) {
 
 async function act(env, body) {
   switch (body.action) {
-    case "require_socials": {
-      const appid = oneId(body);
-      if (typeof body.required !== "boolean") throw new Error("required must be boolean");
-      await sql(env, [requireSocialsStmt(appid, body.required)]);
-      break;
-    }
     case "accept": { // Game Approval ✅ -> Mail_status 'Writing'
       const appid = oneId(body);
       const index = await getJSON(env, 'index.json') || {};
@@ -241,6 +223,10 @@ async function act(env, body) {
       if (!file) throw new Error(`unknown workflow ${body.workflow}`);
       if (!env.GH_REPO) throw new Error("GH_REPO secret is not set");
       if (!env.GH_PAT) throw new Error("GH_PAT secret is not set");
+      if (body.workflow === 'send') {
+        const [queued] = await sql(env, [queueSocialsStatement()]);
+        console.log(JSON.stringify({event:'social_requests_queued',count:queued.length}));
+      }
       const r = await fetch(
         `https://api.github.com/repos/${env.GH_REPO}/actions/workflows/${file}/dispatches`,
         {
@@ -269,7 +255,7 @@ const json = (obj, status = 200) =>
   });
 
 export {
-  approveStmt, keepStmt, NOMAIL_SQL, requireSocialsStmt, SOCIALS_SQL, TRIAGE_KEPT_SQL,
+  approveStmt, keepStmt, NOMAIL_SQL, TRIAGE_KEPT_SQL,
   sql, updateJSON,
 };
 
@@ -289,6 +275,8 @@ export default {
     if (path.startsWith("/media/")) {
       let key;
       try {
+        if (req.method === 'POST' && path === '/api/socials/save')
+          response = json(await saveSocials(env, await readSocialRequestBody(req), sql));
         key = decodeURIComponent(path.slice("/media/".length));
       } catch {
         return new Response("invalid media path", { status: 400 });

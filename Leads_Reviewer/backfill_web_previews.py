@@ -12,8 +12,8 @@ import media_store
 
 def queue_folders(state):
     ids = set()
-    for queue in ("approval", "mail", "nomail", "socials", "triage"):
-        for item in state[queue]:
+    for queue in ("approval", "mail", "nomail", "triage"):
+        for item in state.get(queue, []):
             ids.add(str(item["appid"] if isinstance(item, dict) else item))
     return sorted({state["index"][appid] for appid in ids if appid in state["index"]})
 

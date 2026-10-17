@@ -7,7 +7,7 @@ assert.equal((await fetch(url)).status, 405);
 const client = new Client({ name: 'deployment-smoke', version: '1.0.0' });
 try {
   await client.connect(new StreamableHTTPClientTransport(url));
-  assert.equal((await client.listTools()).tools.length, 8);
+  assert.equal((await client.listTools()).tools.length, 11);
   const list = await client.callTool({ name: 'list_tables', arguments: {} });
   const tables = JSON.parse(list.content[0].text).tables;
   assert.equal(tables.length, 3);

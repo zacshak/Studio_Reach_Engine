@@ -33,37 +33,36 @@ test('the inline dashboard script parses completely', () => {
   new vm.Script(html.slice(html.indexOf('<script>')+8,html.indexOf('</script>')));
 });
 
-test('new socials intent supersedes the same appid across reload without losing unrelated actions', async () => {
-  const storage = {};
-  let ctx = context(storage, async () => { throw new Error('response lost'); });
-  vm.runInContext(script, ctx);
-  await vm.runInContext("api('require_socials',{appid:42,required:true})", ctx);
-  await vm.runInContext("api('require_socials',{appid:43,required:true})", ctx);
-  await vm.runInContext("api('keep',{appid:42})", ctx);
+test('reload removes obsolete socials intents and preserves unrelated retries and dispatch warnings', async () => {
+  const retained = [['keep', { appid: 42 }, 'offline'], ['trigger', { workflow: 'send' }, 'response lost']];
+  const storage = { sre_pending_writes: JSON.stringify([
+    ['require_socials', { appid: 42, required: true }],
+    ['require_socials', { appid: 43, required: false }],
+    ['trigger', { workflow: 'socials' }, 'response lost'], ...retained
+  ]) };
   const sent = [];
-  ctx = context(storage, async (_, options) => {
+  const ctx = context(storage, async (_, options) => {
     sent.push(JSON.parse(options.body));
     return { ok: true, json: async () => ({ ok: true }) };
   });
   vm.runInContext(script, ctx);
-  await vm.runInContext("api('require_socials',{appid:'42',required:false})", ctx);
-  assert.deepEqual(JSON.parse(storage.sre_pending_writes).map(item => item.slice(0, 2)), [
-    ['require_socials', { appid: 43, required: true }], ['keep', { appid: 42 }]
-  ]);
+  assert.deepEqual(JSON.parse(storage.sre_pending_writes), retained);
   await vm.runInContext('retryFailed()', ctx);
-  assert.equal(sent.filter(item => String(item.appid) === '42' && item.action === 'require_socials').length, 1);
-  assert.equal(storage.sre_pending_writes, '[]');
+  assert.deepEqual(sent, [{ action: 'keep', appid: 42 }]);
+  assert.deepEqual(JSON.parse(storage.sre_pending_writes), [retained[1]]);
 });
 
-test('a failed replacement persists only the latest socials intent', async () => {
-  const storage = {};
-  const ctx = context(storage, async () => { throw new Error('offline'); });
+test('obsolete intents stay out of memory even if storage cleanup fails', async () => {
+  const storage = { sre_pending_writes: JSON.stringify([
+    ['require_socials', { appid: 42, required: true }], ['trigger', { workflow: 'socials' }]
+  ]) };
+  let requests = 0;
+  const ctx = context(storage, async () => { requests++; });
+  ctx.localStorage.setItem = () => { throw new Error('storage unavailable'); };
   vm.runInContext(script, ctx);
-  await vm.runInContext("api('require_socials',{appid:42,required:true})", ctx);
-  await vm.runInContext("api('require_socials',{appid:42,required:false})", ctx);
-  const saved = JSON.parse(storage.sre_pending_writes);
-  assert.equal(saved.length, 1);
-  assert.deepEqual(saved[0].slice(0, 2), ['require_socials', { appid: 42, required: false }]);
+  assert.equal(vm.runInContext('failed.length', ctx), 0);
+  await vm.runInContext('retryFailed()', ctx);
+  assert.equal(requests, 0);
 });
 
 test('partial rejection clears saved intent and reports blocked IDs without offering replay', async () => {

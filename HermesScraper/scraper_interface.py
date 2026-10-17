@@ -1,7 +1,6 @@
 """Hermes's interface to the lead database.
 
-This is the ONLY module Hermes imports. It exposes the calls its email and social
-scrapers need
+This is the ONLY module Hermes imports. It exposes the calls its email scraper needs
 and nothing else — the database schema, triggers, connections, status seeding
 and read-only enforcement all live in the owning `pipeline.py` (in the
 Claude_Lead_Discovery_Engine folder) and are deliberately hidden here.
@@ -27,5 +26,3 @@ import pipeline  # noqa: E402
 get_pending = pipeline.get_pending
 read_lead = pipeline.read_lead
 write_result = pipeline.write_result
-social_requests = pipeline.social_requests
-write_socials = pipeline.write_socials

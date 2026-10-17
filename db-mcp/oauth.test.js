@@ -121,7 +121,7 @@ test('official MCP client initializes and discovers tools using OAuth', async t 
   });
   try {
     await client.connect(transport);
-    assert.deepEqual((await client.listTools()).tools.map(t => t.name), ['list_tables', 'describe_table', 'query', 'get_game_media', 'get_game_image', 'submit_triage', 'get_draft_context', 'save_draft']);
+    assert.deepEqual((await client.listTools()).tools.map(t => t.name), ['list_tables', 'describe_table', 'query', 'get_game_media', 'get_game_image', 'submit_triage', 'get_draft_context', 'save_draft','get_social_requests','get_social_data','save_social_data']);
     const result = await client.callTool({ name: 'list_tables', arguments: {} });
     assert.deepEqual(JSON.parse(result.content[0].text).tables, ['scrape_tracker', 'newly_added', 'known_comingsoon']);
   } finally { await client.close(); }

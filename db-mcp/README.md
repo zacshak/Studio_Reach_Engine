@@ -10,7 +10,7 @@ Database tools: `list_tables`, `describe_table`, and `query`. Queries accept SQL
 
 ## Images and agent-driven triage
 
-All eight tools are public. `get_game_media(appid)` returns the existing four-panel screenshot sprite sheet as an MCP image, the description, and available image names. It selects the named sprite sheet rather than assuming the fourth file is correct. `get_game_image(appid, image_name)` returns another explicitly requested image from that game's manifest. Images are limited to 5 MiB each and restricted to supported image formats.
+All eleven tools are public. `get_game_media(appid)` returns the existing four-panel screenshot sprite sheet as an MCP image, the description, and available image names. It selects the named sprite sheet rather than assuming the fourth file is correct. `get_game_image(appid, image_name)` returns another explicitly requested image from that game's manifest. Images are limited to 5 MiB each and restricted to supported image formats.
 
 `submit_triage({criteria, results: [{appid, decision: "flag" | "pass", reason}]})` saves recommendations in R2 `mcp-triage.json`. Submit up to 100 games per call, repeating for additional games. Criteria come from the user's current request, not a fixed genre rubric. No server-side LLM is called. The calling agent must inspect the game and apply the user's criteria.
 
@@ -54,6 +54,33 @@ Deploy the review backend and updated GHA draft writer before enabling the new M
 binding. The GHA writer must have first-writer-wins draft publication and guarded
 MCP recovery. The separate pending audit cleanup migration must also be rolled out
 in its documented order. No new schema or secret is required by MCP drafting itself.
+
+## Agent-driven social research
+
+There are no social controls or social views in the dashboard, and no Hermes Socials GHA.
+Clicking Send scheduled mails marks that click's Scheduled rows as requested, once per game.
+The immutable `Socials_Request_ID` prevents repeated Send attempts from requeuing completed research.
+Requests remain pending even if GitHub dispatch fails or mail delivery succeeds.
+Existing Scheduled/Sent records are not backfilled by deployment. A later Send click can
+request an existing Scheduled row because that is a future send attempt.
+
+- `get_social_requests({after_appid:0,page_size:100})` returns requested games and their
+  existing JSON. Follow `next_after_appid` to read every page. There is no cumulative cap.
+- The calling agent performs its own research. MCP does not search or invoke an LLM.
+- `save_social_data({appid,request_id,socials})` accepts exactly X, LinkedIn, Instagram,
+  Discord, and Website, each an HTTP(S) URL or null. A successful save clears Require_Socials,
+  including an all-null result. It never changes mail status, recipients, or draft contents.
+- `get_social_data({appid})` returns pending or completed JSON for presentation to the user.
+- Identical save retries are idempotent. Different competing results, stale IDs, and deleted
+  records cannot overwrite a completed result.
+
+Rollout: stop the retired socials workflow and ensure no old Send run remains active.
+Pause dashboard writes, run `node webapp/migrate-socials.mjs`, release the Python sender
+that preserves requests, and deploy the review Worker and MCP. The migration saves a
+local backup of the previous social fields, clears legacy requests, preserves the four
+social links, removes Email and initializes Website to null where absent. It does not
+queue historical sends. Keep the additive column on rollback and do not restore the old
+Hermes writer or sender that clears social requests.
 
 ## Security
 

@@ -32,13 +32,13 @@ for (const result of [{ ok: true, deleted: [1], blocked: [2], cleanup: 'queued' 
   test(`bulk rejection handles ${result.deleted ? `${result.deleted.length} deleted` : 'legacy'} success and refreshes state`, async () => {
     let loads = 0;
     const ctx = vm.createContext({ writeBusy: false, armed: 'bulkR', tab: 'nomail',
-      Q: { nomail: [{ appid: 1 }, { appid: 2 }], socials: [{ appid: 2 }] },
+      Q: { nomail: [{ appid: 1 }, { appid: 2 }], approval: [{ appid: 2 }] },
       render() {}, api: async () => result,
       load: async () => {
         loads++;
         const deleted = result.deleted ?? [1, 2];
         assert.deepEqual(Array.from(ctx.Q.nomail, c => c.appid), [1, 2].filter(id => !deleted.includes(id)));
-        assert.deepEqual(Array.from(ctx.Q.socials, c => c.appid), [2].filter(id => !deleted.includes(id)));
+        assert.deepEqual(Array.from(ctx.Q.approval, c => c.appid), [2].filter(id => !deleted.includes(id)));
       }
     });
     vm.runInContext(source, ctx);

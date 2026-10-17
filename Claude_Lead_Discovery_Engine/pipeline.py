@@ -64,7 +64,6 @@ STATUSES = ("pending", "seeded", "scraped", "no_email", "invalid", "failed")
 # claim state and is intentionally not exposed as a user-facing status.
 MAIL_STATUSES = ("Pending", "Invalid", "Writing", "Drafted", "Scheduled", "Sent", "Replied")
 INTERNAL_MAIL_STATUSES = ("Sending",)
-SOCIAL_FIELDS = ("X", "LinkedIn", "Instagram", "Discord", "Email")
 MAIL_TRANSITIONS = {
     "Writing": "Pending",
     "Drafted": "Writing",
@@ -93,7 +92,8 @@ _SCHEMA = """(
     sent_at        TEXT,
     triage_kept    INTEGER NOT NULL DEFAULT 0,
     Require_Socials INTEGER NOT NULL DEFAULT 0,
-    Socials_Data   TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(Socials_Data))
+    Socials_Data   TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(Socials_Data)),
+    Socials_Request_ID TEXT
 )"""
 # columns carried over on rebuild (all but Mail_status / mail_template, which take
 # their defaults)
@@ -380,6 +380,8 @@ def init_tracker():
         if "Socials_Data" not in cols:
             conn.execute("ALTER TABLE scrape_tracker ADD COLUMN Socials_Data "
                          "TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(Socials_Data))")
+        if "Socials_Request_ID" not in cols:
+            conn.execute("ALTER TABLE scrape_tracker ADD COLUMN Socials_Request_ID TEXT")
         conn.execute("CREATE TABLE IF NOT EXISTS email_verification_cache "
                      f"{_EMAIL_VERIFICATION_CACHE_SCHEMA}")
         conn.execute("CREATE TABLE IF NOT EXISTS mail_send_attempt "
@@ -729,35 +731,6 @@ def nomail_ready_appids():
             "AND scrape_status IN ('pending','no_email','failed') ORDER BY appid")]
 
 
-def social_requests():
-    """Complete tracker rows awaiting their first social-enrichment result."""
-    _ensure()
-    with closing(_ro()) as conn:
-        cols = [c[1] for c in conn.execute("PRAGMA table_info(scrape_tracker)")]
-        rows = conn.execute(
-            "SELECT * FROM scrape_tracker WHERE Require_Socials=1 "
-            "AND Socials_Data='{}' ORDER BY appid").fetchall()
-    return [dict(zip(cols, row)) for row in rows]
-
-
-def write_socials(appid, socials):
-    """Store one complete social result while leaving it requested for review."""
-    if not isinstance(socials, dict) or set(socials) != set(SOCIAL_FIELDS):
-        raise ValueError(f"socials must contain exactly {SOCIAL_FIELDS}")
-    if any(value is not None and not isinstance(value, str) for value in socials.values()):
-        raise ValueError("social values must be strings or None")
-    encoded = json.dumps({field: socials[field] for field in SOCIAL_FIELDS},
-                         ensure_ascii=False, separators=(",", ":"))
-    _ensure()
-    with closing(_rw()) as conn:
-        row = conn.execute(
-            "UPDATE scrape_tracker SET Socials_Data=? "
-            "WHERE appid=? AND Require_Socials=1 RETURNING appid",
-            (encoded, int(appid))).fetchone()
-        conn.commit()
-    return row is not None
-
-
 def set_mail_status(appid, status):
     """Apply one legal user-facing outreach transition."""
     _ensure()
@@ -1017,14 +990,14 @@ def reset_sending(appid, status, *, token=None):
 
 def mark_sent(appid, *, token=None):
     """Mail was sent: Mail_status -> 'Sent', stamp sent_at (UTC) for audit,
-    and drop the newly_added row (the scrape_tracker row stays as the record)."""
+    and drop the newly_added row. Preserve the tracker and MCP-owned social state."""
     _ensure()
     with closing(_rw()) as conn:
         guard = (" AND EXISTS (SELECT 1 FROM mail_send_attempt a "
                  "WHERE a.appid=scrape_tracker.appid AND a.token=?)") if token else ""
         row = conn.execute(
             "UPDATE scrape_tracker SET Mail_status='Sent', "
-            "sent_at=COALESCE(sent_at,CURRENT_TIMESTAMP), Require_Socials=0 "
+            "sent_at=COALESCE(sent_at,CURRENT_TIMESTAMP) "
             f"WHERE appid=? AND Mail_status='Sending'{guard} RETURNING appid",
             (int(appid), token) if token else (int(appid),)).fetchone()
         if row is None:

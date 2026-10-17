@@ -8,7 +8,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SRE — Studio Reach Engine</title>
-<meta name="description" content="Review game studios, outreach drafts, and social research in Studio Reach Engine.">
+<meta name="description" content="Review game studios and outreach drafts in Studio Reach Engine.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E🎮%3C/text%3E%3C/svg%3E">
 <style>
   :root { color-scheme: dark; }
@@ -46,10 +46,6 @@
   .mail { background: #161b26; border: 1px solid #262b36; border-radius: 10px;
           padding: .8rem; margin: .8rem 0; white-space: pre-wrap; font-size: .92rem; }
   .mail .to { color: #34d399; font-size: .85rem; margin-bottom: .5rem; }
-  .social-links { display: grid; gap: .55rem; margin: .8rem 0; }
-  .social-links a, .social-empty { background: #161b26; border: 1px solid #262b36;
-                                  border-radius: 8px; padding: .65rem .8rem; }
-  .social-links a { overflow-wrap: anywhere; }
   .nav { display: flex; align-items: center; justify-content: center; gap: 1rem; margin: .8rem 0; }
   .nav button { background: #1b2330; color: #e6e6e6; border: 1px solid #262b36;
                 border-radius: 8px; padding: .35rem .9rem; cursor: pointer; }
@@ -66,8 +62,6 @@
                     font-size: 1rem; cursor: pointer; font-weight: 600; }
   .ok  { background: #14532d; color: #bbf7d0; }
   .bad { background: #7f1d1d; color: #fecaca; }
-  .reqsocial { background: #27272a; color: #d4d4d8; border: 1px solid #52525b !important; }
-  .reqsocial.on { background: #854d0e; color: #fef08a; border-color: #eab308 !important; }
   .bulk { display: flex; gap: .6rem; margin-top: .8rem; }
   .bulk button { flex: 1; padding: .5rem; border-radius: 8px; border: 1px solid #262b36;
                  background: #161b26; color: #9aa4b2; cursor: pointer; }
@@ -83,7 +77,6 @@
   <button class="tab" data-tab="approval">🎮 Approval <b></b></button>
   <button class="tab" data-tab="mail">📧 Mail <b></b></button>
   <button class="tab" data-tab="nomail">🚫 No-Mail <b></b></button>
-  <button class="tab" data-tab="socials">🔗 Socials <b></b></button>
   <button class="refresh" onclick="load()" aria-label="Refresh dashboard">↻</button>
 </header>
 <main>
@@ -101,7 +94,17 @@ const enc = encodeURIComponent;
 const $ = (s) => document.querySelector(s);
 
 // Save intent before sending. A lost response stays visible after refresh.
-const failed = (() => { try { const value = JSON.parse(localStorage.getItem('sre_pending_writes') || '[]'); return Array.isArray(value) ? value.filter(item => Array.isArray(item) && typeof item[0] === 'string' && item[1] && typeof item[1] === 'object') : []; } catch { return []; } })();
+const failed = (() => {
+  let value;
+  try { value = JSON.parse(localStorage.getItem('sre_pending_writes') || '[]'); } catch { return []; }
+  if (!Array.isArray(value)) return [];
+  const valid = value.filter(item => Array.isArray(item) && typeof item[0] === 'string' && item[1] && typeof item[1] === 'object');
+  const retained = valid.filter(([action, extra]) => action !== 'require_socials' && !(action === 'trigger' && extra.workflow === 'socials'));
+  if (retained.length !== valid.length) {
+    try { localStorage.setItem('sre_pending_writes', JSON.stringify(retained)); } catch {}
+  }
+  return retained;
+})();
 let writeBusy = false;
 let actionNotice = '';
 function persistWrites() { localStorage.setItem('sre_pending_writes', JSON.stringify(failed)); }
@@ -117,11 +120,6 @@ async function api(action, extra = {}) {
   // An older refresh must not repaint state captured before this write.
   if (typeof loadGeneration !== 'undefined') loadGeneration++;
   if (!bulkBusy) actionNotice = '';
-  if (action === 'require_socials') {
-    for (let i = failed.length - 1; i >= 0; i--) {
-      if (failed[i][0] === action && String(failed[i][1].appid) === String(extra.appid)) failed.splice(i, 1);
-    }
-  }
   const key = JSON.stringify([action, extra]);
   let entry = failed.find(item => JSON.stringify(item.slice(0,2)) === key);
   if (!entry) { entry = [action, extra, 'Request awaiting confirmation']; failed.push(entry); }
@@ -164,7 +162,7 @@ async function retryFailed() {
 // ---- state ----
 let S = null;                          // /api/state payload
 let tab = "triage";
-const idx = { triage: 0, approval: 0, mail: 0, nomail: 0, socials: 0 };
+const idx = { triage: 0, approval: 0, mail: 0, nomail: 0 };
 const manifests = new Map();           // folder -> manifest (or null while loading)
 let mediaGeneration = 0, loadGeneration = 0, imageRetry = 0;
 let renderedHTML = null;
@@ -187,13 +185,10 @@ function queues() {
     approval: mk(S.approval),
     mail: mk(S.mail.map((m) => m.appid)),
     nomail: mk(S.nomail),
-    socials: mk((S.socials || []).map((item) => item.appid)),
   };
 }
 let Q = null;
 const emailsOf = (appid) => (S.mail.find((m) => m.appid === appid) || {}).emails || "";
-const requiresSocials = (appid) => Boolean(S.requireSocials?.[String(appid)]);
-const socialsOf = (appid) => ((S.socials || []).find((item) => item.appid === appid) || {}).data || {};
 
 function refreshError(message, background) {
   if (background && Q) { actionNotice = message; showBanner(); }
@@ -226,7 +221,7 @@ async function load({ background = false } = {}) {
   } else invalidateMedia();
   S = next;
   Q = queues();
-  if (!Q[tab].length) tab = ["triage", "approval", "mail", "nomail", "socials"].find((t) => Q[t].length) || tab;
+  if (!Q[tab].length) tab = ["triage", "approval", "mail", "nomail"].find((t) => Q[t].length) || tab;
   render();
 }
 
@@ -289,8 +284,7 @@ function render() {
   const gha =
     (tab === "approval" && !list.length && S.pendingDrafts
       ? ghaBtn("✍️ Draft pending mails", "draft") : "") +
-    (tab === "mail" && S.scheduled ? ghaBtn("📨 Send scheduled mails", "send") : "") +
-    (tab === "socials" ? ghaBtn("🔎 Fetch requested socials", "socials") : "");
+    (tab === "mail" && S.scheduled ? ghaBtn("📨 Send scheduled mails", "send") : "");
   if (!list.length) {
     paint(view, (gha ? `<div class="bulk top">${gha}</div>` : "") +
                      `<div class="empty">Nothing to review 🎉</div>`);
@@ -325,11 +319,9 @@ function render() {
   const mail = tab === "mail"
     ? `<div class="mail"><div class="to">To: ${escapeHtml(emailsOf(card.appid) || "(no recipient!)")}</div>${
         (m && m.mail) ? escapeHtml(m.mail) : "<i>(not drafted yet)</i>"}</div>` : "";
-  const socialLinks = tab === "socials" ? renderSocials(socialsOf(card.appid)) : "";
 
   const A = { triage: ["✅ Keep", "keep"], approval: ["✅ Accept", "accept"],
-              mail: ["✅ Approve", "approve"], nomail: [null, null],
-              socials: [null, null] }[tab];
+              mail: ["✅ Approve", "approve"], nomail: [null, null] }[tab];
   const R = tab === "triage" ? "reject_irrelevant" : "reject";
   // two-tap Reject-all with an explicit Cancel — triage (irrelevant) + no-mail (dead-end leads)
   const bulkTriage = bulkBusy ? `<button disabled>Deleting confirmed batches… ${bulkDone} / ${bulkTotal}</button>` : (tab !== "triage" && tab !== "nomail") ? "" : armed === "bulkR"
@@ -350,19 +342,13 @@ function render() {
       ${img}${thumbs}${shotsCtl}${allShots}
       ${tab === 'approval' && m && (!Array.isArray(m.images) || !m.images.includes('SpriteSheet_Screenshots.png')) ? '<p>Drafting unavailable: this game’s screenshot export needs repair.</p>' : ''}
       ${S.triageReviews?.[card.appid] ? `<details><summary>AI recommendation: ${escapeHtml(S.triageReviews[card.appid].decision)}</summary><p>${escapeHtml(S.triageReviews[card.appid].reason || "")}</p><p>Criteria: ${escapeHtml(S.triageReviews[card.appid].criteria || "")}</p></details>` : ""}
-      ${tab === "socials"
-        ? socialLinks
-        : `<div class="desc">${m ? escapeHtml(m.desc || "") : "Loading…"}</div>`}
+      <div class="desc">${m ? escapeHtml(m.desc || "") : "Loading…"}</div>
       ${mail}
       <div class="nav">
         <button aria-label="Previous game" onclick="move(-1)">←</button><span>${i + 1} / ${list.length}</span><button aria-label="Next game" onclick="move(1)">→</button>
       </div>
       <div class="actions">
         ${A[0] ? `<button class="ok" ${tab === 'approval' && (!m || !Array.isArray(m.images) || !m.images.includes('SpriteSheet_Screenshots.png')) ? 'disabled data-unavailable' : ''} onclick="doAct('${A[1]}')">${A[0]}</button>` : ""}
-        ${(tab === "mail" || tab === "nomail")
-          ? `<button class="reqsocial ${requiresSocials(card.appid) ? "on" : ""}"
-              onclick="toggleSocials(${card.appid})">ReqSocial: ${requiresSocials(card.appid) ? "ON" : "OFF"}</button>`
-          : ""}
         <button class="bad" onclick="doAct('${R}')">❌ Reject</button>
       </div>
     </div>`);
@@ -412,32 +398,6 @@ async function doAct(action) {
   shot = 0; armed = null; showAll = false;
   render();
   await load({ background: true });
-}
-function renderSocials(data) {
-  const links = Object.entries(data).filter(([, value]) => value).map(([label, value]) => {
-    let href = "";
-    if (label === "Email" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
-      href = `mailto:${value}`;
-    } else {
-      try {
-        const url = new URL(value);
-        if (url.protocol === "http:" || url.protocol === "https:") href = url.href;
-      } catch {}
-    }
-    return href ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener">
-      <strong>${escapeHtml(label)}</strong><br>${escapeHtml(value)}</a>` : "";
-  }).join("");
-  return links ? `<div class="social-links">${links}</div>`
-               : '<div class="social-empty">No socials found.</div>';
-}
-async function toggleSocials(appid) {
-  if (writeBusy || bulkBusy) return;
-  const required = !requiresSocials(appid);
-  if (await api("require_socials", { appid, required })) {
-    (S.requireSocials ||= {})[String(appid)] = required;
-    render();
-    await load({ background: true });
-  }
 }
 async function approveAll() {
   if (writeBusy || bulkBusy) return;

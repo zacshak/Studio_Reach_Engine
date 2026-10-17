@@ -37,8 +37,9 @@ All local/manual commands still exist through the one launcher: `python SRE.py <
   `Scheduled` → `Sent` → `Replied`; invalid leads branch `Pending` → `Invalid` and
   stop. `Sending` is a hidden internal claim state between `Scheduled` and `Sent`;
   `Invalid` is quarantined and never rendered in the review views.
-- **Social enrichment**: `Require_Socials=1` requests Hermes enrichment;
-  `Socials_Data` stores the completed X/LinkedIn/Instagram/Discord/Email JSON.
+- **Social enrichment**: `Require_Socials=1` queues MCP research.
+  `Socials_Data` stores X, LinkedIn, Instagram, Discord, and Website JSON.
+  `Socials_Request_ID` is nullable TEXT reserved for Send click deduplication.
 
 Media (screenshots, sprite sheet, manifest with the drafted mail) lives in
 **Cloudflare R2**, keyed by appid via `index.json`. The public Worker serves it through
@@ -77,7 +78,6 @@ or a scraper failure. Invalid records are quarantined and hidden.
   there's no website) and extracts the best recruiting email. A hit flips the lead to
   `scraped` — it leaves No-Mail and appears in Game Approval. No hit → `no_email`.
 - **Reject** → deleted.
-- **ReqSocial** → queues the game for social enrichment.
 
 ### Mail Approval (`Mail_status = Writing`)
 - **✍️ Draft pending** button → fires `draft.yml`. Gemini drafts a cold mail for each
@@ -85,20 +85,27 @@ or a scraper failure. Invalid records are quarantined and hidden.
   the critique from the sprite sheet, and writes it into the lead's R2 manifest. Idempotent.
 - **Approve** → `Mail_status = Scheduled`.
 - **Reject** → deleted.
-- **ReqSocial** → queues the game for social enrichment. A successful Draft Mails run
-  automatically starts `socials.yml`; requests made afterward can be processed with the
-  Socials view's **Fetch requested socials** button.
 
-### Socials (`Require_Socials = 1`, completed `Socials_Data`)
-Shows the game's R2 review card with verified social/contact hyperlinks instead of the
-description. Results remain here until the lead is rejected or its email is successfully sent.
-- **Reject** → deleted.
+### Social research through MCP
+The Send button queues the click's `Scheduled` snapshot once per lead.
+The calling coding agent researches X, LinkedIn, Instagram, Discord, and Website,
+then saves using MCP through the scoped review backend. A successful save clears `Require_Socials`.
+Sending mail does not clear the request or its saved data.
+There is no socials dashboard, manual ReqSocial action, or socials GitHub Actions job.
+Hermes continues to scrape email addresses only.
+
+Python initialization adds `Socials_Request_ID` without rebuilding the tracker or
+resetting existing social state. The separate main migration initializes existing
+flags to 0 and normalizes the JSON to the new fields. Run `node webapp/migrate-socials.mjs` as part of
+the coordinated rollout, not on every Python initialization. When rolling back code,
+leave the additive column and saved social state in place. Do not restart the retired
+Hermes socials writer alongside MCP ownership.
 
 ## 3. Send — on demand (`send.yml`)
 **📨 Send approved** button (Mail Approval) → fires `send.yml`. Sends every `Scheduled`
 lead from Gmail, paced 2–4 min apart. Reads each draft from its
-R2 manifest, atomically claims `Scheduled → Sending`, flips `Sending → Sent`, clears
-`Require_Socials`, and purges the lead's R2 media. No schedule — a human
+R2 manifest, atomically claims `Scheduled → Sending`, flips `Sending → Sent`, preserves
+`Require_Socials` and `Socials_Data`, and purges the lead's R2 media. No schedule, a human
 presses the button, so outbound always has a gate.
 
 Temporary SMTP rejections (4xx) return the row to `Scheduled` and retry after 5 and
@@ -146,7 +153,6 @@ No redeploy needed — the next draft run reads the new templates.
 |---|---|
 | `--discover` | discovery → stage to Turso + R2 (the nightly job's first step) |
 | `--draft-mails` | AI-draft cold mails for `Writing` leads → R2 manifests (`draft.yml`) |
-| `--scrape-socials` | sequentially enrich requested games (`socials.yml`) |
 | `--send-mails` | send `Scheduled` mails (`send.yml`); `--dry-run`, `--limit N` locally |
 | `--review-mails` | check `Sent` leads for replies → `Replied` (`review-mails.yml`) |
 | `--repair-invalid` | quarantine existing unsent rows with missing/invalid recipients |

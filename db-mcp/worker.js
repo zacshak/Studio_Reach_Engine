@@ -4,6 +4,7 @@ import { authorize, metadataResponse, METADATA_PATH, oauthConfig } from './oauth
 import { z } from 'zod';
 import { registerMediaTools } from './media-triage.js';
 import { registerDraftTools } from './drafting.js';
+import { registerSocialTools } from './socials.js';
 
 export const TABLES = ['scrape_tracker', 'newly_added', 'known_comingsoon'];
 const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
@@ -107,6 +108,7 @@ export function makeServer(env) {
     args => query(env, args));
   registerMediaTools(server, env, execute);
   registerDraftTools(server, env);
+  registerSocialTools(server, env, execute);
   return server;
 }
 

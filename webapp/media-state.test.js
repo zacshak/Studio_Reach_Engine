@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 
 const html = readFileSync(new URL('./public/index.html', import.meta.url), 'utf8');
 const source = html.slice(html.indexOf('<script>') + 8, html.lastIndexOf('load();'));
-const emptyState = { index: {}, triage: [], approval: [], mail: [], nomail: [], socials: [] };
+const emptyState = { index: {}, triage: [], approval: [], mail: [], nomail: [] };
 const response = value => ({ ok: true, json: async () => value });
 function deferred() {
   let resolve, reject;
@@ -28,6 +28,24 @@ function fixture(fetch) {
   vm.runInContext(source, ctx);
   return { ctx, run: code => vm.runInContext(code, ctx), elements };
 }
+
+test('only the four remaining views render without socials state or controls', async () => {
+  const views = ['triage', 'approval', 'mail', 'nomail'];
+  assert.deepEqual([...html.matchAll(/data-tab="([^"]+)"/g)].map(match => match[1]), views);
+  assert.doesNotMatch(html, /renderSocials|toggleSocials|reqsocial|social-links|social-empty|Fetch requested socials|social research/);
+  for (const view of views) {
+    const state = { ...emptyState, index: { 1: 'Game_1' }, [view]: view === 'mail' ? [{ appid: 1 }] : [1] };
+    const { run, elements } = fixture(async url => response(url === '/api/state' ? state
+      : { name: 'Game', desc: 'Description', images: ['SpriteSheet_Screenshots.png'], mail: 'Draft' }));
+    await run('load()');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(Array.from(run('Object.keys(Q)')), views);
+    assert.equal(run('tab'), view);
+    assert.match(elements.get('#view').innerHTML, /Description/);
+    assert.match(elements.get('#view').innerHTML, /doAct\('/);
+    assert.doesNotMatch(elements.get('#view').innerHTML, /social/i);
+  }
+});
 
 test('refresh refetches cached drafts and ignores an earlier manifest completion', async () => {
   const old = deferred();
@@ -116,7 +134,7 @@ test('manifest failure retains the existing explicit retry path', async () => {
 test('background refresh preserves loaded media but revalidates newly drafted rows', async () => {
   const next={...emptyState,index:{1:'Game_1'},mail:[{appid:1}]};
   const {run}=fixture(async url=>response(url==='/api/state'?next:{mail:'fresh draft',images:[]}));
-  run("S={index:{},mail:[]}; Q={triage:[],approval:[],mail:[],nomail:[],socials:[]}; manifests.set('Game_1',{mail:null}); manifests.set('Other_2',{name:'cached'})");
+  run("S={index:{},mail:[]}; Q={triage:[],approval:[],mail:[],nomail:[]}; manifests.set('Game_1',{mail:null}); manifests.set('Other_2',{name:'cached'})");
   await run('load({background:true})');
   await new Promise(resolve=>setImmediate(resolve));
   assert.equal(run("manifests.get('Game_1').mail"),'fresh draft');
@@ -144,7 +162,7 @@ test('preview assets and lazy thumbnails replace full PNG downloads only for dis
 
 test('background refresh failure keeps the current card visible', async () => {
   const {run,elements}=fixture(async()=>{throw new Error('offline');});
-  run("S={mail:[]};Q={triage:[],approval:[],mail:[],nomail:[],socials:[]};document.querySelector('#view').innerHTML='Current card'");
+  run("S={mail:[]};Q={triage:[],approval:[],mail:[],nomail:[]};document.querySelector('#view').innerHTML='Current card'");
   await run('load({background:true})');
   assert.equal(elements.get('#view').innerHTML,'Current card');
   assert.match(run('actionNotice'),/offline/);

@@ -52,7 +52,7 @@ test('public mode allows an official client without any credentials', async () =
   await client.connect(new StreamableHTTPClientTransport(new URL('https://mcp.test/mcp'), {
     fetch: (input, init) => worker.fetch(new Request(input, init), publicEnv)
   }));
-  assert.equal((await client.listTools()).tools.length, 8);
+  assert.equal((await client.listTools()).tools.length, 11);
   const result = await client.callTool({ name: 'list_tables', arguments: {} });
   assert.equal(JSON.parse(result.content[0].text).tables.length, 3);
   assert.equal((await client.callTool({ name: 'query', arguments: { sql: 'DELETE FROM scrape_tracker' } })).isError, true);
@@ -73,7 +73,7 @@ test('official MCP client initializes, lists tools and gets validation errors', 
   });
   await client.connect(transport);
   const tools = await client.listTools();
-  assert.deepEqual(tools.tools.map(t => t.name), ['list_tables', 'describe_table', 'query', 'get_game_media', 'get_game_image', 'submit_triage', 'get_draft_context', 'save_draft']);
+  assert.deepEqual(tools.tools.map(t => t.name), ['list_tables', 'describe_table', 'query', 'get_game_media', 'get_game_image', 'submit_triage', 'get_draft_context', 'save_draft','get_social_requests','get_social_data','save_social_data']);
   const result = await client.callTool({ name: 'list_tables', arguments: {} });
   assert.deepEqual(JSON.parse(result.content[0].text).tables, ['scrape_tracker', 'newly_added', 'known_comingsoon']);
   assert.equal((await client.callTool({ name: 'query', arguments: { sql: 'DELETE FROM scrape_tracker' } })).isError, true);
