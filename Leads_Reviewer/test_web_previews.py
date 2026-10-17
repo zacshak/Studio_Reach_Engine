@@ -137,7 +137,7 @@ class WebPreviewsTest(unittest.TestCase):
         self.assertEqual(client.writes, [])
 
     def test_manual_script_selects_only_queue_members(self):
-        path = Path(__file__).resolve().parents[1] / "out/backfill_web_previews.py"
+        path = Path(__file__).with_name("backfill_web_previews.py")
         spec = importlib.util.spec_from_file_location("backfill", path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
