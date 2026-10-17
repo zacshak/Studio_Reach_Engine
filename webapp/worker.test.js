@@ -7,6 +7,19 @@ import {
 } from "./worker.js";
 import worker from "./worker.js";
 
+test('social save HTTP route reaches guarded completion',async()=>{
+  const original=globalThis.fetch;
+  try {
+    globalThis.fetch=async(_url,options)=>{
+      assert.match(JSON.parse(options.body).requests[0].stmt.sql,/Socials_Data=\?,Require_Socials=0/);
+      return Response.json({results:[{type:'ok',response:{result:{rows:[[{type:'integer',value:'1'}]]}}},{type:'ok'}]});
+    };
+    const socials={X:null,LinkedIn:null,Instagram:null,Discord:null,Website:'https://example.invalid'};
+    const r=await worker.fetch(new Request('https://review.test/api/socials/save',{method:'POST',body:JSON.stringify({appid:1,request_id:'a'.repeat(32),socials})}),{TURSO_URL:'https://db.invalid'});
+    assert.equal(r.status,200);assert.deepEqual((await r.json()).socials,socials);
+  }finally{globalThis.fetch=original;}
+});
+
 test('accept never advances a lead with an incomplete or absent sprite', async () => {
   const original = globalThis.fetch;
   globalThis.fetch = () => { throw new Error('database must not be called'); };

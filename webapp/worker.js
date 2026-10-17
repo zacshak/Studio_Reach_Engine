@@ -275,8 +275,6 @@ export default {
     if (path.startsWith("/media/")) {
       let key;
       try {
-        if (req.method === 'POST' && path === '/api/socials/save')
-          response = json(await saveSocials(env, await readSocialRequestBody(req), sql));
         key = decodeURIComponent(path.slice("/media/".length));
       } catch {
         return new Response("invalid media path", { status: 400 });
@@ -296,6 +294,8 @@ export default {
     if (path.startsWith("/api/")) {
       let response;
       try {
+        if (req.method === 'POST' && path === '/api/socials/save')
+          response = json(await saveSocials(env, await readSocialRequestBody(req), sql));
         if (req.method === 'POST' && ['/api/draft/context','/api/draft/save'].includes(path))
           response = json(await draftRequest(req, env, sql, path.endsWith('/context') ? 'context' : 'save'));
         if (path === "/api/state") response = json(await state(env));
