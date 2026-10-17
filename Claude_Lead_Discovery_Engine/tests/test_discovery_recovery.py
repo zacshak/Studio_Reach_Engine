@@ -209,6 +209,26 @@ class RecoveryTest(unittest.TestCase):
             self.assertEqual(conn.execute("SELECT scrape_status FROM scrape_tracker WHERE appid=2").fetchone()[0],
                              'invalid')
 
+    def test_successful_source_without_screenshots_finishes_rejected_work(self):
+        self.queue()
+        success, norm, raw = self.payload()
+        data = json.loads(raw)
+        data['2']['data']['screenshots'] = []
+        with self.connect() as conn:
+            self.assertTrue(recovery.finish_ineligible(conn, 2, success, json.dumps(data)))
+            self.assertEqual(conn.execute('SELECT appid FROM newly_added WHERE appid=2').fetchall(), [])
+        self.assertEqual(self.pending(), [])
+        self.snapshot([(1,'Historic'),(2,'New')])
+        self.assertEqual(self.pending(), [])
+
+    def test_failed_or_malformed_source_is_not_retired_as_missing_media(self):
+        self.queue()
+        for success, raw in [(False,None),(False,'{"2":{"success":false}}'),
+                             (True,'{"2":{"success":true,"data":{}}}')]:
+            with self.connect() as conn:
+                self.assertFalse(recovery.finish_ineligible(conn,2,success,raw))
+            self.assertEqual(self.pending(), [2])
+
     def test_invalid_without_canonical_row_does_not_finish(self):
         self.queue()
         with self.connect() as conn:

@@ -57,7 +57,11 @@ def finish_ineligible(conn, appid, success, raw):
         data = entry.get("data") or {}
         kind = data.get("type")
         released = (data.get("release_date") or {}).get("coming_soon") is False
-        ineligible = (isinstance(kind, str) and bool(kind) and kind not in ("game", "demo")) or released
+        # Match cache_put's existing admission rules. A successful source response
+        # rejected for missing name/media is not an unfinished upload to retry.
+        unreviewable = kind in ('game', 'demo') and (
+            not (data.get('name') or '').strip() or not data.get('screenshots'))
+        ineligible = (isinstance(kind, str) and bool(kind) and kind not in ("game", "demo")) or released or unreviewable
         if not entry.get("success") or not ineligible:
             return False
     except (ValueError, AttributeError, TypeError):
