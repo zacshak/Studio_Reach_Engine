@@ -112,3 +112,40 @@ test('manifest failure retains the existing explicit retry path', async () => {
   assert.match(elements.get('#view').innerHTML, /Media request failed \(503\)/);
   assert.match(elements.get('#view').innerHTML, /Retry images/);
 });
+
+test('background refresh preserves loaded media but revalidates newly drafted rows', async () => {
+  const next={...emptyState,index:{1:'Game_1'},mail:[{appid:1}]};
+  const {run}=fixture(async url=>response(url==='/api/state'?next:{mail:'fresh draft',images:[]}));
+  run("S={index:{},mail:[]}; Q={triage:[],approval:[],mail:[],nomail:[],socials:[]}; manifests.set('Game_1',{mail:null}); manifests.set('Other_2',{name:'cached'})");
+  await run('load({background:true})');
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(run("manifests.get('Game_1').mail"),'fresh draft');
+  assert.equal(run("manifests.get('Other_2').name"),'cached');
+});
+
+test('neighbor prefetch does not repaint the current card or fetch neighboring images', async () => {
+  let paints=0,images=0;
+  const {ctx,run}=fixture(async()=>response({images:['SpriteSheet_Screenshots.png']}));
+  ctx.Image=class { constructor(){images++;} };
+  ctx.countPaint=()=>paints++;
+  run("Q={triage:[{folder:'Current_1'},{folder:'Neighbor_2'}]};render=countPaint");
+  await run("manifest('Neighbor_2')");
+  assert.equal(paints,0);
+  assert.equal(images,0);
+});
+
+test('preview assets and lazy thumbnails replace full PNG downloads only for display', () => {
+  const {run}=fixture(async()=>response({}));
+  run("manifests.set('Game_1',{images:['SpriteSheet_Screenshots.png'],previews:{'SpriteSheet_Screenshots.png':{src:'preview-abc.webp',thumb:'thumb-abc.webp',width:860,height:484,thumb_width:160,thumb_height:90}}})");
+  assert.match(run("imageTag('Game_1','SpriteSheet_Screenshots.png','class=\"hero\"')"),/preview-abc.webp/);
+  assert.match(run("imageTag('Game_1','SpriteSheet_Screenshots.png','data-thumb loading=\"lazy\"')"),/thumb-abc.webp/);
+  assert.equal(run("manifests.get('Game_1').images[0]"),'SpriteSheet_Screenshots.png');
+});
+
+test('background refresh failure keeps the current card visible', async () => {
+  const {run,elements}=fixture(async()=>{throw new Error('offline');});
+  run("S={mail:[]};Q={triage:[],approval:[],mail:[],nomail:[],socials:[]};document.querySelector('#view').innerHTML='Current card'");
+  await run('load({background:true})');
+  assert.equal(elements.get('#view').innerHTML,'Current card');
+  assert.match(run('actionNotice'),/offline/);
+});

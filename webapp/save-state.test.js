@@ -69,7 +69,7 @@ test('a failed replacement persists only the latest socials intent', async () =>
 test('partial rejection clears saved intent and reports blocked IDs without offering replay', async () => {
   const storage = {};
   let requests = 0;
-  const elements = Object.fromEntries(['#banner', '#bannerText', '#retryWrites'].map(key => [key, {}]));
+  const elements = Object.fromEntries(['#activity', '#banner', '#bannerText', '#retryWrites'].map(key => [key, {}]));
   const result = { ok: true, deleted: [1], blocked: [2], cleanup: 'queued' };
   const ctx = context(storage, async () => { requests++; return { ok: true, json: async () => result }; });
   ctx.$ = key => elements[key];

@@ -210,15 +210,20 @@ def upload_dir(folder, appid, card, client=None):
     images + a derived manifest.json (card text + image list + mail draft) the cloud
     app reads. Idempotent — re-uploads overwrite. Returns the R2 folder prefix used."""
     from media_readiness import validate_export
+    from web_previews import upload_previews
     validate_export(folder, appid=appid)  # Never overwrite a good remote manifest with a partial local export.
     cli = client or _client()
     prefix = os.path.basename(folder.rstrip("/\\"))      # "Boompaw_4889770"
     manifest = build_manifest(folder, appid, card)
+    originals = []
     for name in manifest["images"]:
         ctype = "image/png" if name.lower().endswith(".png") else "image/jpeg"
         with open(os.path.join(folder, name), "rb") as fh:
-            cli.put_object(Bucket=BUCKET, Key=f"{prefix}/{name}", Body=fh,
+            data = fh.read()
+            originals.append((name, data))
+            cli.put_object(Bucket=BUCKET, Key=f"{prefix}/{name}", Body=data,
                            ContentType=ctype)
+    manifest["previews"] = upload_previews(cli, BUCKET, prefix, originals)
     def merge(current):
         updated = dict(manifest)
         # Re-syncing media must not erase a draft written by the cloud drafter.
@@ -234,6 +239,42 @@ def upload_dir(folder, appid, card, client=None):
 
 def _error_code(exc):
     return str(getattr(exc, "response", {}).get("Error", {}).get("Code", ""))
+
+
+def backfill_previews(folder, client=None):
+    """Patch only an existing manifest, rereading sources after any conflict."""
+    from web_previews import upload_previews
+    cli = client or _client()
+    key = f"{folder}/manifest.json"
+    for _ in range(5):
+        try:
+            obj = cli.get_object(Bucket=BUCKET, Key=key)
+        except Exception as exc:
+            if _error_code(exc) in ("404", "NoSuchKey", "NotFound"):
+                return None
+            raise
+        current = json.loads(obj["Body"].read())
+        if not isinstance(current, dict) or not isinstance(current.get("images"), list):
+            raise MediaStoreError(f"Invalid manifest: {key}")
+        originals = []
+        for name in current["images"]:
+            if (not isinstance(name, str) or "/" in name or "\\" in name
+                    or not name.lower().endswith(_IMG_EXT)):
+                raise MediaStoreError(f"Invalid original image name: {name!r}")
+            data = cli.get_object(Bucket=BUCKET, Key=f"{folder}/{name}")["Body"].read()
+            originals.append((name, data))
+        previews = upload_previews(cli, BUCKET, folder, originals)
+        updated = {**current, "previews": {**current.get("previews", {}), **previews}}
+        try:
+            cli.put_object(Bucket=BUCKET, Key=key,
+                           Body=json.dumps(updated, ensure_ascii=False).encode("utf-8"),
+                           ContentType="application/json", IfMatch=obj["ETag"])
+            return updated
+        except Exception as exc:
+            if _error_code(exc) not in ("409", "412", "ConditionalRequestConflict",
+                                        "PreconditionFailed"):
+                raise
+    raise MediaStoreError(f"concurrent R2 update did not settle for {key}")
 
 
 def _update_json(key, fallback, mutate, client=None):

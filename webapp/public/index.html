@@ -1,13 +1,15 @@
 <!DOCTYPE html>
 <!-- SRE review app — the whole frontend. Vanilla JS, no build step.
-     Clicks are OPTIMISTIC: the card flips instantly from local state and the API
-     write fires in the background; failures pile into a banner with a Retry.
+     Cards advance only after confirmed writes. Queue refresh runs without
+     clearing already-loaded media; explicit Refresh reloads all manifests.
      Keyboard: ←/→ navigate · A = accept/approve/keep · R = reject. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SRE — Studio Reach Engine</title>
+<meta name="description" content="Review game studios, outreach drafts, and social research in Studio Reach Engine.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E🎮%3C/text%3E%3C/svg%3E">
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -25,21 +27,21 @@
     .tab { padding: .3rem .55rem; font-size: .8rem; flex: none; white-space: nowrap; }
   }
   .tab.on { background: #1b2330; color: #fff; border-color: #3b82f6; }
-  .tab b { color: #3b82f6; }
+  .tab b { color: #79adff; }
   main { max-width: 860px; margin: 0 auto; padding: 1rem; padding-bottom: 5.5rem; }
   .banner { background: #7f1d1d; color: #fecaca; padding: .5rem .8rem; border-radius: 8px;
             margin-bottom: .8rem; display: flex; justify-content: space-between; align-items: center; }
   .banner[hidden] { display: none; }   /* display:flex above beats the hidden attr without this */
   .banner button { background: #fecaca; border: 0; border-radius: 6px; padding: .2rem .6rem; cursor: pointer; }
-  .empty { text-align: center; color: #6b7280; padding: 4rem 0; }
-  a { color: #3b82f6; text-decoration: none; }
+  .empty { text-align: center; color: #9aa4b2; padding: 4rem 0; }
+  a { color: #79adff; text-decoration: underline; }
   .card h2 { margin: .2rem 0 .1rem; font-size: 1.3rem; }
   .meta { color: #9aa4b2; font-size: .85rem; margin-bottom: .5rem; }
   .desc { margin: .5rem 0 .8rem; white-space: pre-wrap; }
-  .hero { width: 100%; border-radius: 10px; background: #161b26; min-height: 200px;
-          object-fit: cover; display: block; }
+  .hero { width: 100%; height: auto; aspect-ratio: 16 / 9; border-radius: 10px; background: #161b26;
+          object-fit: contain; display: block; }
   .thumbs { display: flex; gap: .4rem; margin-top: .4rem; overflow-x: auto; }
-  .thumbs img { height: 52px; border-radius: 6px; cursor: pointer; opacity: .55; }
+  .thumbs img { width: 92px; height: 52px; object-fit: cover; border-radius: 6px; cursor: pointer; opacity: .75; }
   .thumbs img.on { opacity: 1; outline: 2px solid #3b82f6; }
   .mail { background: #161b26; border: 1px solid #262b36; border-radius: 10px;
           padding: .8rem; margin: .8rem 0; white-space: pre-wrap; font-size: .92rem; }
@@ -51,7 +53,12 @@
   .nav { display: flex; align-items: center; justify-content: center; gap: 1rem; margin: .8rem 0; }
   .nav button { background: #1b2330; color: #e6e6e6; border: 1px solid #262b36;
                 border-radius: 8px; padding: .35rem .9rem; cursor: pointer; }
-  .nav span { color: #6b7280; font-size: .85rem; min-width: 70px; text-align: center; }
+  .nav span { color: #9aa4b2; font-size: .85rem; min-width: 70px; text-align: center; }
+  .nav button { min-width: 44px; min-height: 44px; }
+  .tab { min-height: 44px; }
+  .refresh { min-width: 44px; min-height: 44px; background: #1b2330; color: #e6e6e6; border: 1px solid #52525b; border-radius: 8px; cursor: pointer; }
+  #activity { position: fixed; top: 4rem; right: 1rem; z-index: 3; background: #1b2330; color: #e6e6e6; padding: .4rem .7rem; border-radius: 6px; pointer-events: none; }
+  #activity:empty { display: none; }
   .actions { display: flex; gap: .6rem; position: fixed; left: 0; right: 0; bottom: 0;
              max-width: 860px; margin: 0 auto; padding: .6rem 1rem calc(.6rem + env(safe-area-inset-bottom));
              background: #0e1117; border-top: 1px solid #262b36; z-index: 2; }
@@ -77,8 +84,10 @@
   <button class="tab" data-tab="mail">📧 Mail <b></b></button>
   <button class="tab" data-tab="nomail">🚫 No-Mail <b></b></button>
   <button class="tab" data-tab="socials">🔗 Socials <b></b></button>
+  <button class="refresh" onclick="load()" aria-label="Refresh dashboard">↻</button>
 </header>
 <main>
+  <div id="activity" role="status" aria-live="polite"></div>
   <div id="banner" class="banner" hidden>
     <span id="bannerText"></span><button id="retryWrites" onclick="retryFailed()">Retry</button>
   </div>
@@ -97,6 +106,7 @@ let writeBusy = false;
 let actionNotice = '';
 function persistWrites() { localStorage.setItem('sre_pending_writes', JSON.stringify(failed)); }
 function showBanner() {
+  $("#activity").textContent = writeBusy ? 'Saving…' : '';
   $("#banner").hidden = failed.length === 0 && !actionNotice;
   $("#retryWrites").hidden = failed.length === 0;
   $("#bannerText").textContent = [actionNotice, failed.length ? `${failed.length} unconfirmed action(s). ${failed.at(-1)[2] || 'Retry to confirm the saved action.'}` : ''].filter(Boolean).join(' ');
@@ -104,6 +114,8 @@ function showBanner() {
 async function api(action, extra = {}) {
   if (writeBusy) return false;
   writeBusy = true;
+  // An older refresh must not repaint state captured before this write.
+  if (typeof loadGeneration !== 'undefined') loadGeneration++;
   if (!bulkBusy) actionNotice = '';
   if (action === 'require_socials') {
     for (let i = failed.length - 1; i >= 0; i--) {
@@ -115,6 +127,7 @@ async function api(action, extra = {}) {
   if (!entry) { entry = [action, extra, 'Request awaiting confirmation']; failed.push(entry); }
   try {
     persistWrites();
+    showBanner();
     render();
     const r = await fetch("/api/act", {
       method: "POST",
@@ -154,6 +167,7 @@ let tab = "triage";
 const idx = { triage: 0, approval: 0, mail: 0, nomail: 0, socials: 0 };
 const manifests = new Map();           // folder -> manifest (or null while loading)
 let mediaGeneration = 0, loadGeneration = 0, imageRetry = 0;
+let renderedHTML = null;
 const imageFailures = new Set();
 function invalidateMedia() {
   mediaGeneration++;
@@ -181,26 +195,36 @@ const emailsOf = (appid) => (S.mail.find((m) => m.appid === appid) || {}).emails
 const requiresSocials = (appid) => Boolean(S.requireSocials?.[String(appid)]);
 const socialsOf = (appid) => ((S.socials || []).find((item) => item.appid === appid) || {}).data || {};
 
-async function load() {
+function refreshError(message, background) {
+  if (background && Q) { actionNotice = message; showBanner(); }
+  else { renderedHTML = null; $("#view").textContent = message; }
+}
+async function load({ background = false } = {}) {
   const generation = ++loadGeneration;
   showBanner();
-  $("#view").innerHTML = '<div class="empty">Loading…</div>';
+  if (!background || !Q) { renderedHTML = null; $("#view").innerHTML = '<div class="empty">Loading…</div>'; }
   let r;
   try { r = await fetch("/api/state", { signal: AbortSignal.timeout(30000), cache: 'no-store' }); }
-  catch (e) { if (generation === loadGeneration) $("#view").textContent = `Could not refresh: ${e.message}. Reload to try again. Saved actions are retained.`; return; }
+  catch (e) { if (generation === loadGeneration) refreshError(`Could not refresh: ${e.message}. Reload to try again. Saved actions are retained.`, background); return; }
   if (generation !== loadGeneration) return;
   if (!r.ok) {
     const error = await r.json().catch(() => ({}));
     if (generation !== loadGeneration) return;
-    $("#view").textContent = `Could not load data: ${error.error || r.status}`;
+    refreshError(`Could not load data: ${error.error || r.status}`, background);
     return;
   }
   let next;
   try { next = await r.json(); }
-  catch { if (generation === loadGeneration) $("#view").textContent = 'Server returned invalid data. Refresh to retry.'; return; }
+  catch { if (generation === loadGeneration) refreshError('Server returned invalid data. Refresh to retry.', background); return; }
   if (generation !== loadGeneration) return;
+  if (background && S) {
+    mediaGeneration++;
+    for (const [folder, value] of manifests) if (value === null) manifests.delete(folder);
+    // A newly drafted row may have a cached pre-draft manifest. Revalidate it.
+    const oldMail = new Set(S.mail.map(row => Number(row.appid)));
+    for (const row of next.mail) if (!oldMail.has(Number(row.appid))) manifests.delete(next.index[String(row.appid)]);
+  } else invalidateMedia();
   S = next;
-  invalidateMedia();
   Q = queues();
   if (!Q[tab].length) tab = ["triage", "approval", "mail", "nomail", "socials"].find((t) => Q[t].length) || tab;
   render();
@@ -221,7 +245,7 @@ async function manifest(folder) {
       if (generation !== mediaGeneration) return null;
       manifests.set(folder, { missing: true, error: e.message });
     }
-    render();                          // repaint when the awaited card arrives
+    if (Q?.[tab]?.[idx[tab]]?.folder === folder) render();
   }
   return manifests.get(folder);
 }
@@ -229,10 +253,7 @@ function prefetch(list, i) {
   for (const j of [i + 1, i - 1]) {
     const c = list[j];
     if (!c || manifests.has(c.folder)) continue;
-    manifest(c.folder).then((m) => {
-      if (m && m.images && m.images[0])
-        new Image().src = `/media/${enc(c.folder)}/${enc(m.images[0])}`;
-    });
+    manifest(c.folder); // Metadata only. Do not compete with the visible hero image.
   }
 }
 
@@ -243,7 +264,7 @@ function prefetch(list, i) {
 const fired = {};
 function ghaBtn(label, wf) {
   return fired[wf]
-    ? `<button disabled>✓ ${label} — started</button>`
+    ? `<button disabled data-unavailable>✓ ${label} — started</button>`
     : `<button onclick="fireGha('${wf}')">${label}</button>`;
 }
 async function fireGha(wf) {
@@ -252,6 +273,9 @@ async function fireGha(wf) {
   render();
 }
 
+function paint(view, html) {
+  if (renderedHTML !== html) { view.innerHTML = html; renderedHTML = html; }
+}
 function render() {
   if (!Q) return;
   document.querySelectorAll(".tab").forEach((b) => {
@@ -268,8 +292,8 @@ function render() {
     (tab === "mail" && S.scheduled ? ghaBtn("📨 Send scheduled mails", "send") : "") +
     (tab === "socials" ? ghaBtn("🔎 Fetch requested socials", "socials") : "");
   if (!list.length) {
-    view.innerHTML = (gha ? `<div class="bulk top">${gha}</div>` : "") +
-                     `<div class="empty">Nothing to review 🎉</div>`;
+    paint(view, (gha ? `<div class="bulk top">${gha}</div>` : "") +
+                     `<div class="empty">Nothing to review 🎉</div>`);
     return;
   }
 
@@ -286,11 +310,11 @@ function render() {
   imgs = [...imgs].sort((a, b) => b.includes("SpriteSheet") - a.includes("SpriteSheet"));
   shot = Math.min(shot, Math.max(imgs.length - 1, 0));
   const img = imgs.length
-    ? imageTag(card.folder, imgs[shot], 'class="hero"')
+    ? imageTag(card.folder, imgs[shot], 'class="hero" fetchpriority="high"')
     : m?.missing ? `<div class="empty">${escapeHtml(m.error || 'Media unavailable')}<br><button onclick="retryMedia()">Retry images</button></div>` : `<div class="hero"></div>`;
   const thumbs = imgs.length > 1
     ? `<div class="thumbs">${imgs.map((f, k) =>
-        imageTag(card.folder, f, `class="${k === shot ? "on" : ""}" onclick="shot=${k};render()"`)).join("")}</div>` : "";
+        imageTag(card.folder, f, `loading="lazy" data-thumb class="${k === shot ? "on" : ""}" onclick="shot=${k};render()"`)).join("")}</div>` : "";
   // "All N screenshots" toggle from the Streamlit card — stacks every image full-width
   const shotsCtl = imgs.length > 1
     ? `<div class="bulk"><button onclick="showAll=!showAll;render()">${
@@ -317,7 +341,7 @@ function render() {
     gha;
 
   // bulk/GHA controls render ABOVE the card — that's where the Streamlit app kept them
-  view.innerHTML = `
+  paint(view, `
     ${bulk ? `<div class="bulk top">${bulk}</div>` : ""}
     <div class="card">
       <h2>${escapeHtml(String(name))}</h2>
@@ -331,24 +355,29 @@ function render() {
         : `<div class="desc">${m ? escapeHtml(m.desc || "") : "Loading…"}</div>`}
       ${mail}
       <div class="nav">
-        <button onclick="move(-1)">←</button><span>${i + 1} / ${list.length}</span><button onclick="move(1)">→</button>
+        <button aria-label="Previous game" onclick="move(-1)">←</button><span>${i + 1} / ${list.length}</span><button aria-label="Next game" onclick="move(1)">→</button>
       </div>
       <div class="actions">
-        ${A[0] ? `<button class="ok" ${tab === 'approval' && (!m || !Array.isArray(m.images) || !m.images.includes('SpriteSheet_Screenshots.png')) ? 'disabled' : ''} onclick="doAct('${A[1]}')">${A[0]}</button>` : ""}
+        ${A[0] ? `<button class="ok" ${tab === 'approval' && (!m || !Array.isArray(m.images) || !m.images.includes('SpriteSheet_Screenshots.png')) ? 'disabled data-unavailable' : ''} onclick="doAct('${A[1]}')">${A[0]}</button>` : ""}
         ${(tab === "mail" || tab === "nomail")
           ? `<button class="reqsocial ${requiresSocials(card.appid) ? "on" : ""}"
               onclick="toggleSocials(${card.appid})">ReqSocial: ${requiresSocials(card.appid) ? "ON" : "OFF"}</button>`
           : ""}
         <button class="bad" onclick="doAct('${R}')">❌ Reject</button>
       </div>
-    </div>`;
-  if (writeBusy || bulkBusy) view.querySelectorAll('button').forEach(button => { button.disabled = true; });
+    </div>`);
+  view.querySelectorAll('button').forEach(button => { button.disabled = writeBusy || bulkBusy || button.hasAttribute('data-unavailable'); });
 }
 
 function imageTag(folder, name, attributes) {
-  const key = `/media/${enc(folder)}/${enc(name)}`;
+  const preview = manifests.get(folder)?.previews?.[name];
+  const thumbnail = attributes.includes('data-thumb');
+  const file = (thumbnail ? preview?.thumb : preview?.src) || name;
+  const width = thumbnail ? (preview?.thumb_width || 92) : (preview?.width || 1210);
+  const height = thumbnail ? (preview?.thumb_height || 52) : (preview?.height || 686);
+  const key = `/media/${enc(folder)}/${enc(file)}`;
   if (imageFailures.has(key)) return `<span role="status">Could not load image: ${escapeHtml(name)} <button onclick="retryMedia()">Retry images</button></span>`;
-  return `<img ${attributes} src="${escapeHtml(key)}${imageRetry ? `?retry=${imageRetry}` : ''}" alt="${escapeHtml(name)}" data-media-key="${escapeHtml(key)}" data-generation="${mediaGeneration}" onerror="imageFailed(this)">`;
+  return `<img ${attributes} width="${width}" height="${height}" decoding="async" src="${escapeHtml(key)}${imageRetry ? `?retry=${imageRetry}` : ''}" alt="${escapeHtml(name)}" data-media-key="${escapeHtml(key)}" data-generation="${mediaGeneration}" onerror="imageFailed(this)">`;
 }
 function imageFailed(image) {
   if (!image.isConnected || Number(image.dataset.generation) !== mediaGeneration || imageFailures.has(image.dataset.mediaKey)) return;
@@ -376,8 +405,13 @@ async function doAct(action) {
   if (writeBusy || bulkBusy) return;
   const card = Q[tab][idx[tab]];
   if (!card || !await api(action, { appid: card.appid })) return;
+  // Advance immediately after acknowledgement, never before the write succeeds.
+  for (const key of Object.keys(Q)) Q[key] = Q[key].filter(c => c.appid !== card.appid);
+  if (action === 'accept') S.pendingDrafts = true;
+  if (action === 'approve') S.scheduled = true;
   shot = 0; armed = null; showAll = false;
-  await load();
+  render();
+  await load({ background: true });
 }
 function renderSocials(data) {
   const links = Object.entries(data).filter(([, value]) => value).map(([label, value]) => {
@@ -399,7 +433,11 @@ function renderSocials(data) {
 async function toggleSocials(appid) {
   if (writeBusy || bulkBusy) return;
   const required = !requiresSocials(appid);
-  if (await api("require_socials", { appid, required })) await load();
+  if (await api("require_socials", { appid, required })) {
+    (S.requireSocials ||= {})[String(appid)] = required;
+    render();
+    await load({ background: true });
+  }
 }
 async function approveAll() {
   if (writeBusy || bulkBusy) return;
@@ -425,7 +463,7 @@ async function bulkReject() {           // Only remove cards after server confir
     }
   } finally {
     bulkBusy = false;
-    await load();
+    await load({ background: true });
   }
 }
 

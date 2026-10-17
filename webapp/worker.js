@@ -299,7 +299,8 @@ export default {
         headers: {
           "Content-Type": obj.httpMetadata?.contentType || "application/octet-stream",
           // manifests change (drafts get written); images are immutable per lead
-          "Cache-Control": key.endsWith(".json") ? "no-store" : "public, max-age=86400",
+          "Cache-Control": key.endsWith(".json") ? "no-store" : /\/(?:preview|thumb)-[a-f0-9]{32}\.webp$/.test(key)
+            ? "public, max-age=31536000, immutable" : "public, max-age=86400",
         },
       });
     }
