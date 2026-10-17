@@ -80,10 +80,10 @@ class DraftRuntimeTest(unittest.TestCase):
              patch.object(draft_cloud.media_store, 'fetch_manifest', side_effect=[{'name':'One'},{'name':'Two'}]), \
              patch.object(draft_cloud, '_draft', return_value='Subject: hello\n\nBody'), \
              patch.object(draft_cloud.pipeline, 'set_mail_template'), \
-             patch.object(draft_cloud.pipeline, 'set_mail_status') as status, \
+             patch.object(draft_cloud.pipeline, 'complete_saved_draft') as status, \
              patch.object(draft_cloud.media_store, 'write_manifest', side_effect=[RuntimeError('storage down'),None]):
             self.assertEqual(draft_cloud.run_queue(None,'test'),1)
-            status.assert_called_once_with(2,'Drafted')
+            status.assert_called_once_with(2,1,None)
 
 
 if __name__ == '__main__':

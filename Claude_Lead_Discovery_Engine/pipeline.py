@@ -785,6 +785,36 @@ def set_mail_status(appid, status):
         raise ValueError(f"illegal transition to {status!r} for appid {appid}")
 
 
+def complete_saved_draft(appid, template, submission=None):
+    """Atomically complete a persisted draft, including an uncertain prior commit.
+
+    A retry may confirm the same draft in a later state, but must never rewind it.
+    """
+    template = int(template)
+    _ensure()
+    guard, args = '', [template, int(appid)]
+    if submission:
+        if submission['scrape_status'] not in ('seeded', 'scraped'):
+            raise ValueError('invalid draft scrape state')
+        guard = " AND emails=? AND scrape_status=? AND COALESCE(CAST(mail_template AS TEXT),'')=?"
+        args.extend([submission['email'], submission['scrape_status'], submission['selected_template']])
+    with closing(_rw()) as conn:
+        row = conn.execute(
+            "UPDATE scrape_tracker SET Mail_status='Drafted',mail_template=? "
+            "WHERE appid=? AND Mail_status='Writing' AND scrape_status IN ('seeded','scraped')"
+            + guard + " RETURNING appid", args).fetchone()
+        if row is None:
+            current = conn.execute(
+                "SELECT Mail_status,mail_template,emails,scrape_status FROM scrape_tracker WHERE appid=?",
+                (int(appid),)).fetchone()
+            matching = current and current[0] in ('Drafted','Scheduled','Sending','Sent','Replied') and current[1] == template
+            if submission:
+                matching = matching and current[2] == submission['email'] and current[3] == submission['scrape_status']
+            if not matching:
+                raise ValueError(f'Saved draft no longer matches row {appid}; no state changed')
+        conn.commit()
+
+
 def complete_mcp_draft(appid, template, expected_email, expected_scrape, selected_template=''):
     """Recover a saved MCP draft only for the exact recipient it was prepared for."""
     if expected_scrape not in ('seeded', 'scraped'):

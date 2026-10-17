@@ -184,6 +184,24 @@ def _draft(client, model, manifest, folder):
     return _render_template(template, game, studio, values)
 
 
+def _complete_draft(appid, template, manifest):
+    """Retry only the idempotent DB completion, never inference or R2 publication."""
+    submission = manifest.get('draft_submission')
+    if submission:
+        media_store.check_draft_inputs(submission)
+    for attempt in range(4):
+        try:
+            pipeline.complete_saved_draft(appid, template, submission)
+            return
+        except Exception as error:
+            if not pipeline.retryable_db_error(error) or attempt == 3:
+                raise
+            pipeline.reconnect()
+            delay = 2 ** attempt
+            print(f'{appid} -> DB completion retry {attempt + 1}/3 in {delay}s: {type(error).__name__}', flush=True)
+            time.sleep(delay)
+
+
 def main():
     if '--check-only' not in sys.argv and '--preview-appid' not in sys.argv:
         if not pipeline.mail_status_appids('Writing'):
@@ -244,14 +262,7 @@ def run_queue(client, model):
             # Recover a crash after the manifest write but before the DB transition.
             n = manifest.get("mail_template")
             try:
-                submission = manifest.get('draft_submission')
-                if submission:
-                    media_store.check_draft_inputs(submission)
-                    pipeline.complete_mcp_draft(appid, n, submission['email'], submission['scrape_status'], submission['selected_template'])
-                else:
-                    if n is not None:
-                        pipeline.set_mail_template(appid, n)
-                    pipeline.set_mail_status(appid, "Drafted")
+                _complete_draft(appid, n, manifest)
             except Exception as error:
                 print(f'{appid} -> saved draft recovery deferred: {error}', flush=True)
                 skipped += 1
@@ -289,13 +300,7 @@ def run_queue(client, model):
         manifest["mail_template"] = n
         try:
             persisted = media_store.write_manifest(folder, manifest)
-            submission = persisted.get('draft_submission') if isinstance(persisted, dict) else None
-            if submission:
-                media_store.check_draft_inputs(submission)
-                pipeline.complete_mcp_draft(appid, n, submission['email'], submission['scrape_status'], submission['selected_template'])
-            else:
-                pipeline.set_mail_template(appid, n)
-                pipeline.set_mail_status(appid, "Drafted")
+            _complete_draft(appid, n, persisted if isinstance(persisted, dict) else manifest)
         except Exception as error:
             print(f'{appid} -> draft persistence deferred: {error}', flush=True)
             skipped += 1
