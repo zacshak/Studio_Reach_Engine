@@ -112,16 +112,21 @@ class RecoveryTest(unittest.TestCase):
         exporter.submit.assert_called_once_with(2)
         self.assertEqual(self.pending(), [2])  # Staging is not publication.
 
-    def test_failed_media_restages_from_durable_cache_on_fresh_runner(self):
+    def test_failed_media_refreshes_stale_urls_on_fresh_runner(self):
         self.queue()
         self.discover(lambda *args: self.payload(), stage_failure=True)
         self.assertEqual(self.pending(), [2])
-        rc, fetched, exporter = self.discover(AssertionError("Cache must avoid refetch"))
+        success, norm, raw = self.payload()
+        fresh = json.loads(raw)
+        fresh['2']['data']['screenshots'][0]['path_thumbnail'] = 'https://invalid.test/fresh.jpg'
+        rc, fetched, exporter = self.discover(lambda *args: (success, norm, json.dumps(fresh)))
         self.assertEqual(rc, 0)
-        fetched.assert_not_called()
+        fetched.assert_called_once()
         exporter.submit.assert_called_once_with(2)
         self.assertEqual(self.pending(), [2])
         with self.connect() as conn:
+            self.assertIn('fresh.jpg', conn.execute(
+                'SELECT screenshots FROM newly_added WHERE appid=2').fetchone()[0])
             self.assertEqual(conn.execute("SELECT discovered_on FROM newly_added WHERE appid=2").fetchone()[0],
                              "2026-10-15")
             recovery.ack_published(conn, [2])
@@ -129,6 +134,16 @@ class RecoveryTest(unittest.TestCase):
         self.assertEqual(self.pending(), [])
         self.snapshot([(1, "Historic"), (2, "New")])
         self.assertEqual(self.pending(), [])
+
+    def test_failed_refresh_keeps_job_without_staging_stale_media(self):
+        self.queue()
+        self.discover(lambda *args: self.payload(), stage_failure=True)
+        _, fetched, exporter = self.discover(lambda *args: (False, None, None))
+        fetched.assert_called_once()
+        exporter.submit.assert_not_called()
+        self.assertEqual(self.pending(), [2])
+        with self.connect() as conn:
+            self.assertIsNotNone(conn.execute('SELECT appid FROM newly_added WHERE appid=2').fetchone())
 
     def test_rejection_during_fetch_cannot_recreate_lead(self):
         self.queue()

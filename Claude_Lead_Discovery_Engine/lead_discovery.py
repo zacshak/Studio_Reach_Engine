@@ -145,7 +145,9 @@ def main():
     limiter = bf.RateLimiter(bf.MIN_INTERVAL, bf.MAX_PER_WINDOW, bf.WINDOW)
     rows, tracked_appids, ok, dropped = [], [], 0, 0
     for idx, appid in enumerate(appids, 1):
-        hit = None if args.refresh else bf.cache_get(conn, appid)
+        # Unpublished jobs may contain expired Steam CDN URLs. Refresh their
+        # source on every attempt instead of retrying the same broken cache.
+        hit = None if durable or args.refresh else bf.cache_get(conn, appid)
         if hit is not None:
             norm = hit["normalized"] if hit["success"] else None
             tracked = norm is not None
@@ -221,6 +223,8 @@ def main():
         print(f"  Invalid         : {invalid} lead(s) quarantined")
         print(f"  No-mail-staged : {nomail_staged} pending lead(s)"
               + (f", {len(nomail_errors)} export error(s)" if nomail_errors else ""))
+        for appid, error in exp_errors + nomail_errors:
+            print(f"  Export failed {appid}: {error}", flush=True)
     print("=" * 60)
     if rows:
         print("\n  Preview (first 8):")
