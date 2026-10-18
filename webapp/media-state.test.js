@@ -152,6 +152,34 @@ test('neighbor prefetch does not repaint the current card or fetch neighboring i
   assert.equal(images,0);
 });
 
+test('neighbor prefetch downloads only adjacent hero previews once and uses the rendered URL', async () => {
+  const images=[];
+  const {ctx,run}=fixture(async()=>response({images:['shot.jpg','SpriteSheet_Screenshots.png'],previews:{'SpriteSheet_Screenshots.png':{src:'preview.webp'}}}));
+  ctx.Image=class {set src(value){this.url=value;images.push(this);}};
+  run("Q={triage:[{folder:'Far_0'},{folder:'Previous_1'},{folder:'Current_2'},{folder:'Next_3'},{folder:'Far_4'}]};idx.triage=2;render=()=>{};prefetch(Q.triage,2)");
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(images.map(x=>x.url).sort(),['/media/Next_3/preview.webp','/media/Previous_1/preview.webp']);
+  assert(images.every(x=>x.fetchPriority==='low'));
+  assert.match(run("imageTag('Next_3','SpriteSheet_Screenshots.png','class=\"hero\"')"),/src="\/media\/Next_3\/preview.webp"/);
+  run('prefetch(Q.triage,2)');
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(images.length,2);
+  images[0].onerror();
+  run('prefetch(Q.triage,2)');
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(images.length,3);
+});
+
+test('outdated neighboring metadata cannot start a preload after navigating away', async () => {
+  const delayed=deferred();let images=0;
+  const {ctx,run}=fixture(async()=>delayed.promise);
+  ctx.Image=class {constructor(){images++;}};
+  run("Q={triage:[{folder:'Current_1'},{folder:'Next_2'},{folder:'Other_3'},{folder:'Last_4'}]};render=()=>{};prefetch(Q.triage,0);idx.triage=3");
+  delayed.resolve(response({images:['SpriteSheet_Screenshots.png']}));
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(images,0);
+});
+
 test('preview assets and lazy thumbnails replace full PNG downloads only for display', () => {
   const {run}=fixture(async()=>response({}));
   run("manifests.set('Game_1',{images:['SpriteSheet_Screenshots.png'],previews:{'SpriteSheet_Screenshots.png':{src:'preview-abc.webp',thumb:'thumb-abc.webp',width:860,height:484,thumb_width:160,thumb_height:90}}})");

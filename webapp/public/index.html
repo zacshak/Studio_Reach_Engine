@@ -170,10 +170,12 @@ const manifests = new Map();           // folder -> manifest (or null while load
 let mediaGeneration = 0, loadGeneration = 0, imageRetry = 0;
 let renderedHTML = null;
 const imageFailures = new Set();
+const preloadedImages = new Map();
 function invalidateMedia() {
   mediaGeneration++;
   manifests.clear();
   imageFailures.clear();
+  preloadedImages.clear();
 }
 let shot = 0;                          // selected screenshot on current card
 let armed = null;                      // two-tap confirm for bulk buttons
@@ -250,9 +252,28 @@ async function manifest(folder) {
 function prefetch(list, i) {
   for (const j of [i + 1, i - 1]) {
     const c = list[j];
-    if (!c || manifests.has(c.folder)) continue;
-    manifest(c.folder); // Metadata only. Do not compete with the visible hero image.
+    if (!c) continue;
+    preloadNeighbor(c.folder);
   }
+}
+async function preloadNeighbor(folder) {
+  const generation = mediaGeneration;
+  const m = await manifest(folder);
+  if (generation !== mediaGeneration || !Array.isArray(m?.images)) return;
+  const current = Q?.[tab] || [];
+  if (![idx[tab] + 1, idx[tab] - 1].some(i => current[i]?.folder === folder)) return;
+  const name = m.images.find(name => name.includes('SpriteSheet')) || m.images[0];
+  if (!name) return;
+  const url = imageURL(folder, name);
+  if (preloadedImages.has(url)) return;
+  const image = new Image();
+  image.fetchPriority = 'low';
+  image.decoding = 'async';
+  preloadedImages.set(url, image);
+  // Keep a few image references, not the entire review queue in memory.
+  while (preloadedImages.size > 4) preloadedImages.delete(preloadedImages.keys().next().value);
+  image.onerror = () => { if (preloadedImages.get(url) === image) preloadedImages.delete(url); };
+  image.src = url;
 }
 
 // ---- render ----
@@ -364,6 +385,11 @@ function render() {
   });
 }
 
+function imageURL(folder, name, thumbnail = false) {
+  const preview = manifests.get(folder)?.previews?.[name];
+  const file = (thumbnail ? preview?.thumb : preview?.src) || name;
+  return `/media/${enc(folder)}/${enc(file)}${imageRetry ? `?retry=${imageRetry}` : ''}`;
+}
 function imageTag(folder, name, attributes) {
   const preview = manifests.get(folder)?.previews?.[name];
   const thumbnail = attributes.includes('data-thumb');
@@ -372,7 +398,7 @@ function imageTag(folder, name, attributes) {
   const height = thumbnail ? (preview?.thumb_height || 52) : (preview?.height || 686);
   const key = `/media/${enc(folder)}/${enc(file)}`;
   if (imageFailures.has(key)) return `<span role="status">Could not load image: ${escapeHtml(name)} <button onclick="retryMedia()">Retry images</button></span>`;
-  return `<img ${attributes} width="${width}" height="${height}" decoding="async" src="${escapeHtml(key)}${imageRetry ? `?retry=${imageRetry}` : ''}" alt="${escapeHtml(name)}" data-media-key="${escapeHtml(key)}" data-generation="${mediaGeneration}" onerror="imageFailed(this)">`;
+  return `<img ${attributes} width="${width}" height="${height}" decoding="async" src="${escapeHtml(imageURL(folder, name, thumbnail))}" alt="${escapeHtml(name)}" data-media-key="${escapeHtml(key)}" data-generation="${mediaGeneration}" onerror="imageFailed(this)">`;
 }
 function imageFailed(image) {
   if (!image.isConnected || Number(image.dataset.generation) !== mediaGeneration || imageFailures.has(image.dataset.mediaKey)) return;
