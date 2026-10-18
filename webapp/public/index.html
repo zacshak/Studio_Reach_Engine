@@ -106,13 +106,16 @@ const failed = (() => {
   return retained;
 })();
 let writeBusy = false;
+const pendingCards = new Set();
+let cardWrites = Promise.resolve();
 let actionNotice = '';
 function persistWrites() { localStorage.setItem('sre_pending_writes', JSON.stringify(failed)); }
 function showBanner() {
-  $("#activity").textContent = writeBusy ? 'Saving…' : '';
-  $("#banner").hidden = failed.length === 0 && !actionNotice;
-  $("#retryWrites").hidden = failed.length === 0;
-  $("#bannerText").textContent = [actionNotice, failed.length ? `${failed.length} unconfirmed action(s). ${failed.at(-1)[2] || 'Retry to confirm the saved action.'}` : ''].filter(Boolean).join(' ');
+  const unresolved = failed.filter(item => !pendingCards.has(item[1].appid));
+  $("#activity").textContent = pendingCards.size ? `Saving ${pendingCards.size} action(s)…` : writeBusy ? 'Saving…' : '';
+  $("#banner").hidden = unresolved.length === 0 && !actionNotice;
+  $("#retryWrites").hidden = unresolved.length === 0;
+  $("#bannerText").textContent = [actionNotice, unresolved.length ? `${unresolved.length} unconfirmed action(s). ${unresolved.at(-1)[2] || 'Retry to confirm the saved action.'}` : ''].filter(Boolean).join(' ');
 }
 async function api(action, extra = {}) {
   if (writeBusy) return false;
@@ -151,7 +154,7 @@ async function api(action, extra = {}) {
   }
 }
 async function retryFailed() {
-  if (writeBusy || bulkBusy) return;
+  if (writeBusy || bulkBusy || pendingCards.size) return;
   for (const [action, extra] of [...failed]) {
     if (action === 'trigger') continue;
     if (!await api(action, extra)) break;
@@ -178,7 +181,7 @@ let showAll = false;                   // "All N screenshots" toggle on current 
 
 function queues() {
   const mk = (ids) => ids.map((a) => ({ appid: a, folder: S.index[String(a)] }))
-                         .filter((c) => c.folder)
+                         .filter((c) => c.folder && !pendingCards.has(c.appid))
                          .sort((x, y) => x.folder.toLowerCase() < y.folder.toLowerCase() ? -1 : 1);
   return {
     triage: mk(S.triage),
@@ -260,10 +263,10 @@ const fired = {};
 function ghaBtn(label, wf) {
   return fired[wf]
     ? `<button disabled data-unavailable>✓ ${label} — started</button>`
-    : `<button onclick="fireGha('${wf}')">${label}</button>`;
+    : `<button ${writeBusy || pendingCards.size || failed.length ? 'disabled' : ''} onclick="fireGha('${wf}')">${label}</button>`;
 }
 async function fireGha(wf) {
-  if (writeBusy || bulkBusy) return;
+  if (writeBusy || bulkBusy || pendingCards.size || failed.length) return;
   if (await api("trigger", { workflow: wf })) fired[wf] = true;
   render();
 }
@@ -287,7 +290,7 @@ function render() {
     (tab === "mail" && S.scheduled ? ghaBtn("📨 Send scheduled mails", "send") : "");
   if (!list.length) {
     paint(view, (gha ? `<div class="bulk top">${gha}</div>` : "") +
-                     `<div class="empty">Nothing to review 🎉</div>`);
+                     `<div class="empty">${pendingCards.size ? 'Review actions are still saving…' : 'Nothing to review 🎉'}</div>`);
     return;
   }
 
@@ -352,7 +355,13 @@ function render() {
         <button class="bad" onclick="doAct('${R}')">❌ Reject</button>
       </div>
     </div>`);
-  view.querySelectorAll('button').forEach(button => { button.disabled = writeBusy || bulkBusy || button.hasAttribute('data-unavailable'); });
+  view.querySelectorAll('button').forEach(button => {
+    const cardAction = button.closest('.actions');
+    const globalAction = button.closest('.bulk.top');
+    button.disabled = bulkBusy || button.hasAttribute('data-unavailable') ||
+      (globalAction && (writeBusy || pendingCards.size > 0 || failed.length > 0)) ||
+      (cardAction && ((writeBusy && !pendingCards.size) || failed.some(item => item[1].appid === card.appid)));
+  });
 }
 
 function imageTag(folder, name, attributes) {
@@ -386,27 +395,53 @@ function move(d) {
   render();
 }
 
-// Confirm the write, then reload authoritative queues (including No-Mail Keep).
+// Persist intent before advancing. Serialize writes, not user navigation.
 async function doAct(action) {
-  if (writeBusy || bulkBusy) return;
+  if (bulkBusy || (writeBusy && !pendingCards.size)) return;
   const card = Q[tab][idx[tab]];
-  if (!card || !await api(action, { appid: card.appid })) return;
-  // Advance immediately after acknowledgement, never before the write succeeds.
-  for (const key of Object.keys(Q)) Q[key] = Q[key].filter(c => c.appid !== card.appid);
-  if (action === 'accept') S.pendingDrafts = true;
-  if (action === 'approve') S.scheduled = true;
+  if (!card || pendingCards.has(card.appid) || failed.some(item => item[1].appid === card.appid)) return;
+  const entry = [action, { appid: card.appid }, 'Queued for saving'];
+  failed.push(entry);
+  try { persistWrites(); }
+  catch (e) {
+    failed.splice(failed.indexOf(entry), 1);
+    actionNotice = `Could not save action locally: ${e.message}. Nothing was submitted.`;
+    showBanner(); return;
+  }
+  pendingCards.add(card.appid);
+  loadGeneration++;
+  Q = queues();
   shot = 0; armed = null; showAll = false;
-  render();
-  await load({ background: true });
+  showBanner(); render();
+  const saving = cardWrites.then(async () => {
+    try {
+      const result = await api(action, { appid: card.appid });
+      if (result && !result.blocked?.includes(card.appid)) {
+        for (const key of ['triage', 'approval', 'nomail']) S[key] = S[key].filter(id => id !== card.appid);
+        S.mail = S.mail.filter(row => row.appid !== card.appid);
+        if (action === 'accept') S.pendingDrafts = true;
+        if (action === 'approve') S.scheduled = true;
+      }
+    } finally {
+      pendingCards.delete(card.appid);
+      loadGeneration++;
+      Q = queues();
+      showBanner(); render();
+      if (!pendingCards.size) await load({ background: true });
+    }
+  });
+  // A rendering failure must not strand later persisted actions.
+  cardWrites = saving.catch(e => { console.error(e); });
+  return saving;
 }
 async function approveAll() {
-  if (writeBusy || bulkBusy) return;
+  if (writeBusy || bulkBusy || pendingCards.size || failed.length) return;
   const ids = Q.mail.map((c) => c.appid);
   if (await api("approve_all", { appids: ids })) await load();
 }
 let bulkBusy = false, bulkDone = 0, bulkTotal = 0;
 async function bulkReject() {           // Only remove cards after server confirmation.
-  if (bulkBusy || writeBusy) return;
+  if (bulkBusy || writeBusy || pendingCards.size || failed.length) return;
   if (armed !== "bulkR") { armed = "bulkR"; render(); return; }
   const ids = Q[tab].map((c) => c.appid);
   const action = tab === "triage" ? "reject_all_irrelevant" : "reject_all";

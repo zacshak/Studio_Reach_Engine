@@ -167,3 +167,71 @@ test('background refresh failure keeps the current card visible', async () => {
   assert.equal(elements.get('#view').innerHTML,'Current card');
   assert.match(run('actionNotice'),/offline/);
 });
+
+test('card actions advance before confirmation, serialize writes, and hide pending cards on refresh', async () => {
+  const first = deferred(), second = deferred();
+  const state = { ...emptyState, index: {1:'A_1',2:'B_2',3:'C_3'}, approval:[1,2,3] };
+  let writes = 0;
+  const {run} = fixture(async url => url === '/api/act'
+    ? (++writes === 1 ? first.promise : second.promise)
+    : response(url === '/api/state' ? structuredClone(state) : {images:['SpriteSheet_Screenshots.png']}));
+  await run('load()');
+  const saving1 = run("doAct('accept')");
+  assert.deepEqual(Array.from(run('Q.approval.map(c=>c.appid)')), [2,3]);
+  const saving2 = run("doAct('reject')");
+  assert.deepEqual(Array.from(run('Q.approval.map(c=>c.appid)')), [3]);
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(writes,1);
+  await run('load({background:true})');
+  assert.deepEqual(Array.from(run('Q.approval.map(c=>c.appid)')), [3]);
+  state.approval=[2,3]; first.resolve(response({ok:true}));
+  await saving1;
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(writes,2);
+  state.approval=[3]; second.resolve(response({ok:true,deleted:[2]}));
+  await saving2;
+  assert.equal(run('pendingCards.size'),0);
+  assert.equal(run('failed.length'),0);
+  assert.deepEqual(Array.from(run('Q.approval.map(c=>c.appid)')), [3]);
+});
+
+test('failed card is restored and cannot receive a conflicting action before retry', async () => {
+  const write = deferred();
+  const state = {...emptyState,index:{1:'A_1',2:'B_2'},approval:[1,2]};
+  let writes=0;
+  const {run,elements}=fixture(async url=>url==='/api/act' ? (writes++,write.promise)
+    : response(url==='/api/state'?state:{images:['SpriteSheet_Screenshots.png']}));
+  await run('load()');
+  const saving=run("doAct('accept')");
+  assert.deepEqual(Array.from(run('Q.approval.map(c=>c.appid)')), [2]);
+  write.resolve({ok:false,status:503,json:async()=>({error:'offline'})});
+  await saving;
+  assert.deepEqual(Array.from(run('Q.approval.map(c=>c.appid)')), [1,2]);
+  assert.equal(run('failed.length'),1);
+  assert.match(elements.get('#bannerText').textContent,/offline/);
+  await run("doAct('reject')");
+  assert.equal(writes,1);
+});
+
+test('storage failure prevents optimistic advance and network write', async () => {
+  const state={...emptyState,index:{1:'A_1'},approval:[1]};
+  let writes=0;
+  const {ctx,run}=fixture(async url=>{if(url==='/api/act') writes++; return response(url==='/api/state'?state:{});});
+  await run('load()');
+  ctx.localStorage.setItem=()=>{throw new Error('quota');};
+  await run("doAct('accept')");
+  assert.equal(writes,0);
+  assert.equal(run('Q.approval.length'),1);
+  assert.equal(run('failed.length'),0);
+});
+
+test('workflow and bulk actions do not overtake queued card writes', async () => {
+  let writes=0;
+  const {run}=fixture(async()=>{writes++; return response({ok:true});});
+  run('pendingCards.add(1)');
+  await run("fireGha('send')");
+  await run('approveAll()');
+  await run('bulkReject()');
+  await run('retryFailed()');
+  assert.equal(writes,0);
+});

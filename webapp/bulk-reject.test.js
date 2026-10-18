@@ -9,7 +9,7 @@ for (const failAt of [0, 2]) {
   test(`bulk deletion confirms each batch and stops safely on failure ${failAt}`, async () => {
     const calls = [];
     let loads = 0;
-    const ctx = vm.createContext({ writeBusy: false, armed: 'bulkR', tab: 'triage', Q: { triage: Array.from({ length: 12003 }, (_, i) => ({ appid: i + 1 })) },
+    const ctx = vm.createContext({ pendingCards: new Set(), failed: [], writeBusy: false, armed: 'bulkR', tab: 'triage', Q: { triage: Array.from({ length: 12003 }, (_, i) => ({ appid: i + 1 })) },
       render() {}, load: async () => { loads++; },
       api: async (action, { appids }) => {
         calls.push([...appids]);
@@ -31,7 +31,7 @@ for (const result of [{ ok: true, deleted: [1], blocked: [2], cleanup: 'queued' 
   { ok: true, deleted: [], blocked: [1, 2], cleanup: 'queued' }, { ok: true }]) {
   test(`bulk rejection handles ${result.deleted ? `${result.deleted.length} deleted` : 'legacy'} success and refreshes state`, async () => {
     let loads = 0;
-    const ctx = vm.createContext({ writeBusy: false, armed: 'bulkR', tab: 'nomail',
+    const ctx = vm.createContext({ pendingCards: new Set(), failed: [], writeBusy: false, armed: 'bulkR', tab: 'nomail',
       Q: { nomail: [{ appid: 1 }, { appid: 2 }], approval: [{ appid: 2 }] },
       render() {}, api: async () => result,
       load: async () => {
