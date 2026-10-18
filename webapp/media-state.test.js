@@ -152,29 +152,57 @@ test('neighbor prefetch does not repaint the current card or fetch neighboring i
   assert.equal(images,0);
 });
 
-test('neighbor prefetch downloads only adjacent hero previews once and uses the rendered URL', async () => {
+test('neighbor prefetch downloads bounded lookahead hero previews once and uses the rendered URL', async () => {
   const images=[];
   const {ctx,run}=fixture(async()=>response({images:['shot.jpg','SpriteSheet_Screenshots.png'],previews:{'SpriteSheet_Screenshots.png':{src:'preview.webp'}}}));
   ctx.Image=class {set src(value){this.url=value;images.push(this);}};
   run("Q={triage:[{folder:'Far_0'},{folder:'Previous_1'},{folder:'Current_2'},{folder:'Next_3'},{folder:'Far_4'}]};idx.triage=2;render=()=>{};prefetch(Q.triage,2)");
   await new Promise(resolve=>setImmediate(resolve));
-  assert.deepEqual(images.map(x=>x.url).sort(),['/media/Next_3/preview.webp','/media/Previous_1/preview.webp']);
+  assert.deepEqual(images.map(x=>x.url).sort(),['/media/Far_4/preview.webp','/media/Next_3/preview.webp','/media/Previous_1/preview.webp']);
   assert(images.every(x=>x.fetchPriority==='low'));
   assert.match(run("imageTag('Next_3','SpriteSheet_Screenshots.png','class=\"hero\"')"),/src="\/media\/Next_3\/preview.webp"/);
   run('prefetch(Q.triage,2)');
   await new Promise(resolve=>setImmediate(resolve));
-  assert.equal(images.length,2);
+  assert.equal(images.length,3);
   images[0].onerror();
   run('prefetch(Q.triage,2)');
   await new Promise(resolve=>setImmediate(resolve));
-  assert.equal(images.length,3);
+  assert.equal(images.length,4);
+});
+
+test('normal background refresh preserves in-flight media and its generation', async () => {
+  const pending=deferred();let requests=0;
+  const {run}=fixture(async url=>url==='/api/state'?response(emptyState):(requests++,pending.promise));
+  run('S={mail:[]};Q={triage:[],approval:[],mail:[],nomail:[]}');
+  const loading=run("manifest('Next_2')");
+  const generation=run('mediaGeneration');
+  await run('load({background:true})');
+  assert.equal(run('mediaGeneration'),generation);
+  pending.resolve(response({images:['SpriteSheet_Screenshots.png']}));
+  await loading;
+  assert.equal(run("manifests.get('Next_2').images.length"),1);
+  assert.equal(requests,1);
+});
+
+test('newly drafted row invalidates only its own in-flight manifest', async () => {
+  const old=deferred();let calls=0;
+  const {run}=fixture(async url=>url==='/api/state'
+    ?response({...emptyState,index:{1:'Game_1'},mail:[{appid:1}]})
+    :++calls===1?old.promise:response({mail:'fresh',images:[]}));
+  run("S={mail:[]};Q={triage:[],approval:[],mail:[],nomail:[]}");
+  const loading=run("manifest('Game_1')");
+  await run('load({background:true})');
+  await new Promise(r=>setImmediate(r));
+  old.resolve(response({mail:'stale',images:[]}));
+  await loading;
+  assert.equal(run("manifests.get('Game_1').mail"),'fresh');
 });
 
 test('outdated neighboring metadata cannot start a preload after navigating away', async () => {
   const delayed=deferred();let images=0;
   const {ctx,run}=fixture(async()=>delayed.promise);
   ctx.Image=class {constructor(){images++;}};
-  run("Q={triage:[{folder:'Current_1'},{folder:'Next_2'},{folder:'Other_3'},{folder:'Last_4'}]};render=()=>{};prefetch(Q.triage,0);idx.triage=3");
+  run("Q={triage:[{folder:'Current_1'},{folder:'Next_2'},{folder:'Other_3'},{folder:'Last_4'}]};render=()=>{};prefetch(Q.triage,0);Q={triage:[{folder:'Unrelated_9'}]};idx.triage=0");
   delayed.resolve(response({images:['SpriteSheet_Screenshots.png']}));
   await new Promise(resolve=>setImmediate(resolve));
   assert.equal(images,0);

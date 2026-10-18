@@ -167,6 +167,7 @@ let S = null;                          // /api/state payload
 let tab = "triage";
 const idx = { triage: 0, approval: 0, mail: 0, nomail: 0 };
 const manifests = new Map();           // folder -> manifest (or null while loading)
+const manifestTokens = new Map();
 let mediaGeneration = 0, loadGeneration = 0, imageRetry = 0;
 let renderedHTML = null;
 const imageFailures = new Set();
@@ -174,6 +175,7 @@ const preloadedImages = new Map();
 function invalidateMedia() {
   mediaGeneration++;
   manifests.clear();
+  manifestTokens.clear();
   imageFailures.clear();
   preloadedImages.clear();
 }
@@ -218,11 +220,13 @@ async function load({ background = false } = {}) {
   catch { if (generation === loadGeneration) refreshError('Server returned invalid data. Refresh to retry.', background); return; }
   if (generation !== loadGeneration) return;
   if (background && S) {
-    mediaGeneration++;
-    for (const [folder, value] of manifests) if (value === null) manifests.delete(folder);
     // A newly drafted row may have a cached pre-draft manifest. Revalidate it.
     const oldMail = new Set(S.mail.map(row => Number(row.appid)));
-    for (const row of next.mail) if (!oldMail.has(Number(row.appid))) manifests.delete(next.index[String(row.appid)]);
+    for (const row of next.mail) if (!oldMail.has(Number(row.appid))) {
+      const folder = next.index[String(row.appid)];
+      manifests.delete(folder);
+      manifestTokens.delete(folder);
+    }
   } else invalidateMedia();
   S = next;
   Q = queues();
@@ -234,23 +238,26 @@ async function load({ background = false } = {}) {
 async function manifest(folder) {
   if (!manifests.has(folder)) {
     const generation = mediaGeneration;
+    const token = Symbol();
+    manifestTokens.set(folder, token);
     manifests.set(folder, null);
     try {
       const r = await fetch(`/media/${enc(folder)}/manifest.json`, { signal: AbortSignal.timeout(25000), cache: 'no-store' });
       if (!r.ok) throw new Error(`Media request failed (${r.status})`);
       const value = await r.json();
-      if (generation !== mediaGeneration) return null;
+      if (generation !== mediaGeneration || manifestTokens.get(folder) !== token) return null;
       manifests.set(folder, value);
     } catch (e) {
-      if (generation !== mediaGeneration) return null;
+      if (generation !== mediaGeneration || manifestTokens.get(folder) !== token) return null;
       manifests.set(folder, { missing: true, error: e.message });
     }
     if (Q?.[tab]?.[idx[tab]]?.folder === folder) render();
   }
   return manifests.get(folder);
 }
+const PRELOAD_OFFSETS = [1, 2, 3, -1];
 function prefetch(list, i) {
-  for (const j of [i + 1, i - 1]) {
+  for (const j of PRELOAD_OFFSETS.map(offset => i + offset)) {
     const c = list[j];
     if (!c) continue;
     preloadNeighbor(c.folder);
@@ -261,7 +268,7 @@ async function preloadNeighbor(folder) {
   const m = await manifest(folder);
   if (generation !== mediaGeneration || !Array.isArray(m?.images)) return;
   const current = Q?.[tab] || [];
-  if (![idx[tab] + 1, idx[tab] - 1].some(i => current[i]?.folder === folder)) return;
+  if (!PRELOAD_OFFSETS.some(offset => current[idx[tab] + offset]?.folder === folder)) return;
   const name = m.images.find(name => name.includes('SpriteSheet')) || m.images[0];
   if (!name) return;
   const url = imageURL(folder, name);
@@ -271,7 +278,7 @@ async function preloadNeighbor(folder) {
   image.decoding = 'async';
   preloadedImages.set(url, image);
   // Keep a few image references, not the entire review queue in memory.
-  while (preloadedImages.size > 4) preloadedImages.delete(preloadedImages.keys().next().value);
+  while (preloadedImages.size > 8) preloadedImages.delete(preloadedImages.keys().next().value);
   image.onerror = () => { if (preloadedImages.get(url) === image) preloadedImages.delete(url); };
   image.src = url;
 }
