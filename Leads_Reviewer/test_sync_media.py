@@ -4,10 +4,44 @@ import os
 import sys
 import sqlite3
 import unittest
-from unittest.mock import patch
+import tempfile
+from unittest.mock import patch, Mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import sync_media
+
+
+class SyncDeferralTest(unittest.TestCase):
+    def test_missing_media_is_not_uploaded_or_acknowledged_but_r2_errors_still_fail(self):
+        for upload_error in (None, RuntimeError('R2 unavailable')):
+            with self.subTest(upload_error=upload_error), tempfile.TemporaryDirectory() as root:
+                folders=[]
+                for appid in (1,2):
+                    folder=os.path.join(root,f'Game_{appid}');os.mkdir(folder)
+                    with open(os.path.join(folder,f'{appid}.json'),'w') as f:json.dump({},f)
+                    folders.append((appid,folder))
+                with open(os.path.join(folders[0][1],'.media-unavailable.json'),'w') as f:
+                    json.dump({'appid':1,'http_status':404},f)
+                report=os.path.join(root,'report.json')
+                with patch.object(sync_media.media_store,'write_enabled',return_value=True), \
+                     patch.object(sync_media.media_store,'_client'), \
+                     patch.object(sync_media,'_lead_folders',return_value=folders), \
+                     patch.object(sync_media.media_store,'upload_dir',side_effect=upload_error) as upload, \
+                     patch.object(sync_media.media_store,'update_index',return_value={}) as index, \
+                     patch.object(sync_media.pipeline,'_rw',return_value=Mock()), \
+                     patch.object(sync_media.discovery_recovery,'init_db'), \
+                     patch.object(sync_media.discovery_recovery,'ack_published') as ack, \
+                     patch.object(sync_media,'cleanup_r2'):
+                    self.assertEqual(sync_media.main(['--report',report]),1 if upload_error else 0)
+                    self.assertEqual(upload.call_count,1)
+                    self.assertEqual(upload.call_args.args[1],2)
+                    merged=index.call_args.args[0]({})
+                    self.assertNotIn('1',merged)
+                    if upload_error:ack.assert_not_called()
+                    else:self.assertEqual(list(ack.call_args.args[1]),['2'])
+                with open(report) as f:result=json.load(f)
+                self.assertEqual(result['deferred'],[1])
+                self.assertEqual(result['failed'],int(upload_error is not None))
 
 
 class CleanupTest(unittest.TestCase):

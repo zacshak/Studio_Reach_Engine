@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import unittest
+import urllib.error
 from unittest.mock import Mock, patch
 from PIL import Image
 
@@ -14,6 +15,20 @@ import approval_export
 
 
 class MediaReadinessTest(unittest.TestCase):
+    def test_only_confirmed_missing_image_errors_are_deferred_and_retry_clears_marker(self):
+        with tempfile.TemporaryDirectory() as root:
+            exporter = approval_export.ApprovalExporter(base_dir=root)
+            lead = {'name':'Synthetic','screenshots':[{'path_thumbnail':'https://example.test/image.jpg'}]}
+            marker = os.path.join(root,'Synthetic_1','.media-unavailable.json')
+            with patch.object(approval_export,'_scrape_status',return_value='seeded'), \
+                 patch.object(approval_export.pipeline,'read_lead',return_value=lead):
+                for code in (404, 410, 503):
+                    with patch.object(exporter,'_download',side_effect=urllib.error.HTTPError('url',code,'error',{},None)):
+                        self.assertFalse(exporter._export_one(1))
+                    self.assertEqual(os.path.isfile(marker),code in (404,410))
+                    self.assertFalse(os.path.exists(os.path.join(root,'Synthetic_1','.complete')))
+            exporter.close()
+
     def test_brackets_in_game_name_do_not_hide_source_images(self):
         with tempfile.TemporaryDirectory() as root:
             folder=os.path.join(root,'[The Archive]_1'); os.mkdir(folder)

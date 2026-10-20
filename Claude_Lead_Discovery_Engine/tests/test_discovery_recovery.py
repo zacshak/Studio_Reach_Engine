@@ -254,6 +254,20 @@ class RecoveryTest(unittest.TestCase):
         self.queue()
         self.assertEqual(run_daily.report_pending(), 1)
 
+    def test_partial_report_requires_every_pending_id_to_be_classified(self):
+        self.queue()
+        path = os.path.join(self.temp.name, 'sync.json')
+        summary = os.path.join(self.temp.name, 'summary.md')
+        for deferred, failed, expected in [([2], 0, True), ([], 0, False),
+                                           ([3], 0, False), ([2], 1, False)]:
+            with open(path, 'w') as f:
+                json.dump({'uploaded': 335, 'deferred': deferred, 'failed': failed}, f)
+            with patch.dict(os.environ, {'GITHUB_STEP_SUMMARY': summary}):
+                self.assertEqual(run_daily.report_partial(path), expected)
+        self.assertEqual(self.pending(), [2])
+        with open(summary) as f:
+            self.assertIn('335 game(s) uploaded; 1 deferred', f.read())
+
     def test_stale_file_cannot_recreate_rejected_or_baseline_ids(self):
         self.queue()
         args = SimpleNamespace(sample=None, file="synthetic.txt", stamp=None)
@@ -281,7 +295,7 @@ class DailyRecoveryTest(unittest.TestCase):
                  patch.object(run_daily.os.path, "exists", return_value=False):
                 self.assertEqual(run_daily.main(), 2 if finder_rc == 2 else 0)
                 self.assertEqual([c.args[0] for c in run.call_args_list], ["find_new.py", "lead_discovery.py"])
-                sync.assert_called_once_with()
+                self.assertEqual(sync.call_args.args[0], "--report")
 
     def test_unexpected_finder_error_stops(self):
         with patch.object(run_daily, "run", return_value=7) as run, \
@@ -305,6 +319,15 @@ class DailyRecoveryTest(unittest.TestCase):
              patch.object(run_daily, "sync_media", return_value=0), \
              patch.object(run_daily.os.path, "exists", return_value=False):
             self.assertEqual(run_daily.main(), 1)
+
+    def test_classified_media_deferral_is_warning_but_finder_failure_is_not(self):
+        self.pending.return_value = 1
+        for finder, expected in [(11, 0), (2, 2)]:
+            with patch.object(run_daily, 'run', side_effect=[finder, 0]), \
+                 patch.object(run_daily, 'sync_media', return_value=0), \
+                 patch.object(run_daily, 'report_partial', return_value=True), \
+                 patch.object(run_daily.os.path, 'exists', return_value=False):
+                self.assertEqual(run_daily.main(), expected)
 
 
 if __name__ == "__main__":

@@ -188,3 +188,16 @@ Nightly reconciliation queues cleanup rather than deleting objects from a stale 
 The review Worker's minute cron removes objects and metadata before releasing the job.
 To roll back application code, leave the additive cleanup guards and queue in place.
 Do not restore tokenless cleanup while token-aware cleanup can run.
+
+### Discovery partial completion
+
+A confirmed HTTP 404 or 410 during a screenshot export records local missing-media
+evidence. Sync skips that incomplete folder without publishing it or acknowledging
+its `pending_discovery` job. The next discovery run fetches fresh Steam metadata
+and retries the export. No game rows are deleted for this condition.
+
+If all remaining jobs have this evidence and uploads succeeded, the workflow exits
+zero with a warning and a **partial completion** Actions summary listing uploaded
+counts and deferred appids. GitHub displays a green run, but the summary explicitly
+does not claim every game was processed. Other export errors, unclassified pending
+work, finder failures, database failures, and R2 failures still produce a failed run.

@@ -12,6 +12,7 @@ Each run produces its own timestamped files (never overwrites a prior run):
 So running it morning and night gives you two separate, complete leads files.
 """
 import os
+import json
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -46,6 +47,31 @@ def report_pending():
     return remaining
 
 
+def report_partial(path):
+    """Only known missing Steam images can downgrade unfinished work to a warning."""
+    from contextlib import closing
+    import pipeline
+    if not os.path.isfile(path):
+        return False
+    with open(path, encoding="utf-8") as f:
+        report = json.load(f)
+    with closing(pipeline.connect()) as conn:
+        pending = {int(row[0]) for row in conn.execute("SELECT appid FROM pending_discovery")}
+    deferred = set(report["deferred"])
+    if report["failed"] or not pending or not pending <= deferred:
+        return False
+    message = (f"Partial completion: {report['uploaded']} game(s) uploaded; "
+               f"{len(pending)} deferred because Steam images are unavailable. "
+               f"Pending appids: {', '.join(map(str, sorted(pending)))}. "
+               "Not published to review; retained for the next discovery run.")
+    print(f"::warning::{message}")
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        with open(summary, "a", encoding="utf-8") as f:
+            f.write(f"\n## Discovery: partial completion\n\n{message}\n")
+    return True
+
+
 def main():
     stamp = datetime.now(IST).strftime("%Y-%m-%d_%H%M")
     print(f"=== Daily run {stamp} IST ===\n")
@@ -70,7 +96,10 @@ def main():
     # Mirror the freshly-staged media to R2 so the cloud review app sees the night's
     # batch, then remove media no active tracker row owns. No-op if creds aren't set.
     print("\nMirroring media to R2 ...")
-    rc = sync_media()
+    report = os.path.join(HERE, "out", f"media_sync_{stamp}.json")
+    if os.path.isfile(report):
+        os.remove(report)  # Never classify this run using an older report.
+    rc = sync_media("--report", report)
     remaining = report_pending()
     if rc:
         print(f"Media sync exited with code {rc}; stopping before triage.")
@@ -83,7 +112,9 @@ def main():
             os.startfile(xlsx)  # Windows
         except Exception:
             pass  # non-Windows or no associated app — file is still written
-    return 2 if finder_rc == 2 else (1 if remaining else 0)
+    if finder_rc == 2:
+        return 2
+    return 0 if not remaining or report_partial(report) else 1
 
 
 if __name__ == "__main__":

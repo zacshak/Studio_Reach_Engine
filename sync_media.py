@@ -11,6 +11,7 @@ Local media is uploaded, then R2 is reconciled against active scrape_tracker row
 Objects are keyed by "<GameName>_<appid>/"; index.json maps appid -> folder.
 """
 import json
+import argparse
 import os
 import sys
 from contextlib import closing
@@ -141,14 +142,28 @@ def main(argv):
     if argv and argv[0] == "--cleanup":
         cleanup_r2(client, apply="--apply" in argv[1:])
         return 0
-    only = {int(a) for a in argv} or None
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--report")
+    parser.add_argument("appids", nargs="*", type=int)
+    args = parser.parse_args(argv)
+    only = set(args.appids) or None
     done = failed = 0
+    deferred = []
     uploaded = {}
     for appid, folder in _lead_folders(only):
         jpath = os.path.join(folder, f"{appid}.json")
         if not os.path.exists(jpath):
             continue
         try:
+            unavailable = os.path.join(folder, ".media-unavailable.json")
+            if os.path.isfile(unavailable) and not os.path.isfile(os.path.join(folder, ".complete")):
+                with open(unavailable, encoding="utf-8") as f:
+                    evidence = json.load(f)
+                if evidence.get("appid") != appid or evidence.get("http_status") not in (404, 410):
+                    raise ValueError("invalid unavailable-media evidence")
+                deferred.append(appid)
+                print(f"::warning::Deferred {appid}: Steam image HTTP {evidence['http_status']}; retained for retry.")
+                continue
             with open(jpath, encoding="utf-8") as f:
                 data = json.load(f)
             media_store.upload_dir(folder, appid, _card(data, appid), client=client)
@@ -168,7 +183,11 @@ def main(argv):
     cleanup_r2(client, apply=True)
     print(f"\ndone: {done} lead(s) -> R2 bucket '{media_store.BUCKET}'; "
           f"index {len(index)}"
-          + (f", {failed} failed" if failed else ""))
+          + (f", {failed} failed" if failed else "")
+          + (f", {len(deferred)} deferred (unavailable Steam media)" if deferred else ""))
+    if args.report:
+        with open(args.report, "w", encoding="utf-8") as f:
+            json.dump({"uploaded": done, "failed": failed, "deferred": deferred}, f)
     return 1 if failed else 0
 
 

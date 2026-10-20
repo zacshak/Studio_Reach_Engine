@@ -22,6 +22,7 @@ import shutil
 import sys
 import time
 import urllib.request
+import urllib.error
 from concurrent.futures import ThreadPoolExecutor
 
 import pipeline  # same folder; the DB contract (read_lead + connections)
@@ -106,6 +107,7 @@ class ApprovalExporter:
     # -- worker ----------------------------------------------------------
     def _export_one(self, appid):
         """Returns True if it staged a folder, False if skipped/failed."""
+        unavailable = None
         try:
             if _scrape_status(appid) != self.status:
                 return False                # only the chosen status gets staged
@@ -114,6 +116,9 @@ class ApprovalExporter:
                 return False
             folder = os.path.join(self.base_dir, f"{_safe(lead.get('name'))}_{appid}")
             marker = os.path.join(folder, ".complete")
+            unavailable = os.path.join(folder, ".media-unavailable.json")
+            if os.path.exists(unavailable):
+                os.remove(unavailable)
             if os.path.exists(marker):
                 try:
                     validate_export(folder, appid=appid)
@@ -132,6 +137,9 @@ class ApprovalExporter:
             open(marker, "w").close()       # write LAST: marks the folder complete
             return True
         except Exception as e:              # never let one lead kill the pool
+            if unavailable and isinstance(e, urllib.error.HTTPError) and e.code in (404, 410):
+                with open(unavailable, "w", encoding="utf-8") as f:
+                    json.dump({"appid": appid, "http_status": e.code}, f)
             self.errors.append((appid, repr(e)))
             return False
 
