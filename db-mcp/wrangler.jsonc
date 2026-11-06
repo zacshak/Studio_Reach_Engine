@@ -1,6 +1,8 @@
 {
   "name": "sre-db-mcp",
   "main": "worker.js",
+  "workers_dev": true,
+  "routes": [{ "pattern": "sre-mcp.zacgamedev.com", "custom_domain": true }],
   "compatibility_date": "2026-10-14",
   "compatibility_flags": ["nodejs_compat"],
   "vars": { "PUBLIC_ACCESS": "true" },

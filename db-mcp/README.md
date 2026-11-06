@@ -1,5 +1,26 @@
 # SRE database MCP
 
+## Custom domains and non-browser clients
+
+MCP: `https://sre-mcp.zacgamedev.com/mcp`
+
+Dashboard and media: `https://sre-review.zacgamedev.com`
+
+The existing `workers.dev` URLs stay enabled. The dashboard uses relative media
+and API URLs, so existing bookmarks remain valid. Browser storage is per origin:
+finish any pending saves on the old dashboard before switching bookmarks.
+
+Cloudflare Browser Integrity Check must be disabled only for `/mcp` on the MCP
+hostname and `/media/` on the review hostname. The exact configuration rule is
+in `browser-integrity-rule.json`. Install it in the zone's `http_config_settings`
+ruleset without replacing unrelated rules. Wrangler deployment does not install
+this zone rule. The usual Wrangler OAuth token lacks Config Settings permission.
+
+Run `python db-mcp/check_public_access.py` from the repository root after applying
+the rule. It reads real media with default Python headers and verifies the old
+dashboard, without saving reviews or sending emails. A deployed domain alone does
+not establish that the Browser Integrity Check exemption has been applied.
+
 Optional OAuth resource-server support is prepared but disabled by default. See
 [OAUTH.md](OAUTH.md) for the architecture, provider requirements, local tests, and
 remaining owner/identity-provider decisions. Public mode bypasses this authentication.

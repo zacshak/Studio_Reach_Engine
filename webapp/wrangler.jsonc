@@ -13,6 +13,8 @@
 {
   "name": "sre-review",
   "main": "worker.js",
+  "workers_dev": true,
+  "routes": [{ "pattern": "sre-review.zacgamedev.com", "custom_domain": true }],
   "compatibility_date": "2026-06-01",
   "triggers": { "crons": ["* * * * *"] },
   "assets": { "directory": "./public" },
