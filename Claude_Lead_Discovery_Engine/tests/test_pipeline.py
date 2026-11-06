@@ -67,6 +67,41 @@ class PipelineTest(unittest.TestCase):
         return sqlite3.connect(self.db)
 
     # ---- schema / init -------------------------------------------------
+    def test_release_date_trigger_and_seed_preserve_steam_text(self):
+        for i, date in enumerate(("Nov 2, 2026", "To be announced", "Q1 2027", "", None)):
+            for trigger in (True, False):
+                appid = 9000 + i * 2 + int(trigger)
+                pipeline.init_tracker()
+                with self._raw() as c:
+                    if not trigger:
+                        c.execute("DROP TRIGGER trg_sync_scrape_tracker")
+                    c.execute("INSERT INTO newly_added (appid, name, release_date) VALUES (?,?,?)",
+                              (appid, "Test", json.dumps({"date": date})))
+                if not trigger:
+                    pipeline.seed_pending()
+                with self._raw() as c:
+                    self.assertEqual(c.execute("SELECT release_date FROM scrape_tracker WHERE appid=?",
+                                               (appid,)).fetchone()[0], date or None)
+
+    def test_release_date_migration_leaves_existing_rows_null(self):
+        with self._raw() as c:
+            insert_lead(c, 9990)
+            c.execute("DROP TRIGGER trg_sync_scrape_tracker")
+            c.execute("ALTER TABLE scrape_tracker DROP COLUMN release_date")
+            c.execute("UPDATE newly_added SET release_date=? WHERE appid=9990",
+                      (json.dumps({"date": "2027"}),))
+        pipeline.init_tracker()
+        pipeline.init_tracker()
+        pipeline.seed_pending()
+        with self._raw() as c:
+            self.assertIsNone(c.execute("SELECT release_date FROM scrape_tracker WHERE appid=9990").fetchone()[0])
+
+    def test_malformed_release_date_does_not_break_discovery(self):
+        for i, value in enumerate(('not json', 'null', '[]', '{"date":42}', None)):
+            with self._raw() as c:
+                c.execute("INSERT INTO newly_added (appid, release_date) VALUES (?,?)", (9980+i, value))
+                self.assertIsNone(c.execute("SELECT release_date FROM scrape_tracker WHERE appid=?", (9980+i,)).fetchone()[0])
+
     def test_init_creates_table_and_trigger(self):
         with self._raw() as c:
             tabs = {r[0] for r in c.execute(
@@ -371,7 +406,7 @@ class PipelineTest(unittest.TestCase):
         with self._raw() as c:
             insert_lead(c, 500, name="Full", support_email="hi@s.com")
         lead = pipeline.read_lead(500)
-        self.assertEqual(set(NA_COLS), set(lead.keys()))
+        self.assertEqual(set(NA_COLS) | {"release_date"}, set(lead.keys()))
         self.assertEqual(lead["name"], "Full")
         self.assertIn("hi@s.com", lead["support_info"])   # raw JSON returned
         self.assertIsNone(pipeline.read_lead(999999))

@@ -93,7 +93,8 @@ _SCHEMA = """(
     triage_kept    INTEGER NOT NULL DEFAULT 0,
     Require_Socials INTEGER NOT NULL DEFAULT 0,
     Socials_Data   TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(Socials_Data)),
-    Socials_Request_ID TEXT
+    Socials_Request_ID TEXT,
+    release_date   TEXT
 )"""
 # columns carried over on rebuild (all but Mail_status / mail_template, which take
 # their defaults)
@@ -123,7 +124,7 @@ SEED_COLS = ("appid", "game_name", "short_descript", "steam_url",
 # column and abort System 1's insert at fire time. init_tracker guarantees they
 # exist first. (TEXT is harmless: System 1 stores everything as TEXT too.)
 _TRIGGER_NEEDS = ("name", "short_description", "website", "support_info",
-                  "developers", "publishers", "genres")
+                  "developers", "publishers", "genres", "release_date")
 
 # Auto-sync trigger. Uses INSERT ... WHERE NOT EXISTS (NOT "INSERT OR IGNORE"):
 # an outer `INSERT OR REPLACE` on newly_added (cache_put does this on re-fetch)
@@ -137,7 +138,7 @@ AFTER INSERT ON newly_added
 BEGIN
   INSERT INTO scrape_tracker
     (appid, game_name, short_descript, scrape_status, emails,
-     Mail_status, steam_url, website, support_info, developers, publishers, genres, added_at)
+     Mail_status, steam_url, website, support_info, developers, publishers, genres, added_at, release_date)
   SELECT
     NEW.appid,
     NEW.name,
@@ -173,7 +174,11 @@ BEGIN
        FROM json_each(coalesce(NEW.publishers,'[]'))),
     (SELECT group_concat(json_extract(value,'$.description'), ', ')
        FROM json_each(coalesce(NEW.genres,'[]'))),
-    NEW.fetched_at
+    NEW.fetched_at,
+    CASE WHEN json_valid(NEW.release_date) THEN
+      CASE WHEN json_type(NEW.release_date, '$.date') = 'text'
+        THEN nullif(trim(json_extract(NEW.release_date, '$.date')), '') END
+    END
   WHERE NOT EXISTS (SELECT 1 FROM scrape_tracker WHERE appid = NEW.appid);
 END
 """
@@ -382,6 +387,8 @@ def init_tracker():
                          "TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(Socials_Data))")
         if "Socials_Request_ID" not in cols:
             conn.execute("ALTER TABLE scrape_tracker ADD COLUMN Socials_Request_ID TEXT")
+        if "release_date" not in cols:
+            conn.execute("ALTER TABLE scrape_tracker ADD COLUMN release_date TEXT")
         conn.execute("CREATE TABLE IF NOT EXISTS email_verification_cache "
                      f"{_EMAIL_VERIFICATION_CACHE_SCHEMA}")
         conn.execute("CREATE TABLE IF NOT EXISTS mail_send_attempt "
@@ -516,6 +523,13 @@ def _support_email(v):
     return (d.get("email") or "").strip() if isinstance(d, dict) else ""
 
 
+def _release_date(value):
+    """Preserve Steam's display date, including approximate dates and TBA."""
+    data = _jload(value)
+    date = data.get("date") if isinstance(data, dict) else None
+    return date.strip() or None if isinstance(date, str) else None
+
+
 def seed_pending():
     """Backfill and reconcile discovery states from newly_added.
 
@@ -526,12 +540,12 @@ def seed_pending():
     with closing(_ro()) as ro:
         src = ro.execute(
             "SELECT appid, name, short_description, website, support_info, "
-            "developers, publishers, genres, fetched_at FROM newly_added").fetchall()
+            "developers, publishers, genres, fetched_at, release_date FROM newly_added").fetchall()
     with closing(_rw()) as conn:
         have = {r[0]: (r[1], r[2]) for r in conn.execute(
             "SELECT appid, scrape_status, Mail_status FROM scrape_tracker")}
         added = 0
-        for appid, name, brief, website, support, devs, pubs, genres, fetched_at in src:
+        for appid, name, brief, website, support, devs, pubs, genres, fetched_at, release in src:
             email = _support_email(support)
             status = discovery_status(email)
             stored_email = email or None
@@ -547,11 +561,12 @@ def seed_pending():
                 continue
             conn.execute(
                 f"INSERT INTO scrape_tracker ({','.join(SEED_COLS)}, emails, scrape_status, "
-                "Mail_status, added_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "Mail_status, added_at, release_date) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (appid, name, brief, f"https://store.steampowered.com/app/{appid}/",
                  website or "", support or "", _names(devs), _names(pubs), _genres(genres),
                  stored_email, status,
-                 "Invalid" if status == "invalid" else "Pending", fetched_at),
+                 "Invalid" if status == "invalid" else "Pending", fetched_at,
+                 _release_date(release)),
             )
             have[appid] = (status, "Invalid" if status == "invalid" else "Pending")
             added += 1
