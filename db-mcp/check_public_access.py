@@ -33,9 +33,11 @@ def main():
     for url in (REVIEW, LEGACY):
         assert b'Studio Reach Engine' in fetch(url, browser=True)
         print(f'PASS dashboard HTML: {url}')
-    state = json.loads(fetch(REVIEW + '/api/state', browser=True))
+    state = json.loads(fetch(REVIEW + '/api/state'))
     old = json.loads(fetch(LEGACY + '/api/state', browser=True))
     assert set(state) == set(old)
+    assert isinstance(state['triageReviews'], dict)
+    print('PASS default Python dashboard state and saved recommendation map')
     tools = rpc('tools/list', {})['tools']
     assert {'get_game_media', 'get_game_image', 'query'} <= {t['name'] for t in tools}
     rpc('tools/call', {'name': 'list_tables', 'arguments': {}})

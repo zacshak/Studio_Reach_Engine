@@ -10,8 +10,9 @@ The existing `workers.dev` URLs stay enabled. The dashboard uses relative media
 and API URLs, so existing bookmarks remain valid. Browser storage is per origin:
 finish any pending saves on the old dashboard before switching bookmarks.
 
-Cloudflare Browser Integrity Check must be disabled only for `/mcp` on the MCP
-hostname and `/media/` on the review hostname. The exact configuration rule is
+Cloudflare Browser Integrity Check is disabled only for `/mcp` on the MCP
+hostname, `/media/` on the review hostname, and `GET /api/state` on the review
+hostname. Dashboard write endpoints are not exempted. The exact configuration rule is
 in `browser-integrity-rule.json`. Install it in the zone's `http_config_settings`
 ruleset without replacing unrelated rules. Wrangler deployment does not install
 this zone rule. The usual Wrangler OAuth token lacks Config Settings permission.
@@ -21,6 +22,13 @@ Applied on 2026-11-06 in zone `zacgamedev.com` as configuration rule
 The default-Python MCP discovery, table listing, sprite image and identical direct
 media download checks passed after activation. Both dashboard origins also passed
 read checks. The exemption does not apply to the legacy `workers.dev` endpoints.
+
+Agents can GET `https://sre-review.zacgamedev.com/api/state` with default Python
+headers. Its `triageReviews` map contains saved MCP recommendations for currently
+eligible Pending rows, including both pass and flag decisions. It is not an archive
+of recommendations for deleted, advanced, or human-kept rows. Fetch current state
+before reviewing new candidates, and preserve existing recommendations unless the
+user explicitly requests a re-review. This is a live snapshot, not a write lock.
 
 Run `python db-mcp/check_public_access.py` from the repository root after applying
 the rule. It reads real media with default Python headers and verifies the old

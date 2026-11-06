@@ -1,7 +1,7 @@
 {
   "ref": "sre_public_mcp_media_clients",
-  "description": "Allow non-browser clients on SRE MCP and media paths only",
-  "expression": "(http.host eq \"sre-mcp.zacgamedev.com\" and http.request.uri.path eq \"/mcp\") or (http.host eq \"sre-review.zacgamedev.com\" and starts_with(http.request.uri.path, \"/media/\"))",
+  "description": "Allow non-browser clients on SRE MCP, media and read-only state paths",
+  "expression": "(http.host eq \"sre-mcp.zacgamedev.com\" and http.request.uri.path eq \"/mcp\") or (http.host eq \"sre-review.zacgamedev.com\" and (starts_with(http.request.uri.path, \"/media/\") or (http.request.uri.path eq \"/api/state\" and http.request.method eq \"GET\")))",
   "action": "set_config",
   "action_parameters": { "bic": false },
   "enabled": true
