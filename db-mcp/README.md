@@ -16,6 +16,12 @@ in `browser-integrity-rule.json`. Install it in the zone's `http_config_settings
 ruleset without replacing unrelated rules. Wrangler deployment does not install
 this zone rule. The usual Wrangler OAuth token lacks Config Settings permission.
 
+Applied on 2026-11-06 in zone `zacgamedev.com` as configuration rule
+`9866606fef794931b3abc6db2f574f6a` (SRE public MCP and media clients).
+The default-Python MCP discovery, table listing, sprite image and identical direct
+media download checks passed after activation. Both dashboard origins also passed
+read checks. The exemption does not apply to the legacy `workers.dev` endpoints.
+
 Run `python db-mcp/check_public_access.py` from the repository root after applying
 the rule. It reads real media with default Python headers and verifies the old
 dashboard, without saving reviews or sending emails. A deployed domain alone does
