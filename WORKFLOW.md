@@ -89,6 +89,10 @@ Epic discovery (`epic-discovery.yml`) runs at the same time into its own separat
 - Hermes and Kimchi process `pending` and `failed` leads and record the best published
   contact email. Start them from GitHub Actions; the dashboard has no button for them.
 
+Every step below can also be done by an agent through the MCP: see the workflow-tools
+table in `db-mcp/README.md` (`get_queues`, `accept_games`, `approve_mails`,
+`send_scheduled_mails`, …). The MCP uses the same guarded backend as the dashboard.
+
 ## 2. Review — the web app
 One card at a time, swipe to page. Four tabs; the app opens the first non-empty one in the
 order Triage → Game Approval → Mail Approval → No-Mail.
