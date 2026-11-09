@@ -125,3 +125,12 @@ test('batch IDs are bounded and deduplicated', () => {
   assert.throws(() => batchIds({ appids: Array.from({ length: 101 }, (_, i) => i + 1) }), /1-100/);
   assert.throws(() => batchIds({ appids: [0] }), /invalid/);
 });
+
+test('NULL cells from the HTTP SQL client (undefined) are reported as null', async () => {
+  const sql = async () => [[[5, 'Pending', undefined, undefined, undefined, undefined]]];
+  const result = await triageDetails({}, { appids: [5] }, sql);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.games[0])),
+    { appid: 5, mail_status: 'Pending', decision: null, reason: null, criteria: null, triaged_at: null });
+  const saved = await saveEmail({}, { appid: 7, status: 'failed' }, async () => [[[7, 'failed', undefined]]]);
+  assert.deepEqual(JSON.parse(JSON.stringify(saved)), { appid: 7, scrape_status: 'failed', emails: null });
+});

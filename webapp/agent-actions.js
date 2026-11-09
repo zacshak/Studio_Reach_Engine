@@ -124,7 +124,7 @@ export async function saveEmail(env, body, sql) {
     WHERE appid=? AND Mail_status='Pending' AND scrape_status IN ('pending','failed','no_email')
     RETURNING appid, scrape_status, emails`, ...args, appid]]);
   if (!rows.length) throw new Error('lead is missing, not Pending, or already has an email');
-  return { appid, scrape_status: rows[0][1], emails: rows[0][2] };
+  return { appid, scrape_status: rows[0][1], emails: rows[0][2] ?? null };
 }
 
 export async function triageDetails(env, body, sql) {
@@ -133,8 +133,10 @@ export async function triageDetails(env, body, sql) {
     FROM scrape_tracker s LEFT JOIN triage_criteria c ON c.id=s.triage_criteria_id
     WHERE s.appid IN (SELECT value FROM json_each(?)) ORDER BY s.appid`, JSON.stringify(appids)]]);
   const found = new Set(rows.map(r => Number(r[0])));
+  // The HTTP SQL client yields undefined for NULL cells; report them as null.
   return { games: rows.map(([appid, mail_status, decision, reason, criteria, triaged_at]) =>
-    ({ appid: Number(appid), mail_status, decision, reason, criteria, triaged_at })),
+    ({ appid: Number(appid), mail_status: mail_status ?? null, decision: decision ?? null, reason: reason ?? null,
+      criteria: criteria ?? null, triaged_at: triaged_at ?? null })),
     missing: appids.filter(a => !found.has(a)) };
 }
 
