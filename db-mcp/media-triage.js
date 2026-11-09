@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import { Buffer } from 'node:buffer';
 
-export const REVIEW_KEY = 'mcp-triage.json';
 const MAX_JSON = 8 * 1024 * 1024;
 const MAX_IMAGE = 5 * 1024 * 1024;
 const appidSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
@@ -47,38 +46,17 @@ export async function gameMedia(env, appid, imageName, run) {
     { type: 'image', data: bytes.toString('base64'), mimeType }] };
 }
 
-export async function submitTriage(env, { criteria, results }, run) {
+// Recommendations are stored in scrape_tracker by the review Worker (REVIEW service
+// binding). The MCP's own Turso token stays read-only.
+export async function submitTriage(env, { criteria, results }) {
   if (new Set(results.map(r => r.appid)).size !== results.length) throw new Error('Each appid must appear only once per batch.');
-  // Retry the whole read/merge/conditional-write so concurrent batches cannot lose updates.
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const { value: current, object } = await readJSON(env.MEDIA, REVIEW_KEY, {});
-    if (!current || Array.isArray(current) || typeof current !== 'object') throw new Error('Invalid triage recommendation document.');
-    const eligible = await run(env, "SELECT appid FROM scrape_tracker WHERE Mail_status='Pending' AND triage_kept=0");
-    const ids = new Set(eligible.rows.map(r => String(r[0])));
-    const { value: index } = await readJSON(env.MEDIA, 'index.json', {});
-    const next = Object.fromEntries(Object.entries(current).filter(([id]) => ids.has(id) && index[id]));
-    const saved = [], skipped = [];
-    for (const result of results) {
-      const id = String(result.appid);
-      if (!ids.has(id) || !index[id]) {
-        skipped.push({ appid: result.appid, reason: 'Missing game/media, human-kept, or mail status is no longer Pending.' });
-        continue;
-      }
-      const old = next[id];
-      next[id] = old?.decision === result.decision && old?.reason === result.reason && old?.criteria === criteria
-        ? old : { decision: result.decision, reason: result.reason, criteria, reviewed_at: new Date().toISOString() };
-      saved.push(result.appid);
-    }
-    if (!saved.length) return { saved, skipped };
-    const body = JSON.stringify(next);
-    if (new TextEncoder().encode(body).length > MAX_JSON) throw new Error('Recommendation document exceeds 8 MiB. Use shorter reasons/criteria.');
-    const written = await env.MEDIA.put(REVIEW_KEY, body, {
-      onlyIf: object ? { etagMatches: object.etag } : { etagDoesNotMatch: '*' },
-      httpMetadata: { contentType: 'application/json' }
-    });
-    if (written) return { saved, skipped };
-  }
-  throw new Error('Concurrent recommendations are busy. Retry this batch.');
+  if (!env.REVIEW) throw new Error('Triage backend binding is not configured.');
+  const response = await env.REVIEW.fetch(new Request('https://review.internal/api/triage/save', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ criteria, results }), signal: AbortSignal.timeout(30000) }));
+  const value = await response.json();
+  if (!response.ok) throw new Error(value.error || `Triage backend HTTP ${response.status}`);
+  return value;
 }
 
 export function registerMediaTools(server, env, run) {
@@ -98,10 +76,10 @@ export function registerMediaTools(server, env, run) {
     inputSchema: { appid: appidSchema, image_name: z.string().min(1).max(255) }, annotations: read
   }, wrap(({ appid, image_name }) => gameMedia(env, appid, image_name, run)));
   server.registerTool('submit_triage', {
-    description: 'Save recommendations for human dashboard review using the user’s criteria. flag goes to Triage; pass stays in the normal Approval/No-Mail queue. Never deletes games, changes mail status, or overrides human Keep. Up to 100 per batch, repeat for more. Inspect descriptions and images first. Each returned skipped item needs no retry unless its eligibility changes.',
+    description: 'Save recommendations for human dashboard review using the user’s criteria. flag goes to Triage; pass stays in the normal Approval/No-Mail queue. Stored on the game’s database row. Never deletes games, changes mail status, or overrides human Keep. Up to 100 per batch, repeat for more. Inspect descriptions and images first. Each returned skipped item needs no retry unless its eligibility changes.',
     inputSchema: { criteria: z.string().trim().min(1).max(2000), results: z.array(z.object({
       appid: appidSchema, decision: z.enum(['flag', 'pass']), reason: z.string().trim().min(1).max(1000)
     })).min(1).max(100) },
     annotations: { ...read, readOnlyHint: false }
-  }, wrap(async args => ({ content: [text(await submitTriage(env, args, run))] })));
+  }, wrap(async args => ({ content: [text(await submitTriage(env, args))] })));
 }

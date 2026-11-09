@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { gameMedia, submitTriage, REVIEW_KEY } from './media-triage.js';
+import { gameMedia, submitTriage } from './media-triage.js';
 
 function bucket(seed = {}) {
   const items = new Map(Object.entries(seed).map(([k, v]) => [k, { data: typeof v === 'object' && !Buffer.isBuffer(v) ? JSON.stringify(v) : v, version: 1 }]));
@@ -43,34 +43,28 @@ test('default media is the actual sprite sheet and additional images are explici
   await assert.rejects(gameMedia(env, 2, undefined, read), /manifest/);
 });
 
-test('flags and passes store user criteria, skip protected rows and retry conditional conflicts', async () => {
-  const MEDIA = media(); MEDIA.conflicts = 1;
+test('submit_triage forwards the batch to the review backend and returns its result', async () => {
+  const calls = [];
+  const REVIEW = { fetch: async request => {
+    calls.push({ url: request.url, method: request.method, body: await request.json() });
+    return Response.json({ saved: [1], skipped: [{ appid: 3, reason: 'Missing game/media, human-kept, or mail status is no longer Pending.' }] });
+  } };
   const input = { criteria: 'Only games with vehicles', results: [
     { appid: 1, decision: 'flag', reason: 'No vehicles visible' },
-    { appid: 2, decision: 'pass', reason: 'Vehicle screenshot' },
-    { appid: 3, decision: 'flag', reason: 'Already kept or advanced' }
-  ] };
-  const result = await submitTriage({ MEDIA }, input, read);
-  assert.deepEqual(result.saved, [1, 2]); assert.equal(result.skipped[0].appid, 3);
-  const stored = JSON.parse(MEDIA.items.get(REVIEW_KEY).data);
-  assert.equal(stored[1].criteria, input.criteria); assert.equal(stored[2].decision, 'pass');
-  await submitTriage({ MEDIA }, input, read);
-  assert.deepEqual(JSON.parse(MEDIA.items.get(REVIEW_KEY).data), stored);
-  assert.deepEqual([...MEDIA.items.keys()].filter(k => k === REVIEW_KEY), [REVIEW_KEY]);
+    { appid: 3, decision: 'pass', reason: 'Already advanced' }] };
+  const result = await submitTriage({ REVIEW }, input);
+  assert.deepEqual(result.saved, [1]);
+  assert.equal(result.skipped[0].appid, 3);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, 'https://review.internal/api/triage/save');
+  assert.equal(calls[0].method, 'POST');
+  assert.deepEqual(calls[0].body, input);
 });
 
-test('concurrent state change to human kept is rechecked and never overwritten', async () => {
-  const MEDIA = media(); MEDIA.conflicts = 1;
-  let calls = 0;
-  const result = await submitTriage({ MEDIA }, { criteria: 'custom', results: [{ appid: 1, decision: 'flag', reason: 'custom reason' }] },
-    async () => ({ rows: ++calls === 1 ? [[1]] : [] }));
-  assert.deepEqual(result.saved, []); assert.equal(result.skipped.length, 1);
-  assert.equal(MEDIA.items.has(REVIEW_KEY), false);
-});
-
-test('repeated R2 conflicts and duplicate IDs fail explicitly', async () => {
-  const MEDIA = media(); MEDIA.conflicts = 10;
+test('backend errors, a missing binding and duplicate IDs fail explicitly', async () => {
   const result = { appid: 1, decision: 'flag', reason: 'custom' };
-  await assert.rejects(submitTriage({ MEDIA }, { criteria: 'custom', results: [result] }, read), /Concurrent/);
-  await assert.rejects(submitTriage({ MEDIA }, { criteria: 'custom', results: [result, result] }, read), /only once/);
+  const REVIEW = { fetch: async () => Response.json({ error: 'database unavailable' }, { status: 500 }) };
+  await assert.rejects(submitTriage({ REVIEW }, { criteria: 'custom', results: [result] }), /database unavailable/);
+  await assert.rejects(submitTriage({}, { criteria: 'custom', results: [result] }), /binding/);
+  await assert.rejects(submitTriage({ REVIEW }, { criteria: 'custom', results: [result, result] }), /only once/);
 });

@@ -400,6 +400,26 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(pipeline.triage_pending_appids(), [421])
         self.assertEqual(pipeline.triage_kept_appids(), [420])
         self.assertEqual(pipeline.mail_status_appids("Pending"), [420, 421])
+        with self._raw() as c:
+            row = c.execute("SELECT triage_decision, triage_kept, triaged_at IS NOT NULL "
+                            "FROM scrape_tracker WHERE appid=420").fetchone()
+        self.assertEqual(tuple(row), ("kept", 1, 1))
+
+    def test_triage_columns_and_flag_queue(self):
+        with self._raw() as c:
+            for appid in (430, 431, 432):
+                insert_lead(c, appid)
+            c.execute("INSERT INTO triage_criteria(id, text) VALUES (1, 'rubric')")
+            c.execute("UPDATE scrape_tracker SET triage_decision='flag', triage_reason='small', "
+                      "triage_criteria_id=1 WHERE appid IN (430, 432)")
+            c.execute("UPDATE scrape_tracker SET triage_decision='pass' WHERE appid=431")
+            c.execute("UPDATE scrape_tracker SET Mail_status='Writing' WHERE appid=432")
+            c.commit()
+            with self.assertRaises(Exception):
+                c.execute("UPDATE scrape_tracker SET triage_decision='maybe' WHERE appid=430")
+        self.assertEqual(pipeline.triage_flagged_appids(), [430])
+        self.assertTrue(pipeline.mark_triage_kept(430))
+        self.assertEqual(pipeline.triage_flagged_appids(), [])
 
     # ---- read_lead -----------------------------------------------------
     def test_read_lead_full_row_and_missing(self):

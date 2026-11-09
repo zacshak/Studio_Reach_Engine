@@ -94,13 +94,31 @@ _SCHEMA = """(
     Require_Socials INTEGER NOT NULL DEFAULT 0,
     Socials_Data   TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(Socials_Data)),
     Socials_Request_ID TEXT,
-    release_date   TEXT
+    release_date   TEXT,
+    triage_decision TEXT CHECK (triage_decision IN ('pass','flag','kept')),
+    triage_reason  TEXT,
+    triage_criteria_id INTEGER,
+    triaged_at     TEXT
 )"""
 # columns carried over on rebuild (all but Mail_status / mail_template, which take
 # their defaults)
 _REBUILD_COLS = ("appid, game_name, short_descript, scrape_status, emails, "
                  "steam_url, website, support_info, developers, publishers, "
                  "genres, added_at")
+# Triage rubric text, shared by every game reviewed in one batch.
+_TRIAGE_CRITERIA_SCHEMA = """(
+    id          INTEGER PRIMARY KEY,
+    text        TEXT NOT NULL UNIQUE,
+    created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+)"""
+# Additive triage columns. 'kept' is the human Keep; triage_kept is retained only so
+# older code that reads it keeps working after a rollback.
+TRIAGE_COLUMNS = (
+    ("triage_decision", "TEXT CHECK (triage_decision IN ('pass','flag','kept'))"),
+    ("triage_reason", "TEXT"),
+    ("triage_criteria_id", "INTEGER"),
+    ("triaged_at", "TEXT"),
+)
 _EMAIL_VERIFICATION_CACHE_SCHEMA = """(
     email        TEXT PRIMARY KEY,
     result_json  TEXT NOT NULL,
@@ -389,6 +407,10 @@ def init_tracker():
             conn.execute("ALTER TABLE scrape_tracker ADD COLUMN Socials_Request_ID TEXT")
         if "release_date" not in cols:
             conn.execute("ALTER TABLE scrape_tracker ADD COLUMN release_date TEXT")
+        for name, decl in TRIAGE_COLUMNS:
+            if name not in cols:
+                conn.execute(f"ALTER TABLE scrape_tracker ADD COLUMN {name} {decl}")
+        conn.execute(f"CREATE TABLE IF NOT EXISTS triage_criteria {_TRIAGE_CRITERIA_SCHEMA}")
         conn.execute("CREATE TABLE IF NOT EXISTS email_verification_cache "
                      f"{_EMAIL_VERIFICATION_CACHE_SCHEMA}")
         conn.execute("CREATE TABLE IF NOT EXISTS mail_send_attempt "
@@ -702,7 +724,7 @@ def triage_pending_appids():
     with closing(_ro()) as conn:
         return [r[0] for r in conn.execute(
             "SELECT appid FROM scrape_tracker WHERE Mail_status='Pending' "
-            "AND triage_kept=0 ORDER BY appid")]
+            "AND coalesce(triage_decision,'')<>'kept' ORDER BY appid")]
 
 
 def triage_kept_appids():
@@ -710,7 +732,16 @@ def triage_kept_appids():
     _ensure()
     with closing(_ro()) as conn:
         return [r[0] for r in conn.execute(
-            "SELECT appid FROM scrape_tracker WHERE triage_kept=1 ORDER BY appid")]
+            "SELECT appid FROM scrape_tracker WHERE triage_decision='kept' ORDER BY appid")]
+
+
+def triage_flagged_appids():
+    """Pending leads whose current AI triage recommendation is 'flag'."""
+    _ensure()
+    with closing(_ro()) as conn:
+        return [r[0] for r in conn.execute(
+            "SELECT appid FROM scrape_tracker WHERE Mail_status='Pending' "
+            "AND triage_decision='flag' ORDER BY appid")]
 
 
 def mark_triage_kept(appid):
@@ -718,7 +749,8 @@ def mark_triage_kept(appid):
     _ensure()
     with closing(_rw()) as conn:
         row = conn.execute(
-            "UPDATE scrape_tracker SET triage_kept=1 "
+            "UPDATE scrape_tracker SET triage_decision='kept', triage_kept=1, "
+            "triaged_at=CURRENT_TIMESTAMP "
             "WHERE appid=? AND Mail_status='Pending' RETURNING appid",
             (int(appid),)).fetchone()
         conn.commit()

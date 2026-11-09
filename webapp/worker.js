@@ -3,9 +3,10 @@
 // The static page (public/index.html) is served by Workers Assets from this same
 // deployment; review actions update the page after server confirmation.
 //
-//   GET  /api/state   -> all review views (1 DB round-trip + 3 R2 gets)
+//   GET  /api/state   -> all review views (1 DB round-trip + 1 R2 get)
 //   POST /api/act     -> {action, ...} — accept / reject / reject_all / approve / approve_all /
 //                        keep / reject_irrelevant / reject_all_irrelevant / trigger
+//   POST /api/triage/save -> {criteria, results} AI recommendations (MCP submit_triage)
 //   GET  /media/<key> -> R2 passthrough (images + manifests), same-origin so no CORS/bot-block
 //
 // Public dashboard, including review actions and workflow dispatch (owner requested).
@@ -14,9 +15,9 @@
 //
 // SQL here mirrors Claude_Lead_Discovery_Engine/pipeline.py exactly (same tables, same
 // status strings); R2 layout mirrors Leads_Reviewer/media_store.py (index.json,
-// irrelevant.json, <GameName>_<appid>/manifest.json + images).
+// <GameName>_<appid>/manifest.json + images). Triage lives in scrape_tracker.
 
-import { triageSnapshot } from './triage.js';
+import { triageSnapshot, saveTriage, TRIAGE_SQL } from './triage.js';
 import { rejectRows, cleanupJobs } from './deletion.js';
 import { draftRequest } from './drafting.js';
 import { queueSocialsStatement, saveSocials, readSocialRequestBody } from './socials.js';
@@ -103,10 +104,8 @@ async function updateJSON(env, key, fallback, mutate) {
 
 // ---- the four-view snapshot the page renders from ----
 async function state(env) {
-  const [index, irrelevant, recommendations, db] = await Promise.all([
+  const [index, db] = await Promise.all([
     getJSON(env, "index.json"),
-    getJSON(env, "irrelevant.json"),
-    getJSON(env, "mcp-triage.json"),
     sql(env, [
       // has-email states only ('pending'/'no_email'/'failed' belong in No-Mail or
       // nowhere yet — a bare Mail_status check let those leak in here too, GH-bug).
@@ -116,11 +115,11 @@ async function state(env) {
       ["SELECT EXISTS(SELECT 1 FROM scrape_tracker WHERE Mail_status='Scheduled')"],
       // accepted but the drafter hasn't written the mail yet — gates the Draft button
       ["SELECT EXISTS(SELECT 1 FROM scrape_tracker WHERE Mail_status='Writing')"],
-      ["SELECT appid FROM scrape_tracker WHERE Mail_status='Pending' AND triage_kept=0"],
+      [TRIAGE_SQL],
     ]),
   ]);
-  const [pending, drafted, nomail, sched, writing, eligible] = db;
-  const { triage, triageReviews } = triageSnapshot(irrelevant, recommendations, eligible.map(r => r[0]));
+  const [pending, drafted, nomail, sched, writing, reviews] = db;
+  const { triage, triageReviews } = triageSnapshot(reviews);
   const flagged = new Set(triage);
   return {
     index: index || {},
@@ -141,11 +140,12 @@ const approveStmt = (appid) => [
 ];
 
 const NOMAIL_SQL = "SELECT appid FROM scrape_tracker WHERE scrape_status IN ('pending','no_email','failed') AND Mail_status='Pending' ORDER BY appid";
-const TRIAGE_KEPT_SQL = "SELECT appid FROM scrape_tracker WHERE triage_kept=1";
+const TRIAGE_KEPT_SQL = "SELECT appid FROM scrape_tracker WHERE triage_decision='kept'";
 
 
 const keepStmt = (appid) => [
-  "UPDATE scrape_tracker SET triage_kept=1 WHERE appid=? AND Mail_status='Pending'",
+  // triage_kept is still written so a rolled-back Worker keeps honouring the Keep.
+  "UPDATE scrape_tracker SET triage_decision='kept', triage_kept=1, triaged_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE appid=? AND Mail_status='Pending'",
   appid,
 ];
 
@@ -190,7 +190,7 @@ async function act(env, body) {
       const appid = oneId(body);
       return rejectGames(env, [appid]);
     }
-    case "reject_all": { // No-Mail bulk purge — same as reject, just no irrelevant.json involved
+    case "reject_all": { // No-Mail bulk purge — same as reject
       const appids = manyIds(body);
       return rejectGames(env, appids);
     }
@@ -207,10 +207,10 @@ async function act(env, body) {
     case "keep": { // Triage: persist human Keep, then unflag into the normal queue
       const appid = oneId(body);
       await sql(env, [keepStmt(appid)]);
-      // triage_kept is authoritative. Stale R2 flags are hidden by state().
+      // triage_decision='kept' is authoritative; AI recommendations can no longer change it.
       break;
     }
-    case "reject_irrelevant": { // Triage ❌: unflag + full delete
+    case "reject_irrelevant": { // Triage ❌: full delete (drops the recommendation with the row)
       const appid = oneId(body);
       return rejectGames(env, [appid]);
     }
@@ -298,6 +298,8 @@ export default {
           response = json(await saveSocials(env, await readSocialRequestBody(req), sql));
         if (req.method === 'POST' && ['/api/draft/context','/api/draft/save'].includes(path))
           response = json(await draftRequest(req, env, sql, path.endsWith('/context') ? 'context' : 'save'));
+        if (req.method === 'POST' && path === '/api/triage/save')
+          response = json(await saveTriage(env, await req.json(), sql, getJSON));
         if (path === "/api/state") response = json(await state(env));
         if (path === "/api/act" && req.method === "POST") {
           const result = await act(env, await req.json());

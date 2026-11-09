@@ -96,7 +96,7 @@ test('inactive cleanup blocks reactivation until completion without deleting the
 test('cleanup retries storage failures and removes all metadata only after successful purge', async () => {
   const { db, sql } = fixture();
   db.exec("INSERT INTO media_cleanup_jobs(appid,folder) VALUES(1,'Game_1');");
-  const objects = { 'index.json': { 1: 'Game_1' }, 'irrelevant.json': [1], 'mcp-triage.json': { 1: { decision: 'flag' } } };
+  const objects = { 'index.json': { 1: 'Game_1' } };
   let fail = true, deletes = 0;
   const env = { MEDIA: {
     list: async () => ({ objects: [{ key: 'Game_1/img.png' }], truncated: false }),
@@ -111,7 +111,7 @@ test('cleanup retries storage failures and removes all metadata only after succe
   await cleanupJobs(env, sql, update);
   assert.equal(deletes, 1);
   assert.equal(db.prepare('SELECT count(*) n FROM media_cleanup_jobs').get().n, 0);
-  assert.deepEqual(objects, { 'index.json': {}, 'irrelevant.json': [], 'mcp-triage.json': {} });
+  assert.deepEqual(objects, { 'index.json': {} });
   db.close();
 });
 
@@ -200,7 +200,7 @@ async function replaceExpiredJob(db, sql) {
   return db.prepare('SELECT * FROM media_cleanup_jobs').get();
 }
 
-for (const phase of ['list', 'completion', 'retry', 'release', 'index.json', 'irrelevant.json', 'mcp-triage.json']) {
+for (const phase of ['list', 'completion', 'retry', 'release', 'index.json']) {
   test(`expired worker cannot alter a replacement job or later R2 state after ${phase}`, async () => {
     const { db, sql } = fixture();
     db.exec("INSERT INTO media_cleanup_jobs(appid,folder) VALUES(1,'Old_1');");
@@ -234,7 +234,6 @@ for (const phase of ['list', 'completion', 'retry', 'release', 'index.json', 'ir
     if (phase === 'list' || phase === 'retry') { assert.equal(deleted, 0); assert.deepEqual(metadata, []); }
     if (phase === 'release') assert.deepEqual(metadata, []);
     if (phase === 'index.json') assert.deepEqual(metadata, ['index.json']);
-    if (phase === 'irrelevant.json') assert.deepEqual(metadata, ['index.json', 'irrelevant.json']);
     db.close();
   });
 }

@@ -113,10 +113,6 @@ export async function cleanupJobs(env, sql, updateJSON) {
         if (next[String(appid)] === folder) delete next[String(appid)];
         return next;
       });
-      await requireOwnership();
-      await updateJSON(env, 'irrelevant.json', [], current => current.filter(id => Number(id) !== appid));
-      await requireOwnership();
-      await updateJSON(env, 'mcp-triage.json', {}, current => Object.fromEntries(Object.entries(current).filter(([id]) => Number(id) !== appid)));
       completed += await finish();
     } catch (error) {
       if (error === lostLease) continue;

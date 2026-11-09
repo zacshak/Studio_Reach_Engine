@@ -42,7 +42,7 @@ test('oversized deletion batches fail before touching storage', async () => {
 
 test('confirmed rejection schedules cleanup without synchronous media deletion', async () => {
   const original = globalThis.fetch;
-  const objects = { 'index.json': { 1: 'One_1', 2: 'Two_2' }, 'irrelevant.json': [1,2], 'mcp-triage.json': { 1: { decision: 'flag' }, 2: { decision: 'flag' } } };
+  const objects = { 'index.json': { 1: 'One_1', 2: 'Two_2' } };
   let deletedRows = false;
   globalThis.fetch = async (_url, options) => {
     const steps = JSON.parse(options.body).requests[0].batch.steps;
@@ -63,7 +63,6 @@ test('confirmed rejection schedules cleanup without synchronous media deletion',
     });
     assert.equal(response.status, 200); assert.equal(deletedRows, true);
     assert.deepEqual(objects['index.json'], { 1: 'One_1', 2: 'Two_2' });
-    assert.deepEqual(objects['irrelevant.json'], [1,2]);
   } finally { globalThis.fetch = original; }
 });
 
@@ -80,29 +79,34 @@ test('transaction begin and commit errors are never reported as success', async 
   } finally { globalThis.fetch = original; }
 });
 
-test('dashboard state routes MCP flags and passes and excludes stale human decisions', async () => {
+test('dashboard state routes database flags and passes into the right queues', async () => {
   const originalFetch = globalThis.fetch;
-  const sets = [[[1], [2]], [], [[3]], [[0]], [[0]], [[1], [2], [3]]];
-  globalThis.fetch = async () => Response.json({ results: [...sets.map(rows => ({ type: 'ok', response: { result: {
-    rows: rows.map(row => row.map(value => ({ type: 'integer', value: String(value) })))
-  } } })), { type: 'ok' }] });
-  const objects = {
-    'index.json': { 1: 'One_1', 2: 'Two_2', 3: 'Three_3' },
-    'irrelevant.json': [1, 4],
-    'mcp-triage.json': { 1: { decision: 'pass', reason: 'Fits', criteria: 'Custom' }, 2: { decision: 'flag', reason: 'Does not fit', criteria: 'Custom' }, 4: { decision: 'flag' } }
+  const sets = [[[1], [2]], [], [[3]], [[0]], [[0]],
+    [[1, 'pass', 'Fits', 'Custom', '2026-11-09T00:00:00.000Z'], [2, 'flag', 'Does not fit', 'Custom', null]]];
+  const cell = value => value === null ? { type: 'null' } : typeof value === 'number'
+    ? { type: 'integer', value: String(value) } : { type: 'text', value };
+  let statements;
+  globalThis.fetch = async (_url, options) => {
+    statements = JSON.parse(options.body).requests.filter(r => r.stmt).map(r => r.stmt.sql);
+    return Response.json({ results: [...sets.map(rows => ({ type: 'ok', response: { result: {
+      rows: rows.map(row => row.map(cell)) } } })), { type: 'ok' }] });
   };
+  const objects = { 'index.json': { 1: 'One_1', 2: 'Two_2', 3: 'Three_3' } };
+  const reads = [];
   try {
     const response = await worker.fetch(new Request('https://review.test/api/state'), {
       TURSO_URL: 'libsql://example', TURSO_TOKEN: 'test',
-      MEDIA: { get: async key => ({ json: async () => objects[key] }) }
+      MEDIA: { get: async key => { reads.push(key); return { json: async () => objects[key] }; } }
     });
     assert.equal(response.status, 200);
     const state = await response.json();
+    assert.deepEqual(reads, ['index.json']);
+    assert.match(statements.at(-1), /triage_kept=0 AND s\.triage_decision IN \('pass','flag'\)/);
     assert.deepEqual(state.triage, [2]);
     assert.deepEqual(state.approval, [1]);
     assert.deepEqual(state.nomail, [3]);
-    assert.equal(state.triageReviews[1].reason, 'Fits');
-    assert.equal(state.triageReviews[4], undefined);
+    assert.deepEqual(state.triageReviews[1], { decision: 'pass', reason: 'Fits', criteria: 'Custom', reviewed_at: '2026-11-09T00:00:00.000Z' });
+    assert.equal(state.triageReviews[2].decision, 'flag');
     assert.equal('socials' in state,false);
     assert.equal('requireSocials' in state,false);
   } finally { globalThis.fetch = originalFetch; }
@@ -152,10 +156,58 @@ test("mail approval is one guarded database update", () => {
 
 test("triage Keep persists without advancing the mail state", () => {
   assert.deepEqual(keepStmt(42), [
-    "UPDATE scrape_tracker SET triage_kept=1 WHERE appid=? AND Mail_status='Pending'",
+    "UPDATE scrape_tracker SET triage_decision='kept', triage_kept=1, triaged_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE appid=? AND Mail_status='Pending'",
     42,
   ]);
-  assert.equal(TRIAGE_KEPT_SQL, "SELECT appid FROM scrape_tracker WHERE triage_kept=1");
+  assert.equal(TRIAGE_KEPT_SQL, "SELECT appid FROM scrape_tracker WHERE triage_decision='kept'");
+});
+
+test('triage save route writes eligible rows in one transaction and reports skips', async () => {
+  const original = globalThis.fetch;
+  let steps;
+  globalThis.fetch = async (_url, options) => {
+    steps = JSON.parse(options.body).requests[0].batch.steps;
+    // BEGIN, criteria insert, update 1 (saved), update 2 (now ineligible), COMMIT, ROLLBACK
+    return Response.json({ results: [{ type: 'ok', response: { result: {
+      step_results: [{}, { rows: [] }, { rows: [[{ type: 'integer', value: '1' }]] }, { rows: [] }, {}, null], step_errors: [] } } }] });
+  };
+  try {
+    const body = { criteria: ' Rubric ', results: [
+      { appid: 1, decision: 'flag', reason: 'Too small' },
+      { appid: 2, decision: 'pass', reason: 'Fits' },
+      { appid: 3, decision: 'pass', reason: 'No media' }] };
+    const r = await worker.fetch(new Request('https://review.internal/api/triage/save', { method: 'POST', body: JSON.stringify(body) }), {
+      TURSO_URL: 'libsql://example', TURSO_TOKEN: 'test',
+      MEDIA: { get: async key => key === 'index.json' ? { json: async () => ({ 1: 'One_1', 2: 'Two_2' }) } : null }
+    });
+    assert.equal(r.status, 200);
+    const result = await r.json();
+    assert.deepEqual(result.saved, [1]);
+    assert.deepEqual(result.skipped.map(s => s.appid), [3, 2]);
+    assert.equal(steps.length, 6);
+    assert.match(steps[1].stmt.sql, /INSERT INTO triage_criteria/);
+    assert.equal(steps[1].stmt.args[0].value, 'Rubric');
+    assert.match(steps[2].stmt.sql, /Mail_status='Pending' AND triage_kept=0 AND coalesce\(triage_decision,''\)<>'kept'/);
+    assert.deepEqual(steps[2].stmt.args.map(a => a.value), ['flag', 'Too small', 'Rubric', 'flag', 'Too small', 'Rubric', '1']);
+  } finally { globalThis.fetch = original; }
+});
+
+test('triage save rejects malformed batches before touching the database', async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error('database must not be called'); };
+  try {
+    const bad = [
+      { criteria: '', results: [{ appid: 1, decision: 'flag', reason: 'x' }] },
+      { criteria: 'c', results: [] },
+      { criteria: 'c', results: [{ appid: 1, decision: 'kept', reason: 'x' }] },
+      { criteria: 'c', results: [{ appid: 1, decision: 'flag', reason: 'x' }, { appid: 1, decision: 'pass', reason: 'y' }] },
+      { criteria: 'c', results: [{ appid: -1, decision: 'flag', reason: 'x' }] },
+    ];
+    for (const body of bad) {
+      const r = await worker.fetch(new Request('https://review.internal/api/triage/save', { method: 'POST', body: JSON.stringify(body) }), { MEDIA: { get: async () => null } });
+      assert.equal(r.status, 500);
+    }
+  } finally { globalThis.fetch = original; }
 });
 
 test("sql uses a guarded transaction for multi-statement mutations", async () => {

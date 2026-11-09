@@ -93,8 +93,7 @@ class CleanupTest(unittest.TestCase):
 
         with patch.object(sync_media, "_active_appids", return_value={1, 3}), \
              patch.object(sync_media, "_queue_cleanup", return_value=1) as queue, \
-             patch.object(sync_media.media_store, "update_index", side_effect=update), \
-             patch.object(sync_media.media_store, "update_irrelevant"):
+             patch.object(sync_media.media_store, "update_index", side_effect=update):
             sync_media.cleanup_r2(Client(), apply=True)
         self.assertEqual(deleted, [])
         self.assertEqual(written, {})
