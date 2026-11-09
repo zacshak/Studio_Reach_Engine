@@ -15,9 +15,9 @@ limiting, local caching, and hard guards so the data stays clean.
 `fetch_app.py` and `batch_fetch.py` are the shared fetch layer (single-app and
 cached/rate-limited batch); `lead_discovery.py` builds on them.
 
-> No website scraping anywhere — this agent only reads Steam's official JSON
-> APIs. The studio email it reports comes straight from Steam's
-> `support_info.email` field, not from crawling sites.
+> Discovery itself does no website scraping — it only reads Steam's JSON APIs and
+> store media. The email it records comes from Steam's `support_info.email`.
+> Leads without one are left `pending` for the separate Hermes/Kimchi scrapers.
 
 ## Setup
 
@@ -28,7 +28,10 @@ No API key needed — the finder reads Steam's keyless Coming-Soon search.
 
 ## Daily usage
 
-One command does everything (finder → leads → opens the Excel):
+In production this runs nightly in GitHub Actions as `python SRE.py --discover`
+(`.github/workflows/discover.yml`), which calls `run_daily.py` against Turso and then
+mirrors media to R2. Locally, the same command does finder → leads → R2 media sync →
+opens the Excel:
 ```bash
 python run_daily.py
 ```
@@ -59,6 +62,8 @@ python lead_discovery.py --sample 25
 | `known_comingsoon` | every pre-release appid ever seen (the diff baseline) |
 | `newly_added` | one row per **named pre-release lead**, every Steam field as its own column, stamped `discovered_on`. A guard rejects released/dead/nameless pages. |
 | `snapshot_runs` | log of each finder run |
+| `scrape_tracker` | one row per lead for the review/outreach pipeline: email, `scrape_status`, `Mail_status`, `release_date` (Steam's display date), triage and socials fields. Seeded from `newly_added` by a database trigger. |
+| `pending_discovery` | appids found but not yet fully fetched/published; retried on later runs even when no new pages appear |
 
 ## Design guarantees
 - **Pre-release only**: `newly_added` physically cannot hold a released, dead,

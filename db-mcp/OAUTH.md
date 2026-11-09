@@ -1,5 +1,11 @@
 # OAuth preparation — not enabled or deployed
 
+> **Current status:** the deployed Worker runs with `PUBLIC_ACCESS=true`, which bypasses
+> both the static `MCP_AUTH_TOKEN` check and OAuth, and adds permissive CORS headers.
+> Since this preparation the MCP also gained scoped write tools (`submit_triage`,
+> `save_draft`, `save_social_data`) that write through R2 and the review backend; database
+> SQL access remains read-only. The design below applies only if public access is turned off.
+
 The Worker remains a read-only MCP resource server. A separately selected OAuth
 authorization server must authenticate the owner and obtain explicit consent.
 No login, consent, authorization-code, registration, or token endpoint is added
