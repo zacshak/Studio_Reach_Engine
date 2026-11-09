@@ -18,7 +18,6 @@ import os
 import re
 import shutil
 import sys
-from concurrent.futures import ThreadPoolExecutor
 
 # pipeline.py lives in the System 1 folder (the DB owner); make it importable.
 _PIPELINE_DIR = os.path.join(
@@ -315,13 +314,11 @@ def Reject_Game(gameId):
     return leftover
 
 
-# -- cloud triage review (the irrelevant.json gate) -----------------------
+# -- cloud triage review (scrape_tracker.triage_decision='flag') ----------
 def irrelevant_to_review():
-    """Lightweight queue of triage-flagged leads (cloud), built from R2's irrelevant.json
-    + the index. [] when nothing's flagged. Cards hydrate on view like the normal queue."""
-    kept = set(pipeline.triage_kept_appids())
-    appids = [appid for appid in media_store.fetch_irrelevant()
-              if int(appid) not in kept]
+    """Lightweight queue of triage-flagged leads, built from the database's
+    triage_decision + the R2 index. [] when nothing's flagged. Cards hydrate on view."""
+    appids = pipeline.triage_flagged_appids()
     if not appids:
         return []
     index = media_store.fetch_index()
@@ -335,26 +332,13 @@ def irrelevant_to_review():
     return out
 
 
-def _drop_irrelevant(appid):
-    """Remove one appid from R2's irrelevant.json."""
-    media_store.update_irrelevant(
-        lambda current: [a for a in current if int(a) != int(appid)])
-
-
 def Keep_Irrelevant(appid):
-    """The AI was wrong — persist Keep, then unflag it into the normal queue."""
+    """The AI was wrong — persist Keep; the lead returns to its normal queue."""
     pipeline.mark_triage_kept(appid)
-    _drop_irrelevant(appid)
 
 
 def Reject_Irrelevant(appid):
-    """Confirm irrelevant — purge it everywhere. The two R2 purges (unflag in
-    irrelevant.json, delete media+index) are independent and use the thread-safe boto3
-    client, so run them CONCURRENTLY. The Turso delete stays on this thread — the shared
-    libSQL connection is thread-bound."""
-    with ThreadPoolExecutor(max_workers=2) as ex:
-        futs = [ex.submit(_drop_irrelevant, appid),
-                ex.submit(media_store.delete_lead_media, appid)]
-        for f in futs:
-            f.result()      # surface any error
+    """Confirm irrelevant — purge its media, then delete its rows (which also drops
+    its triage recommendation)."""
+    media_store.delete_lead_media(appid)
     pipeline.delete_lead(appid)

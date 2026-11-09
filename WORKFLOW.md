@@ -10,8 +10,7 @@ All local/manual commands still exist through the one launcher: `python SRE.py <
 ```
  discover.yml (nightly) → SRE --discover → Turso scrape_tracker + R2 media
       │
-      ├─ triage: an agent calls MCP submit_triage → R2 mcp-triage.json (pass / flag)
-      │          (legacy: manual triage.yml → triage_cloud.py → R2 irrelevant.json)
+      ├─ triage: an agent calls MCP submit_triage → scrape_tracker.triage_decision (pass / flag)
       │
       └─ email scraping (manual GitHub Actions run): hermes.yml or kimchi.yml
                                         │
@@ -57,8 +56,13 @@ All local/manual commands still exist through the one launcher: `python SRE.py <
   Backward moves: a temporary SMTP failure returns `Sending` → `Scheduled`; a permanent
   rejection returns the row to `Drafted`; a missing draft returns it to `Writing`;
   QEV `unknown` leaves it `Scheduled`. Reject deletes the row; it is not a status.
-- **`triage_kept`**: `1` once you press Keep in Triage. Kept rows can no longer receive
-  MCP triage recommendations.
+- **Triage** (in `scrape_tracker`): `triage_decision` is `pass` / `flag` from MCP
+  `submit_triage`, or `kept` once you press Keep; `triage_reason` is the reviewer's reason;
+  `triage_criteria_id` points at the rubric text in the `triage_criteria` table;
+  `triaged_at` is the UTC timestamp. NULL means not triaged yet. A `kept` row never
+  receives another AI recommendation. Deleting a row deletes its triage record with it.
+  `triage_kept` (0/1) is still written alongside `kept` only so a rolled-back Worker keeps
+  honouring Keeps; new code reads `triage_decision`.
 - **Social enrichment**: `Require_Socials=1` queues MCP research.
   `Socials_Data` stores X, LinkedIn, Instagram, Discord, and Website JSON.
   `Socials_Request_ID` is nullable TEXT reserved for Send click deduplication.
@@ -77,12 +81,11 @@ Epic discovery (`epic-discovery.yml`) runs at the same time into its own separat
   `newly_added`, seed `scrape_tracker` (`seeded` if Steam gave an email, else `pending`)
   with Steam's display `release_date`, and mirror each lead's media to R2. Unfinished
   fetch/upload work is kept in `pending_discovery` and retried on the next run.
-- **Triage (current): MCP.** A calling agent inspects each Pending game's images and
-  description and saves `pass`/`flag` recommendations with `submit_triage` into R2
-  `mcp-triage.json`. See `db-mcp/README.md`. Non-destructive; it never deletes or changes
-  mail status.
-- **Triage (legacy):** `triage.yml` → `triage_cloud.py` merges flagged appids into R2
-  `irrelevant.json`. MCP recommendations take precedence over these flags.
+- **Triage: MCP.** A calling agent inspects each Pending game's images and description
+  and saves `pass`/`flag` recommendations with `submit_triage`, which stores them on the
+  game's `scrape_tracker` row through the review Worker. See `db-mcp/README.md`.
+  Non-destructive; it never deletes or changes mail status. The former GitHub Actions
+  triage (`triage.yml`, `irrelevant.json`) has been retired.
 - Hermes and Kimchi process `pending` and `failed` leads and record the best published
   contact email. Start them from GitHub Actions; the dashboard has no button for them.
 
@@ -91,9 +94,9 @@ One card at a time, swipe to page. Four tabs; the app opens the first non-empty 
 order Triage → Game Approval → Mail Approval → No-Mail.
 
 ### Triage
-Pending, non-kept leads flagged by MCP (`flag`) or by legacy `irrelevant.json`. A `pass`
-recommendation leaves the lead in Game Approval / No-Mail. The card shows the reason.
-- **Keep** — sets `triage_kept=1`; the lead returns to its normal queue and stays there.
+Pending leads with `triage_decision='flag'`. A `pass` leaves the lead in Game Approval /
+No-Mail. Every card with a recommendation shows its decision, reason and criteria.
+- **Keep** — sets `triage_decision='kept'`; the lead returns to its normal queue and stays there.
 - **Reject** / **Reject all** — delete the lead everywhere (Turso rows + queued R2 cleanup).
 
 ### Game Approval (`Mail_status = Pending`, `scrape_status` `seeded` or `scraped`)
@@ -205,7 +208,7 @@ No redeploy needed — the next draft run reads the new templates.
 **GitHub repo → Settings → Secrets → Actions** (the workflows):
 `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `R2_PUBLIC_BASE`, `R2_BUCKET`, `R2_ACCOUNT_ID`,
 `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `TRIAGE_BASE_URL`, `TRIAGE_MODEL`,
-`TRIAGE_API_KEY` (legacy triage and Hermes), `MAIL_WRITER_BASE_URL`, `MAIL_WRITER_MODEL`,
+`TRIAGE_API_KEY` (Hermes; also a local drafting fallback), `MAIL_WRITER_BASE_URL`, `MAIL_WRITER_MODEL`,
 `MAIL_WRITER_API_KEY` (drafting), `QEV_API_KEY` (send-time email verification),
 `GMAIL_USER`, `GMAIL_APP_PASSWORD`, `KIMCHI_API_KEY`, and for Epic
 `EPIC_TURSO_DATABASE_URL`, `EPIC_TURSO_AUTH_TOKEN`.
@@ -217,6 +220,18 @@ R2 access uses the `MEDIA` binding. The dashboard and MCP are intentionally publ
 Cloudflare Browser Integrity Check still applies to dashboard writes (`POST /api/act`),
 so scripted non-browser clients get HTTP 403 there; only `GET /api/state` and `/media/`
 are exempt (see `db-mcp/README.md`).
+
+### Triage storage rollout
+
+Triage moved from R2 `mcp-triage.json` / `irrelevant.json` into `scrape_tracker`.
+1. `node webapp/migrate-triage.mjs` — adds the columns and `triage_criteria`, marks
+   existing Keeps as `kept`, and imports `mcp-triage.json` (downloaded from the dashboard,
+   or pass a file path). Additive and idempotent; it never overwrites a stored decision.
+2. Deploy the review Worker (`webapp`), then the MCP Worker (`db-mcp`).
+3. Run the migration again to import anything the old MCP wrote between the two deploys.
+The old JSON files are no longer read and can be deleted from R2 afterwards. Rolling the
+code back is safe: the new columns are ignored by older Workers, and Keeps still set
+`triage_kept`.
 
 ### Cleanup deployment order
 

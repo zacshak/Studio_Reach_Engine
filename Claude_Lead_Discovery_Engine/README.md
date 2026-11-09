@@ -62,7 +62,8 @@ python lead_discovery.py --sample 25
 | `known_comingsoon` | every pre-release appid ever seen (the diff baseline) |
 | `newly_added` | one row per **named pre-release lead**, every Steam field as its own column, stamped `discovered_on`. A guard rejects released/dead/nameless pages. |
 | `snapshot_runs` | log of each finder run |
-| `scrape_tracker` | one row per lead for the review/outreach pipeline: email, `scrape_status`, `Mail_status`, `release_date` (Steam's display date), triage and socials fields. Seeded from `newly_added` by a database trigger. |
+| `scrape_tracker` | one row per lead for the review/outreach pipeline: email, `scrape_status`, `Mail_status`, `release_date` (Steam's display date), triage (`triage_decision`, `triage_reason`, `triage_criteria_id`, `triaged_at`) and socials fields. Seeded from `newly_added` by a database trigger. |
+| `triage_criteria` | rubric text shared by every game reviewed in one triage batch |
 | `pending_discovery` | appids found but not yet fully fetched/published; retried on later runs even when no new pages appear |
 
 ## Design guarantees

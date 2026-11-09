@@ -24,9 +24,9 @@ media download checks passed after activation. Both dashboard origins also passe
 read checks. The exemption does not apply to the legacy `workers.dev` endpoints.
 
 Agents can GET `https://sre-review.zacgamedev.com/api/state` with default Python
-headers. Its `triageReviews` map contains saved MCP recommendations for currently
-eligible Pending rows, including both pass and flag decisions. It is not an archive
-of recommendations for deleted, advanced, or human-kept rows. Fetch current state
+headers. Its `triageReviews` map contains the stored recommendations for currently
+eligible Pending rows, including both pass and flag decisions. For the complete
+record, including advanced rows, query `scrape_tracker.triage_decision` instead. Fetch current state
 before reviewing new candidates, and preserve existing recommendations unless the
 user explicitly requests a re-review. This is a live snapshot, not a write lock.
 
@@ -47,11 +47,11 @@ Database tools: `list_tables`, `describe_table`, and `query`. Queries accept SQL
 
 All eleven tools are public. `get_game_media(appid)` returns the existing four-panel screenshot sprite sheet as an MCP image, the description, and available image names. It selects the named sprite sheet rather than assuming the fourth file is correct. `get_game_image(appid, image_name)` returns another explicitly requested image from that game's manifest. Images are limited to 5 MiB each and restricted to supported image formats.
 
-`submit_triage({criteria, results: [{appid, decision: "flag" | "pass", reason}]})` saves recommendations in R2 `mcp-triage.json`. Submit up to 100 games per call, repeating for additional games. Criteria come from the user's current request, not a fixed genre rubric. No server-side LLM is called. The calling agent must inspect the game and apply the user's criteria.
+`submit_triage({criteria, results: [{appid, decision: "flag" | "pass", reason}]})` saves recommendations on each game's `scrape_tracker` row (`triage_decision`, `triage_reason`, `triage_criteria_id` → `triage_criteria.text`, `triaged_at`). The MCP forwards the batch to the review Worker's `/api/triage/save` through the `REVIEW` service binding, so its own Turso token stays read-only. Submit up to 100 games per call, repeating for additional games. Criteria come from the user's current request, not a fixed genre rubric. No server-side LLM is called. The calling agent must inspect the game and apply the user's criteria.
 
-The dashboard merges these recommendations with legacy GHA flags. `flag` goes to Triage for the human's Keep/Reject decision. `pass` clears an AI flag and leaves the game in Approval or No-Mail, according to its existing database state. Both views show the recommendation reason and criteria. Database rows and mail statuses are never changed by MCP triage. Games already human-kept, deleted, lacking indexed media, or no longer Pending are skipped. The dashboard also checks eligibility so a racing submission cannot resurrect a human decision. Subsequent submissions replace an earlier recommendation for the same eligible game. Conditional R2 writes prevent concurrent batches from losing each other's results. Obsolete recommendations are pruned on successful submissions.
+`flag` goes to Triage for the human's Keep/Reject decision. `pass` clears an AI flag and leaves the game in Approval or No-Mail, according to its existing database state. Both views show the recommendation reason and criteria. Database rows and mail statuses are never changed by MCP triage. Games already human-kept (`triage_decision='kept'`), deleted, lacking indexed media, or no longer Pending are skipped and listed in `skipped`. Eligibility is checked inside the same guarded `UPDATE`, so a racing submission cannot overwrite a human Keep. Each batch is one database transaction. Subsequent submissions replace an earlier recommendation for the same eligible game; an identical resubmission keeps its original timestamp. Recommendations are deleted together with their game, and remain on the row (queryable, and in `--snap-db` snapshots) after the game leaves Pending, though the dashboard only shows them for Pending games.
 
-The existing GHA remains on-demand only for compatibility. It is not called by MCP, and MCP recommendations take precedence over its flags. Database credentials remain read-only. The Worker now also has an R2 binding to read game media and write the recommendation document.
+The former GitHub Actions triage (`triage.yml`, `irrelevant.json`) has been retired. Database credentials remain read-only. The Worker's R2 binding is used to read game media. To check whether a game was triaged, query `scrape_tracker.triage_decision` (NULL means not yet).
 
 Repeat the same query with `next_offset` until `has_more` is false. Always specify a deterministic ORDER BY. These are live reads, not a frozen snapshot. For records changing between requests, prefer key-based iteration:
 

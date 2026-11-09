@@ -58,8 +58,6 @@ _IMG_EXT = (".jpg", ".jpeg", ".png")
 # the on-disk layout. The cloud app only knows the appid, so a root index.json maps
 # appid -> folder; it resolves there before fetching a lead's manifest.
 INDEX_KEY = "index.json"
-IRRELEVANT_KEY = "irrelevant.json"    # appids the cloud triage flagged as irrelevant —
-                                      # the app gates on this list before normal review
 TEMPLATES_KEY = "cold_mails.txt"      # the cold-mail templates, persisted in R2 so they
                                       # can be edited without a redeploy (the drafter reads here)
 _UA = {"User-Agent": "Mozilla/5.0"}   # r2.dev 403s default urllib (CF bot block, err 1010)
@@ -149,19 +147,6 @@ def fetch_templates(strict=False):
 def fetch_manifest(folder, strict=False):
     """The lead's manifest dict from R2 (by folder name), or None if unreachable."""
     return _get_json(f"{folder}/manifest.json", strict)
-
-
-def fetch_irrelevant(strict=False):
-    """List of appids the cloud triage flagged as irrelevant, or [] if none/absent.
-    The app shows a reject-review gate while this is non-empty."""
-    value = _get_json(IRRELEVANT_KEY, strict)
-    if value is None:
-        return []
-    if not isinstance(value, list):
-        if strict:
-            raise MediaStoreError("R2 irrelevant.json is not an array")
-        return []
-    return value
 
 
 # -- write side (boto3, imported lazily) ----------------------------------
@@ -313,10 +298,6 @@ def _update_json(key, fallback, mutate, client=None):
 
 def update_index(mutate, client=None):
     return _update_json(INDEX_KEY, {}, mutate, client)
-
-
-def update_irrelevant(mutate, client=None):
-    return _update_json(IRRELEVANT_KEY, [], mutate, client)
 
 
 def check_draft_inputs(submission, client=None):
