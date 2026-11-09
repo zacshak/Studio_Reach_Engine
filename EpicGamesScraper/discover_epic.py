@@ -49,11 +49,16 @@ def main(argv: list[str] | None = None) -> int:
             conn, products, run_at, client.base_url, bootstrap=bootstrap
         )
         detail_products = epic_db.detail_keys_needed(conn)
+        # Search results are full offer documents, so current products need no
+        # per-offer request (the provider scores detail sweeps as abuse).
+        current_offers = {product["offer_id"]: product["raw"] for product in products}
         detail_ok = 0
         detail_failed = 0
         for product in detail_products:
             try:
-                detail = client.fetch_offer(product["offer_id"])
+                detail = current_offers.get(product["offer_id"])
+                if detail is None:
+                    detail = client.fetch_offer(product["offer_id"])
                 epic_db.record_detail(conn, product, detail, run_at)
                 detail_ok += 1
             except EpicClientError as exc:
