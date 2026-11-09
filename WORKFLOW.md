@@ -8,21 +8,27 @@ to be on.
 All local/manual commands still exist through the one launcher: `python SRE.py <command>`.
 
 ```
- discover.yml  →  SRE --discover  →  Turso scrape_tracker + R2 media
+ discover.yml (nightly) → SRE --discover → Turso scrape_tracker + R2 media
       │
-      └──manual───► triage.yml  →  triage_cloud.py  →  R2 irrelevant.json
-                         │
-                         └──manual───► kimchi.yml  →  pending leads get scraped
+      ├─ triage: an agent calls MCP submit_triage → R2 mcp-triage.json (pass / flag)
+      │          (legacy: manual triage.yml → triage_cloud.py → R2 irrelevant.json)
+      │
+      └─ email scraping (manual GitHub Actions run): hermes.yml or kimchi.yml
                                         │
                      Web app (Cloudflare Worker) — review on your phone
                                         │
-  Triage gate → Game Approval → No-Mail ──(🔎 Hermes button)──► emails found
-                     │                                              │
-                     ▼ Accept                                       ▼
-                 Mail Approval ◄──(✍️ Draft button)── Gemini drafts ─┘
-                     │
-                     ▼ Approve  →  (📨 Send button)  →  send.yml  →  Sent
-                                                                      │
+   Triage tab ── Keep ──► Game Approval / No-Mail          (Reject anywhere = delete)
+                              │ Accept
+                              ▼
+                          Writing ──(✍️ Draft button or MCP save_draft)──► Drafted
+                                                                             │
+                                          Mail Approval tab: Approve ◄───────┘
+                                                                             │
+                          Scheduled ◄────────────────────────────────────────┘
+                              │ (📨 Send scheduled mails button → send.yml)
+                              ▼
+                          Sending (one row at a time) → Sent
+                                                          │
                               review-mails.yml (nightly cron) ──► Replied
 ```
 
@@ -34,9 +40,25 @@ All local/manual commands still exist through the one launcher: `python SRE.py <
   valid one) · `scraped` (Hermes/Kimchi found a valid one) · `no_email` · `invalid`
   (a non-empty value failed validation) · `failed`.
 - **`Mail_status`**: valid leads follow `Pending` → `Writing` → `Drafted` →
-  `Scheduled` → `Sent` → `Replied`; invalid leads branch `Pending` → `Invalid` and
-  stop. `Sending` is a hidden internal claim state between `Scheduled` and `Sent`;
-  `Invalid` is quarantined and never rendered in the review views.
+  `Scheduled` → `Sending` → `Sent` → `Replied`; invalid leads branch to `Invalid` and
+  stop. `Invalid` is quarantined and never rendered in the review views.
+
+  | Status | Meaning | Set by |
+  |---|---|---|
+  | `Pending` | new lead awaiting your review | discovery |
+  | `Writing` | accepted; needs a draft | dashboard **Accept** |
+  | `Drafted` | draft saved; awaiting your approval | `draft.yml` or MCP `save_draft` |
+  | `Scheduled` | approved; **waiting**. Nothing sends it until the Send button (or a manual `--send-mails`) runs | dashboard **Approve** |
+  | `Sending` | hidden claim held only while one mail is being submitted | `send.yml`, per row |
+  | `Sent` | Gmail accepted the message; R2 media purged | `send.yml` |
+  | `Replied` | verified reply to the retained Message-ID | `review-mails.yml` |
+  | `Invalid` | unusable or verified-invalid recipient | discovery, scrapers, `send.yml` |
+
+  Backward moves: a temporary SMTP failure returns `Sending` → `Scheduled`; a permanent
+  rejection returns the row to `Drafted`; a missing draft returns it to `Writing`;
+  QEV `unknown` leaves it `Scheduled`. Reject deletes the row; it is not a status.
+- **`triage_kept`**: `1` once you press Keep in Triage. Kept rows can no longer receive
+  MCP triage recommendations.
 - **Social enrichment**: `Require_Socials=1` queues MCP research.
   `Socials_Data` stores X, LinkedIn, Instagram, Discord, and Website JSON.
   `Socials_Request_ID` is nullable TEXT reserved for Send click deduplication.
@@ -49,42 +71,50 @@ its R2 binding. Cloud jobs use S3 credentials. Nightly sync queues inactive medi
 
 ## 1. Discovery, with optional manual triage and scraping
 Discovery runs nightly at `30 22 * * *` (22:30 UTC = 04:00 IST).
-Triage and Kimchi run only on manual dispatch. Hermes and Kimchi share a concurrency group:
+Triage, Hermes and Kimchi run only on demand. Hermes and Kimchi share a concurrency group.
+Epic discovery (`epic-discovery.yml`) runs at the same time into its own separate database.
 - Diff Steam's app list vs `known_comingsoon`, fetch details for the new appids into
-  `newly_added`, seed `scrape_tracker` (`seeded` if Steam gave an email, else `pending`),
-  and mirror each lead's media to R2.
-- Triage reads the current `Mail_status='Pending'` set from `scrape_tracker`, loads each
-  queued manifest + sprite sheet from R2, and merges the appids it judges irrelevant into
-  `irrelevant.json`. Non-destructive — it only flags.
-- Kimchi processes the remaining `pending` leads and records the best published contact email.
+  `newly_added`, seed `scrape_tracker` (`seeded` if Steam gave an email, else `pending`)
+  with Steam's display `release_date`, and mirror each lead's media to R2. Unfinished
+  fetch/upload work is kept in `pending_discovery` and retried on the next run.
+- **Triage (current): MCP.** A calling agent inspects each Pending game's images and
+  description and saves `pass`/`flag` recommendations with `submit_triage` into R2
+  `mcp-triage.json`. See `db-mcp/README.md`. Non-destructive; it never deletes or changes
+  mail status.
+- **Triage (legacy):** `triage.yml` → `triage_cloud.py` merges flagged appids into R2
+  `irrelevant.json`. MCP recommendations take precedence over these flags.
+- Hermes and Kimchi process `pending` and `failed` leads and record the best published
+  contact email. Start them from GitHub Actions; the dashboard has no button for them.
 
 ## 2. Review — the web app
-One card at a time, swipe to page. Sections appear in order; you clear each on the phone.
+One card at a time, swipe to page. Four tabs; the app opens the first non-empty one in the
+order Triage → Game Approval → Mail Approval → No-Mail.
 
-### Triage gate
-While `irrelevant.json` is non-empty the app shows ONLY the flagged leads:
-- **Keep** — the AI was wrong; unflag, lead rejoins the normal queue.
-- **Reject** — confirm irrelevant; purge the lead everywhere (Turso + R2).
+### Triage
+Pending, non-kept leads flagged by MCP (`flag`) or by legacy `irrelevant.json`. A `pass`
+recommendation leaves the lead in Game Approval / No-Mail. The card shows the reason.
+- **Keep** — sets `triage_kept=1`; the lead returns to its normal queue and stays there.
+- **Reject** / **Reject all** — delete the lead everywhere (Turso rows + queued R2 cleanup).
 
-### Game Approval (`Mail_status = Pending`)
-- **Accept** → `Mail_status = Writing` (queues it for a draft).
-- **Reject** → deleted (rows + R2 media).
+### Game Approval (`Mail_status = Pending`, `scrape_status` `seeded` or `scraped`)
+- **Accept** → `Mail_status = Writing`. Refused if the sprite sheet is missing in R2.
+- **Reject** → deleted (rows + queued R2 cleanup).
+- **✍️ Draft pending mails** button — shown here once the Approval queue is empty and
+  `Writing` rows exist. Fires `draft.yml`, which drafts a cold mail for each `Writing`
+  lead, writes it into the R2 manifest and moves the row to `Drafted`. Idempotent.
+  Agents can draft the same leads through MCP `get_draft_context` / `save_draft`.
 
-### No-Mail (`scrape_status = pending`, `no_email`, or `failed`)
-Leads that are not eligible for outreach yet: awaiting scraping, no email found,
-or a scraper failure. Invalid records are quarantined and hidden.
-- **🔎 Scrape emails (run Hermes)** button → fires `hermes.yml`. Hermes (headless Playwright
-  + Gemini) walks every `pending` lead, scrapes the studio's site (DuckDuckGo search when
-  there's no website) and extracts the best recruiting email. A hit flips the lead to
-  `scraped` — it leaves No-Mail and appears in Game Approval. No hit → `no_email`.
+### No-Mail (`Mail_status = Pending`, `scrape_status` `pending`, `no_email` or `failed`)
+Leads not eligible for outreach yet: awaiting scraping, no email found, or a scraper
+failure. Invalid records are quarantined and hidden.
+- **Reject** / **Reject all** → deleted. There is no Accept here.
+- To find emails, run `hermes.yml` (Playwright + LLM) or `kimchi.yml` from GitHub Actions.
+  A hit flips the lead to `scraped` and it moves to Game Approval. No hit → `no_email`.
+
+### Mail Approval (`Mail_status = Drafted`)
+- **Approve** / **Approve all** → `Mail_status = Scheduled`.
 - **Reject** → deleted.
-
-### Mail Approval (`Mail_status = Writing`)
-- **✍️ Draft pending** button → fires `draft.yml`. Gemini drafts a cold mail for each
-  accepted lead missing one, picking templates in sequence (1,2,3,4,1…) and personalising
-  the critique from the sprite sheet, and writes it into the lead's R2 manifest. Idempotent.
-- **Approve** → `Mail_status = Scheduled`.
-- **Reject** → deleted.
+- **📨 Send scheduled mails** button — shown here while any `Scheduled` rows exist.
 
 ### Social research through MCP
 The Send button queues the click's `Scheduled` snapshot once per lead.
@@ -102,11 +132,15 @@ leave the additive column and saved social state in place. Do not restart the re
 Hermes socials writer alongside MCP ownership.
 
 ## 3. Send — on demand (`send.yml`)
-**📨 Send approved** button (Mail Approval) → fires `send.yml`. Sends every `Scheduled`
-lead from Gmail, paced 2–4 min apart. Reads each draft from its
-R2 manifest, atomically claims `Scheduled → Sending`, flips `Sending → Sent`, preserves
-`Require_Socials` and `Socials_Data`, and purges the lead's R2 media. No schedule, a human
-presses the button, so outbound always has a gate.
+**📨 Send scheduled mails** button (Mail Approval) → fires `send.yml`. `Scheduled` only
+means *waiting*; nothing is sent until this button (or a manual `--send-mails`) runs.
+The run works through the `Scheduled` rows **one at a time**, paced 2–4 min apart. For
+each row it reads the draft from the R2 manifest, verifies the address with QEV, then
+claims that single row `Scheduled → Sending` just before SMTP submission and flips it
+`Sending → Sent` after. Rows not yet reached stay `Scheduled`, so at most one row is
+`Sending` at a time. It preserves `Require_Socials` and `Socials_Data` and purges the
+sent lead's R2 media. Clicking Send also queues social research for the `Scheduled` rows.
+No schedule: a human presses the button, so outbound always has a gate.
 
 Temporary SMTP rejections (4xx) return the row to `Scheduled` and retry after 5 and
 15 minutes. If both retries fail, it stays `Scheduled` for a later run. A permanent
@@ -162,6 +196,7 @@ No redeploy needed — the next draft run reads the new templates.
 | `--snap-db` | dump live Turso DB → `last_cache.sqlite` (DB Browser) |
 | `--review` | local Tkinter reviewer (Game / No-Mail / Mail approval) |
 | `--delete [ids]` | local GUI review-before-delete those appids |
+| `--irrelevants-list` | legacy local vision triage via headless `claude -p`; prints appids to feed `--delete` |
 | `--noseed-urls` / `--ingest-mailids` | manual local email-scrape contract (superseded by Hermes in the cloud) |
 
 ---
@@ -170,11 +205,18 @@ No redeploy needed — the next draft run reads the new templates.
 **GitHub repo → Settings → Secrets → Actions** (the workflows):
 `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `R2_PUBLIC_BASE`, `R2_BUCKET`, `R2_ACCOUNT_ID`,
 `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `TRIAGE_BASE_URL`, `TRIAGE_MODEL`,
-`TRIAGE_API_KEY`, `GMAIL_USER`, `GMAIL_APP_PASSWORD`.
+`TRIAGE_API_KEY` (legacy triage and Hermes), `MAIL_WRITER_BASE_URL`, `MAIL_WRITER_MODEL`,
+`MAIL_WRITER_API_KEY` (drafting), `QEV_API_KEY` (send-time email verification),
+`GMAIL_USER`, `GMAIL_APP_PASSWORD`, `KIMCHI_API_KEY`, and for Epic
+`EPIC_TURSO_DATABASE_URL`, `EPIC_TURSO_AUTH_TOKEN`.
 
 **Cloudflare review Worker secrets**: `TURSO_URL`, `TURSO_TOKEN`, `GH_REPO`
-(`zacshak/Studio_Reach_Engine`), and `GH_PAT` with Actions write permission.
+(`zacshak/Studio_Reach_Engine`), and `GH_PAT` with Actions write permission. Optional
+var `GH_REF` sets the dispatched branch (default `master`).
 R2 access uses the `MEDIA` binding. The dashboard and MCP are intentionally public.
+Cloudflare Browser Integrity Check still applies to dashboard writes (`POST /api/act`),
+so scripted non-browser clients get HTTP 403 there; only `GET /api/state` and `/media/`
+are exempt (see `db-mcp/README.md`).
 
 ### Cleanup deployment order
 

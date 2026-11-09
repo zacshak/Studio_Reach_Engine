@@ -119,7 +119,7 @@ Hermes writer or sender that clears social requests.
 
 ## Security
 
-Use a separate Turso token with `--read-only` and `data_read` permissions only on `scrape_tracker`, `newly_added`, and `known_comingsoon` (the actual production spelling). This credential is the authorization boundary, including for joins, subqueries, and SQL functions. Never reuse the application's write token. The deployment script verifies that writes and access to a non-approved table are denied before deploying.
+Use a separate Turso token with `--read-only` and `data_read` permissions only on `scrape_tracker`, `newly_added`, and `known_comingsoon` (the actual production spelling). This credential is the authorization boundary, including for joins, subqueries, and SQL functions. Table-valued functions are denied too: `json_each` fails with "access to json_each.value is prohibited", so pass ID lists as positional `IN (?,?,…)` parameters (up to 1000). Never reuse the application's write token. The deployment script verifies that writes and access to a non-approved table are denied before deploying.
 
 The configuration sets `PUBLIC_ACCESS=true`. Anyone can read personal/contact data in the three approved tables without credentials, including from browser clients. Arbitrary SQL writes remain blocked by the restricted Turso credential. Public drafting tools can save drafts and advance eligible Writing rows through the scoped review backend. Setting PUBLIC_ACCESS to false restores the existing authentication checks. Successful deployment generates a gitignored `mcp-client.json` containing only the endpoint URL.
 
@@ -132,6 +132,6 @@ npm.cmd test
 python deploy.py --env-file A:/Studio_Reach_Engine/.env --database sre
 ```
 
-Turso CLI login in WSL and Wrangler login are prerequisites. Deployment creates a dedicated `sre-db-mcp` Worker. It does not alter the database schema or rows. Credential verification includes an UPDATE with `WHERE 0`, which changes no rows even if a wrongly scoped token is supplied. `credentials.json` is generated locally and ignored by Git. Keep it private. Configure the MCP client with the deployed `/mcp` URL and its `MCP_AUTH_TOKEN` as the bearer header. Rotating the MCP token invalidates existing client connections on their next request.
+Turso CLI login in WSL and Wrangler login are prerequisites. Deployment creates a dedicated `sre-db-mcp` Worker. It does not alter the database schema or rows. Credential verification includes an UPDATE with `WHERE 0`, which changes no rows even if a wrongly scoped token is supplied. `credentials.json` is generated locally and ignored by Git. Keep it private. With the current `PUBLIC_ACCESS=true`, configure the MCP client with only the `/mcp` URL; no authorization header is needed. If public access is turned off, use the deployed `MCP_AUTH_TOKEN` as the bearer header. Rotating that token invalidates existing client connections on their next request.
 
 The compatibility date is October 14 UTC, accepted by Cloudflare during creation on October 15 IST.

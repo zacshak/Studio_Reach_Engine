@@ -1,5 +1,9 @@
 # Production reliability review, 16 October 2026
 
+> Historical record of the October 2026 review and rollout. Version IDs, tool counts and
+> live counts below describe that time, not the current deployment. For current
+> behaviour see `WORKFLOW.md`, `webapp/RELIABILITY.md` and `db-mcp/README.md`.
+
 ## Deployment update, 17 October 2026
 
 Code release `a73c095` is pushed and its CI run `38955433071` passed.
