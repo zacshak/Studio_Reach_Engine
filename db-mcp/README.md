@@ -45,7 +45,7 @@ Database tools: `list_tables`, `describe_table`, and `query`. Queries accept SQL
 
 ## Images and agent-driven triage
 
-All eleven tools are public. `get_game_media(appid)` returns the existing four-panel screenshot sprite sheet as an MCP image, the description, and available image names. It selects the named sprite sheet rather than assuming the fourth file is correct. `get_game_image(appid, image_name)` returns another explicitly requested image from that game's manifest. Images are limited to 5 MiB each and restricted to supported image formats.
+All 24 tools are public. `get_game_media(appid)` returns the existing four-panel screenshot sprite sheet as an MCP image, the description, and available image names. It selects the named sprite sheet rather than assuming the fourth file is correct. `get_game_image(appid, image_name)` returns another explicitly requested image from that game's manifest. Images are limited to 5 MiB each and restricted to supported image formats.
 
 `submit_triage({criteria, results: [{appid, decision: "flag" | "pass", reason}]})` saves recommendations on each game's `scrape_tracker` row (`triage_decision`, `triage_reason`, `triage_criteria_id` → `triage_criteria.text`, `triaged_at`). The MCP forwards the batch to the review Worker's `/api/triage/save` through the `REVIEW` service binding, so its own Turso token stays read-only. Submit up to 100 games per call, repeating for additional games. Criteria come from the user's current request, not a fixed genre rubric. No server-side LLM is called. The calling agent must inspect the game and apply the user's criteria.
 
@@ -117,11 +117,38 @@ social links, removes Email and initializes Website to null where absent. It doe
 queue historical sends. Keep the additive column on rollback and do not restore the old
 Hermes writer or sender that clears social requests.
 
+## End-to-end workflow tools
+
+These tools let an agent run the whole pipeline. Every write goes through the review
+Worker (`REVIEW` binding) and uses the same guarded SQL as the dashboard buttons, so a
+row can only move from the state the dashboard would accept. All are public.
+
+| Step | Tool | Effect |
+|---|---|---|
+| Overview | `get_queues` | appid lists and counts for approval, nomail, triage, untriaged, writing, mail_approval (Drafted), scheduled, sending |
+| Triage detail | `get_triage(appids≤100)` | decision, reason, full criteria text, timestamp, mail status |
+| Triage Keep | `keep_games(appids≤100)` | `triage_decision='kept'`; never re-flagged |
+| Accept | `accept_games(appids≤100)` | Pending → Writing; needs an email and the sprite sheet, refuses flagged games |
+| Reject | `reject_games(appids≤1000, confirm="DELETE")` | deletes rows and queues R2 cleanup; Sending rows are protected |
+| Find email | `save_email_result(appid, status, emails?, website?)` | records `scraped` (1–5 published addresses, best first), `no_email` or `failed` for Pending rows still awaiting an email |
+| Draft | `get_draft_context` / `save_draft` | see below |
+| Read draft | `get_draft(appid)` | subject, body, recipient, template, mail status |
+| Approve | `approve_mails(appids≤100)` | Drafted → Scheduled |
+| Redraft | `return_to_writing(appids≤100)` | clears the saved draft, then Drafted → Writing |
+| Jobs | `run_workflow(discover\|hermes\|kimchi\|draft\|epic)` | dispatches on `master`; not retried automatically |
+| Job status | `get_workflow_runs(workflow, limit)` | recent runs with status and conclusion (also `send`) |
+| Send | `send_scheduled_mails(confirm="SEND_REAL_EMAILS")` | starts `send.yml`: **sends real email** to every Scheduled row and queues their social research |
+| Storage | `get_r2_folder(appid \| folder)` | lists a game's R2 objects, or a deleted game's old folder to confirm cleanup |
+
+`reject_games` and `send_scheduled_mails` need their exact `confirm` value so a stray call
+cannot delete games or send mail. The workflow dispatch and run-status calls use the
+review Worker's `GH_PAT`, which needs Actions read and write on the repository.
+
 ## Security
 
 Use a separate Turso token with `--read-only` and `data_read` permissions only on `scrape_tracker`, `newly_added`, and `known_comingsoon` (the actual production spelling). This credential is the authorization boundary, including for joins, subqueries, and SQL functions. Table-valued functions are denied too: `json_each` fails with "access to json_each.value is prohibited", so pass ID lists as positional `IN (?,?,…)` parameters (up to 1000). Never reuse the application's write token. The deployment script verifies that writes and access to a non-approved table are denied before deploying.
 
-The configuration sets `PUBLIC_ACCESS=true`. Anyone can read personal/contact data in the three approved tables without credentials, including from browser clients. Arbitrary SQL writes remain blocked by the restricted Turso credential. Public drafting tools can save drafts and advance eligible Writing rows through the scoped review backend. Setting PUBLIC_ACCESS to false restores the existing authentication checks. Successful deployment generates a gitignored `mcp-client.json` containing only the endpoint URL.
+The configuration sets `PUBLIC_ACCESS=true`. Anyone can read personal/contact data in the three approved tables without credentials, including from browser clients. Arbitrary SQL writes remain blocked by the restricted Turso credential. Public drafting and workflow tools can change review state through the scoped review backend: accept, keep, reject (delete) games, approve mails, dispatch workflows and start sending. Anyone who can reach `/mcp` can do the same, which the owner accepted. Setting PUBLIC_ACCESS to false restores the existing authentication checks. Successful deployment generates a gitignored `mcp-client.json` containing only the endpoint URL.
 
 ## Setup and deployment
 

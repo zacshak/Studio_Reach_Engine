@@ -21,7 +21,7 @@ import { triageSnapshot, saveTriage, TRIAGE_SQL } from './triage.js';
 import { rejectRows, cleanupJobs } from './deletion.js';
 import { draftRequest } from './drafting.js';
 import { queueSocialsStatement, saveSocials, readSocialRequestBody } from './socials.js';
-const WORKFLOWS = { send: "send.yml", draft: "draft.yml" };
+import { WORKFLOWS, queues, keepMany, acceptMany, approveMany, returnToWriting, saveEmail, triageDetails, workflowRuns } from './agent-actions.js';
 
 // ---- Turso over HTTP (Hrana v2 pipeline; one fetch = N statements, no client lib) ----
 const hranaStmt = ([q, ...args]) => ({
@@ -199,6 +199,10 @@ async function act(env, body) {
       await sql(env, [approveStmt(appid)]);
       break;
     }
+    case "keep_many": return keepMany(env, body, sql);
+    case "accept_many": return acceptMany(env, body, sql, getJSON);
+    case "approve_many": return approveMany(env, body, sql);
+    case "return_to_writing": return returnToWriting(env, body, sql, getJSON);
     case "approve_all": {
       const appids = manyIds(body);
       await sql(env, [["UPDATE scrape_tracker SET Mail_status='Scheduled' WHERE appid IN (SELECT value FROM json_each(?)) AND Mail_status='Drafted' AND scrape_status IN ('seeded','scraped')", JSON.stringify(appids)]]);
@@ -300,6 +304,13 @@ export default {
           response = json(await draftRequest(req, env, sql, path.endsWith('/context') ? 'context' : 'save'));
         if (req.method === 'POST' && path === '/api/triage/save')
           response = json(await saveTriage(env, await req.json(), sql, getJSON));
+        if (req.method === 'POST' && path === '/api/triage/get')
+          response = json(await triageDetails(env, await req.json(), sql));
+        if (req.method === 'POST' && path === '/api/queues') response = json(await queues(env, sql));
+        if (req.method === 'POST' && path === '/api/email/save')
+          response = json(await saveEmail(env, await req.json(), sql));
+        if (req.method === 'POST' && path === '/api/workflows/runs')
+          response = json(await workflowRuns(env, await req.json()));
         if (path === "/api/state") response = json(await state(env));
         if (path === "/api/act" && req.method === "POST") {
           const result = await act(env, await req.json());
