@@ -1,7 +1,7 @@
 name: Verify accepted games
 
 # Fired by the dashboard's Accept / Accept all. Each 'Verifying' game gets its email checked
-# (own SMTP check, QEV fallback) and its R2 media checked (rebuilt from Steam if it was
+# (own SMTP check, QEV then Abstract fallback) and its R2 media checked (rebuilt from Steam if it was
 # purged after an earlier send). Then it moves to Accepted, or back to "no email" when the
 # address is dead. One run handles every Verifying game, so queued runs collapse safely.
 on:
@@ -29,6 +29,7 @@ jobs:
         env:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           QEV_API_KEY: ${{ secrets.QEV_API_KEY }}
+          ABSTRACT_API_KEY: ${{ secrets.ABSTRACT_API_KEY }}
           TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
           R2_PUBLIC_BASE: ${{ secrets.R2_PUBLIC_BASE }}

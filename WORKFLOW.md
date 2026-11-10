@@ -213,8 +213,13 @@ Results are cached, so the send-time check is usually free:
    no checker can prove those mailboxes, QEV included, and a bounce is caught nightly.
    Policy/IP blocks (5.7.x), greylisting (4xx) and timeouts are `unknown`. Role addresses (`info@`, `contact@`) are not penalised.
 2. Only `unknown` results go to QuickEmailVerification (`QEV_API_KEY`, 100 free credits a
-   day). If QEV is not set, out of credits or failing, the row stays `Scheduled` and the
-   run moves on to the next row.
+   day).
+3. If QEV is not set, out of credits (402) or failing, Abstract's Email Reputation API
+   (`ABSTRACT_API_KEY`, 100 free requests a **month**, 1/s) answers this and every later
+   inconclusive address in the run. Only a clear `undeliverable` (no mailbox, no domain,
+   bad format) counts as `invalid`; catch-all is `valid`; anything else stays `unknown`.
+   If Abstract is not set or also fails (401 bad key, 422/403 quota), the row stays
+   `Scheduled` and the run moves on to the next row. A fallback error is never `valid`.
 Port 25 must be reachable: it is on GitHub-hosted runners, usually not on home networks.
 `python Email_Verifier/verify_single.py ADDRESS [--smtp-only | --qev]` checks one address;
 `python Email_Verifier/verify_bulk.py FILE.csv [--smtp-only | --qev]` checks a CSV (`email` column)
@@ -277,6 +282,7 @@ No redeploy needed — the next draft run reads the new templates.
 `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `TRIAGE_BASE_URL`, `TRIAGE_MODEL`,
 `TRIAGE_API_KEY` (Hermes; also a local drafting fallback), `MAIL_WRITER_BASE_URL`, `MAIL_WRITER_MODEL`,
 `MAIL_WRITER_API_KEY` (drafting), `QEV_API_KEY` (optional fallback for addresses the SMTP check cannot settle),
+`ABSTRACT_API_KEY` (optional second fallback once QEV is out of credits),
 `GMAIL_USER`, `GMAIL_APP_PASSWORD`, `KIMCHI_API_KEY`, and for Epic
 `EPIC_TURSO_DATABASE_URL`, `EPIC_TURSO_AUTH_TOKEN`.
 
