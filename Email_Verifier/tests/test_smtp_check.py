@@ -2,6 +2,7 @@ import unittest
 
 import dns.resolver
 
+from Email_Verifier.abstract_client import AbstractError
 from Email_Verifier.client import QEVError
 from Email_Verifier.smtp_check import SMTPVerifier, classify_rcpt
 from Email_Verifier.verifier import EmailVerifier
@@ -259,6 +260,47 @@ class EmailVerifierTest(unittest.TestCase):
             self.assertEqual(chain.verify("a@b.dev")["result"], "unknown")
             self.assertEqual(chain.verify("c@b.dev")["result"], "unknown")
             self.assertEqual(qev.calls, 1)
+
+    def chain(self, smtp="unknown", qev="valid", abstract="valid", **smtp_extra):
+        qev = None if qev is None else StubQEV(qev)
+        abstract = None if abstract is None else StubQEV(abstract)
+        return (EmailVerifier(StubSMTP(smtp, **smtp_extra), qev, abstract, log=lambda *_: None),
+                qev, abstract)
+
+    def test_qev_answer_never_spends_abstract_credit(self):
+        chain, qev, abstract = self.chain(qev="invalid")
+        result = chain.verify("a@b.dev")
+        self.assertEqual((result["result"], result["source"], qev.calls, abstract.calls),
+                         ("invalid", "qev", 1, 0))
+
+    def test_definitive_smtp_or_catch_all_calls_neither_fallback(self):
+        for smtp, extra in (("valid", {}), ("invalid", {}), ("unknown", {"accept_all": True})):
+            chain, qev, abstract = self.chain(smtp, qev="invalid", abstract="invalid", **extra)
+            self.assertNotEqual(chain.verify("a@b.dev")["result"], "unknown")
+            self.assertEqual((qev.calls, abstract.calls), (0, 0))
+
+    def test_qev_failure_switches_to_abstract_for_the_rest_of_the_run(self):
+        for error in (QEVError("quota", status_code=402), QEVError("down")):
+            chain, qev, abstract = self.chain(qev=error, abstract="invalid")
+            first, second = chain.verify("a@b.dev"), chain.verify("c@b.dev")
+            self.assertEqual((first["result"], first["source"], first["smtp_reason"]),
+                             ("invalid", "abstract", "r"))
+            self.assertEqual(second["result"], "invalid")
+            self.assertEqual((qev.calls, abstract.calls), (1, 2))
+
+    def test_abstract_used_directly_when_qev_not_configured(self):
+        chain, _, abstract = self.chain(qev=None, abstract="valid")
+        self.assertEqual(chain.verify("a@b.dev")["result"], "valid")
+        self.assertEqual(abstract.calls, 1)
+
+    def test_both_fallbacks_exhausted_leave_unknown_and_stop_asking(self):
+        for error in (AbstractError("quota", status_code=422), AbstractError("bad key", status_code=401),
+                      AbstractError("offline")):
+            chain, qev, abstract = self.chain(qev=QEVError("quota", status_code=402), abstract=error)
+            results = [chain.verify(e) for e in ("a@b.dev", "c@b.dev", "d@b.dev")]
+            self.assertEqual([r["result"] for r in results], ["unknown"] * 3)
+            self.assertEqual({r["source"] for r in results}, {"smtp"})
+            self.assertEqual((qev.calls, abstract.calls), (1, 1))
 
 
 if __name__ == "__main__":
