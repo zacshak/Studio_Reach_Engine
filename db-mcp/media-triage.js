@@ -76,7 +76,7 @@ export function registerMediaTools(server, env, run) {
     inputSchema: { appid: appidSchema, image_name: z.string().min(1).max(255) }, annotations: read
   }, wrap(({ appid, image_name }) => gameMedia(env, appid, image_name, run)));
   server.registerTool('submit_triage', {
-    description: 'Save recommendations for human dashboard review using the user’s criteria. flag goes to Triage; pass stays in the normal Approval/No-Mail queue. Stored on the game’s database row. Never deletes games, changes mail status, or overrides human Keep. Up to 100 per batch, repeat for more. Inspect descriptions and images first. Each returned skipped item needs no retry unless its eligibility changes.',
+    description: 'Save recommendations for human dashboard review using the user’s criteria. Only untriaged (Pending) games can be triaged; each saved game moves Pending -> Triaged. flag goes to the Triage queue; pass goes to Approval (has email) or No-Mail. Stored on the game’s database row. Never deletes games or re-triages a Triaged game. Up to 100 per batch, repeat for more. Inspect descriptions and images first. Each returned skipped item needs no retry unless its eligibility changes.',
     inputSchema: { criteria: z.string().trim().min(1).max(2000), results: z.array(z.object({
       appid: appidSchema, decision: z.enum(['flag', 'pass']), reason: z.string().trim().min(1).max(1000)
     })).min(1).max(100) },

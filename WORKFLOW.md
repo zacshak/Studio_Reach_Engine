@@ -10,16 +10,16 @@ All local/manual commands still exist through the one launcher: `python SRE.py <
 ```
  discover.yml (nightly) → SRE --discover → Turso scrape_tracker + R2 media
       │
-      ├─ triage: an agent calls MCP submit_triage → scrape_tracker.triage_decision (pass / flag)
+      ├─ triage: an agent calls MCP submit_triage → Pending ──► Triaged (triage_decision pass / flag)
       │
       └─ email scraping (manual GitHub Actions run): hermes.yml or kimchi.yml
                                         │
                      Web app (Cloudflare Worker) — review on your phone
                                         │
-   Triage tab ── Keep ──► Game Approval / No-Mail          (Reject anywhere = delete)
-                              │ Accept
+   Triage tab (flag) ── Keep (flag → pass) ──► Game Approval / No-Mail  (Reject anywhere = delete)
+                              │ Accept (Triaged + pass + email only)
                               ▼
-                          Writing ──(✍️ Draft button or MCP save_draft)──► Drafted
+                          Accepted ──(✍️ Draft button or MCP save_draft)──► Drafted
                                                                              │
                                           Mail Approval tab: Approve ◄───────┘
                                                                              │
@@ -38,14 +38,15 @@ All local/manual commands still exist through the one launcher: `python SRE.py <
 - **`scrape_status`**: `pending` (awaiting email scraping) · `seeded` (Steam listed a
   valid one) · `scraped` (Hermes/Kimchi found a valid one) · `no_email` · `invalid`
   (a non-empty value failed validation) · `failed`.
-- **`Mail_status`**: valid leads follow `Pending` → `Writing` → `Drafted` →
+- **`Mail_status`**: valid leads follow `Pending` → `Triaged` → `Accepted` → `Drafted` →
   `Scheduled` → `Sending` → `Sent` → `Replied`; invalid leads branch to `Invalid` and
   stop. `Invalid` is quarantined and never rendered in the review views.
 
   | Status | Meaning | Set by |
   |---|---|---|
-  | `Pending` | new lead awaiting your review | discovery |
-  | `Writing` | accepted; needs a draft | dashboard **Accept** |
+  | `Pending` | new lead, not triaged yet | discovery |
+  | `Triaged` | triaged; `triage_decision` says `pass` or `flag` | MCP `submit_triage` |
+  | `Accepted` | accepted for outreach; needs a draft. Only `Triaged` + `pass` + an email can be accepted | dashboard **Accept** or MCP `accept_games` |
   | `Drafted` | draft saved; awaiting your approval | `draft.yml` or MCP `save_draft` |
   | `Scheduled` | approved; **waiting**. Nothing sends it until the Send button (or a manual `--send-mails`) runs | dashboard **Approve** |
   | `Sending` | hidden claim held only while one mail is being submitted | `send.yml`, per row |
@@ -54,15 +55,17 @@ All local/manual commands still exist through the one launcher: `python SRE.py <
   | `Invalid` | unusable or verified-invalid recipient | discovery, scrapers, `send.yml` |
 
   Backward moves: a temporary SMTP failure returns `Sending` → `Scheduled`; a permanent
-  rejection returns the row to `Drafted`; a missing draft returns it to `Writing`;
+  rejection returns the row to `Drafted`; a missing draft returns it to `Accepted`;
+  a recipient that turns out to be missing returns an unsent row to `Triaged` (or
+  `Pending` if it was never triaged);
   QEV `unknown` leaves it `Scheduled`. Reject deletes the row; it is not a status.
 - **Triage** (in `scrape_tracker`): `triage_decision` is `pass` / `flag` from MCP
-  `submit_triage`, or `kept` once you press Keep; `triage_reason` is the reviewer's reason;
-  `triage_criteria_id` points at the rubric text in the `triage_criteria` table;
-  `triaged_at` is the UTC timestamp. NULL means not triaged yet. A `kept` row never
-  receives another AI recommendation. Deleting a row deletes its triage record with it.
-  `triage_kept` (0/1) is still written alongside `kept` only so a rolled-back Worker keeps
-  honouring Keeps; new code reads `triage_decision`.
+  `submit_triage`; `triage_reason` is the reviewer's reason; `triage_criteria_id` points
+  at the rubric text in the `triage_criteria` table; `triaged_at` is the UTC timestamp.
+  NULL means not triaged yet (`Pending`). Only `Pending` games can be triaged, so a
+  `Triaged` game never receives another AI recommendation. **Keep** turns `flag` into
+  `pass` and rewrites the reason to `Kept by user (AI flagged: …)`. Deleting a row
+  deletes its triage record with it.
 - **Social enrichment**: `Require_Socials=1` queues MCP research.
   `Socials_Data` stores X, LinkedIn, Instagram, Discord, and Website JSON.
   `Socials_Request_ID` is nullable TEXT reserved for Send click deduplication.
@@ -82,12 +85,12 @@ Epic discovery (`epic-discovery.yml`) runs at the same time into its own separat
   with Steam's display `release_date`, and mirror each lead's media to R2. Unfinished
   fetch/upload work is kept in `pending_discovery` and retried on the next run.
 - **Triage: MCP.** A calling agent inspects each Pending game's images and description
-  and saves `pass`/`flag` recommendations with `submit_triage`, which stores them on the
-  game's `scrape_tracker` row through the review Worker. See `db-mcp/README.md`.
-  Non-destructive; it never deletes or changes mail status. The former GitHub Actions
-  triage (`triage.yml`, `irrelevant.json`) has been retired.
-- Hermes and Kimchi process `pending` and `failed` leads and record the best published
-  contact email. Start them from GitHub Actions; the dashboard has no button for them.
+  and saves `pass`/`flag` decisions with `submit_triage`, which stores them on the
+  game's `scrape_tracker` row through the review Worker and moves it `Pending` →
+  `Triaged`. See `db-mcp/README.md`. It never deletes games or re-triages a `Triaged`
+  game. The dashboard header shows how many games are still untriaged.
+- Hermes and Kimchi process `pending` and `failed` leads (`Pending` or `Triaged`, not yet
+  accepted) and record the best published contact email. Start them from GitHub Actions; the dashboard has no button for them.
 
 Every step below can also be done by an agent through the MCP: see the workflow-tools
 table in `db-mcp/README.md` (`get_queues`, `accept_games`, `approve_mails`,
@@ -97,21 +100,23 @@ table in `db-mcp/README.md` (`get_queues`, `accept_games`, `approve_mails`,
 One card at a time, swipe to page. Four tabs; the app opens the first non-empty one in the
 order Triage → Game Approval → Mail Approval → No-Mail.
 
-### Triage
-Pending leads with `triage_decision='flag'`. A `pass` leaves the lead in Game Approval /
-No-Mail. Every card with a recommendation shows its decision, reason and criteria.
-- **Keep** — sets `triage_decision='kept'`; the lead returns to its normal queue and stays there.
+### Triage (`Mail_status = Triaged`, `triage_decision = flag`)
+A `pass` puts the lead in Game Approval / No-Mail instead. Every card with a
+recommendation shows its decision, reason and criteria.
+- **Keep** — turns the flag into `pass` (reason records the override); the lead moves to
+  Game Approval or No-Mail.
 - **Reject** / **Reject all** — delete the lead everywhere (Turso rows + queued R2 cleanup).
 
-### Game Approval (`Mail_status = Pending`, `scrape_status` `seeded` or `scraped`)
-- **Accept** → `Mail_status = Writing`. Refused if the sprite sheet is missing in R2.
+### Game Approval (`Mail_status = Triaged`, `triage_decision = pass`, `scrape_status` `seeded` or `scraped`)
+- **Accept** → `Mail_status = Accepted`. Refused unless the game is `Triaged` as `pass`
+  with an email, and if the sprite sheet is missing in R2.
 - **Reject** → deleted (rows + queued R2 cleanup).
 - **✍️ Draft pending mails** button — shown here once the Approval queue is empty and
-  `Writing` rows exist. Fires `draft.yml`, which drafts a cold mail for each `Writing`
+  `Accepted` rows exist. Fires `draft.yml`, which drafts a cold mail for each `Accepted`
   lead, writes it into the R2 manifest and moves the row to `Drafted`. Idempotent.
   Agents can draft the same leads through MCP `get_draft_context` / `save_draft`.
 
-### No-Mail (`Mail_status = Pending`, `scrape_status` `pending`, `no_email` or `failed`)
+### No-Mail (`Mail_status = Triaged`, `triage_decision = pass`, `scrape_status` `pending`, `no_email` or `failed`)
 Leads not eligible for outreach yet: awaiting scraping, no email found, or a scraper
 failure. Invalid records are quarantined and hidden.
 - **Reject** / **Reject all** → deleted. There is no Accept here.
@@ -193,7 +198,7 @@ No redeploy needed — the next draft run reads the new templates.
 | Command | Does |
 |---|---|
 | `--discover` | discovery → stage to Turso + R2 (the nightly job's first step) |
-| `--draft-mails` | AI-draft cold mails for `Writing` leads → R2 manifests (`draft.yml`) |
+| `--draft-mails` | AI-draft cold mails for `Accepted` leads → R2 manifests (`draft.yml`) |
 | `--send-mails` | send `Scheduled` mails (`send.yml`); `--dry-run`, `--limit N` locally |
 | `--review-mails` | check `Sent` leads for replies → `Replied` (`review-mails.yml`) |
 | `--repair-invalid` | quarantine existing unsent rows with missing/invalid recipients |
@@ -225,17 +230,17 @@ Cloudflare Browser Integrity Check still applies to dashboard writes (`POST /api
 so scripted non-browser clients get HTTP 403 there; only `GET /api/state` and `/media/`
 are exempt (see `db-mcp/README.md`).
 
-### Triage storage rollout
+### Triage storage and state rollout
 
-Triage moved from R2 `mcp-triage.json` / `irrelevant.json` into `scrape_tracker`.
-1. `node webapp/migrate-triage.mjs` — adds the columns and `triage_criteria`, marks
-   existing Keeps as `kept`, and imports `mcp-triage.json` (downloaded from the dashboard,
-   or pass a file path). Additive and idempotent; it never overwrites a stored decision.
-2. Deploy the review Worker (`webapp`), then the MCP Worker (`db-mcp`).
-3. Run the migration again to import anything the old MCP wrote between the two deploys.
-The old JSON files are no longer read and can be deleted from R2 afterwards. Rolling the
-code back is safe: the new columns are ignored by older Workers, and Keeps still set
-`triage_kept`.
+Triage lives in `scrape_tracker` (the old R2 JSON files are retired). The `Triaged` /
+`Accepted` states replaced `Pending`-with-a-decision and `Writing`, and the human Keep
+became a plain `pass`. `node webapp/migrate-states.mjs` is idempotent:
+1. Run it once — it installs the cleanup guard for the new states, turns `kept` into
+   `pass`, moves triaged `Pending` rows to `Triaged` and `Writing` rows to `Accepted`.
+2. Deploy the review Worker (`webapp`), then the MCP Worker (`db-mcp`), and merge the
+   Python code to `master` (GitHub Actions run from `master`).
+3. Run `node webapp/migrate-states.mjs --drop-legacy` once no old Python job is running;
+   it drops the retired `triage_kept` column (old Python code would re-add it).
 
 ### Cleanup deployment order
 

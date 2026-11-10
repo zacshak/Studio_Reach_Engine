@@ -86,9 +86,9 @@ upstream — you never write them.)
 | `no_email` | **you** | checked everywhere, nothing published | no |
 | `invalid` | pipeline | a non-empty extracted value failed validation; hidden quarantine | no |
 | `failed` | **you** | scrape errored, blocked, or hit the ~6 min budget | **yes** (retried on the next run) |
-`get_pending()` returns `pending` and `failed` leads whose `Mail_status` is still `Pending`, so
+`get_pending()` returns `pending` and `failed` leads not yet accepted (`Mail_status` `Pending` or `Triaged`), so
 writing `scraped` or `no_email` removes the lead from the queue, while `failed` keeps it for a later run.
-`write_result` refuses stale results: the lead must still exist, be `Pending`, and be at
+`write_result` refuses stale results: the lead must still exist, be `Pending` or `Triaged`, and be at
 `pending`, `failed` or `no_email`.
 
 ## Boundaries (hard rules)

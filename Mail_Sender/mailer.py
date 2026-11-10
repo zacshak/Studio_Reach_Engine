@@ -406,7 +406,7 @@ def main(dry_run=False, limit=None):
                 stats["deferred"] += 1
                 continue
             if not isinstance(body, str) or not body.strip():
-                print(f"SKIP {appid}: missing or empty draft -> queued for Writing")
+                print(f"SKIP {appid}: missing or empty draft -> back to Accepted for drafting")
                 if not dry_run:
                     if not pipeline.requeue_missing_draft(appid):
                         stats["skipped"] += 1

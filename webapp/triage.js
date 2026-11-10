@@ -1,15 +1,19 @@
 // Triage recommendations live in scrape_tracker (triage_decision / triage_reason /
 // triage_criteria_id / triaged_at) plus the shared triage_criteria table.
-// 'kept' is the human Keep and is never overwritten by an AI recommendation.
+// Mail_status: Pending = not triaged yet; Triaged = has a pass/flag decision.
+// A human Keep turns flag into pass and records the override in triage_reason.
 
 // Rows still eligible for human review, with their current recommendation.
 export const TRIAGE_SQL = `SELECT s.appid, s.triage_decision, s.triage_reason, c.text, s.triaged_at
   FROM scrape_tracker s LEFT JOIN triage_criteria c ON c.id = s.triage_criteria_id
-  WHERE s.Mail_status='Pending' AND s.triage_kept=0 AND s.triage_decision IN ('pass','flag')
+  WHERE s.Mail_status='Triaged' AND s.triage_decision IN ('pass','flag')
   ORDER BY s.appid`;
 
-// Same condition an AI recommendation must meet to be written.
-export const TRIAGE_ELIGIBLE = "Mail_status='Pending' AND triage_kept=0 AND coalesce(triage_decision,'')<>'kept'";
+// Human Keep: a flag becomes pass; the original AI reason is kept in the new reason.
+export const KEEP_SQL = `UPDATE scrape_tracker SET triage_decision='pass',
+  triage_reason='Kept by user (AI flagged: ' || coalesce(triage_reason,'') || ')',
+  triaged_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+  WHERE Mail_status='Triaged' AND triage_decision='flag'`;
 
 export function triageSnapshot(rows) {
   const triage = [], triageReviews = {};
@@ -44,9 +48,10 @@ export function validateTriage(body) {
 const NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
 const CRITERIA_ID = '(SELECT id FROM triage_criteria WHERE text=?)';
 
-// Saves recommendations for eligible rows in one transaction. A row must still be
-// Pending, not human-kept, and have indexed media (the dashboard needs it to review).
-// An identical resubmission keeps its original timestamp.
+// Saves recommendations in one transaction and moves each row Pending -> Triaged.
+// A row must still be Pending (untriaged) and have indexed media (the dashboard needs
+// it to review). An identical resubmission after an uncertain response is reported as
+// saved and keeps its original timestamp; a Triaged row is never re-triaged.
 export async function saveTriage(env, body, sql, getJSON) {
   const { criteria, results } = validateTriage(body);
   const index = await getJSON(env, 'index.json') || {};
@@ -55,15 +60,15 @@ export async function saveTriage(env, body, sql, getJSON) {
     (index[String(r.appid)] ? candidates : skipped).push(r);
   const statements = [['INSERT INTO triage_criteria(text) VALUES (?) ON CONFLICT(text) DO NOTHING', criteria]];
   for (const r of candidates)
-    statements.push([`UPDATE scrape_tracker SET triage_decision=?, triage_reason=?, triage_criteria_id=${CRITERIA_ID},
-      triaged_at=CASE WHEN triage_decision IS ? AND triage_reason IS ? AND triage_criteria_id IS ${CRITERIA_ID}
-        AND triaged_at IS NOT NULL THEN triaged_at ELSE ${NOW} END
-      WHERE appid=? AND ${TRIAGE_ELIGIBLE} RETURNING appid`,
-      r.decision, r.reason, criteria, r.decision, r.reason, criteria, r.appid]);
+    statements.push([`UPDATE scrape_tracker SET Mail_status='Triaged', triage_decision=?, triage_reason=?,
+      triage_criteria_id=${CRITERIA_ID}, triaged_at=CASE WHEN Mail_status='Triaged' THEN triaged_at ELSE ${NOW} END
+      WHERE appid=? AND (Mail_status='Pending' OR (Mail_status='Triaged' AND triage_decision IS ?
+        AND triage_reason IS ? AND triage_criteria_id IS ${CRITERIA_ID})) RETURNING appid`,
+      r.decision, r.reason, criteria, r.appid, r.decision, r.reason, criteria]);
   const out = statements.length > 1 ? await sql(env, statements, true) : [];
   const updated = new Set(out.slice(1).flat().map(row => Number(row[0])));
   const saved = candidates.filter(r => updated.has(r.appid)).map(r => r.appid);
   for (const r of candidates) if (!updated.has(r.appid)) skipped.push(r);
   return { saved, skipped: skipped.map(r => ({ appid: r.appid,
-    reason: 'Missing game/media, human-kept, or mail status is no longer Pending.' })) };
+    reason: 'Missing game/media, or already triaged (only Pending games can be triaged).' })) };
 }

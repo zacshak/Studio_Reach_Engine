@@ -75,10 +75,10 @@ class DeliveryTest(unittest.TestCase):
 
     def test_mcp_recovery_requires_original_recipient_and_writing_state(self):
         self.seed(1)
-        self.sql("UPDATE scrape_tracker SET Mail_status='Writing' WHERE appid=1")
+        self.sql("UPDATE scrape_tracker SET Mail_status='Accepted' WHERE appid=1")
         with self.assertRaises(ValueError):
             mailer.pipeline.complete_mcp_draft(1, 2, 'other@example.com', 'seeded')
-        self.assertEqual(self.state(1), 'Writing')
+        self.assertEqual(self.state(1), 'Accepted')
         mailer.pipeline.complete_mcp_draft(1, 2, 'studio1@example.com', 'seeded')
         self.assertEqual(self.state(1), 'Drafted')
         with self.assertRaises(ValueError):
@@ -273,8 +273,8 @@ class DeliveryTest(unittest.TestCase):
         self.drafts.side_effect = [(None, None, None), mailer.media_store.MediaStoreError("R2 down"),
                                    ("Subject", "Body", "draft.txt")]
         self.assertEqual(mailer.main(), 0)
-        self.assertEqual([self.state(i) for i in (1, 2, 3)], ["Writing", "Scheduled", "Sent"])
-        self.assertIn(1, mailer.pipeline.mail_status_appids("Writing"))
+        self.assertEqual([self.state(i) for i in (1, 2, 3)], ["Accepted", "Scheduled", "Sent"])
+        self.assertIn(1, mailer.pipeline.mail_status_appids("Accepted"))
         mailer.pipeline.set_mail_template(1, 1)
         mailer.pipeline.set_mail_status(1, "Drafted")
         mailer.pipeline.set_mail_status(1, "Scheduled")
@@ -293,7 +293,7 @@ class DeliveryTest(unittest.TestCase):
         self.seed(1)
         self.drafts.return_value = (None, None, None)
         self.assertEqual(mailer.main(), 0)
-        self.assertEqual(self.state(1), "Writing")
+        self.assertEqual(self.state(1), "Accepted")
         self.send.assert_not_called()
         with patch.object(draft_cloud, "_load_templates", return_value=[(1, "template")]), \
                 patch.object(draft_cloud.media_store, "fetch_index", return_value={"1": "folder"}), \
@@ -426,6 +426,13 @@ class DeliveryTest(unittest.TestCase):
         self.sql("UPDATE scrape_tracker SET emails=NULL WHERE appid=1")
         self.assertEqual(mailer.main(), 0)
         self.assertEqual(self.state(1), "Pending")
+        self.cleanup.assert_not_called()
+
+    def test_missing_email_on_a_triaged_game_returns_to_triaged(self):
+        self.seed(1)
+        self.sql("UPDATE scrape_tracker SET emails=NULL, triage_decision='pass' WHERE appid=1")
+        self.assertEqual(mailer.main(), 0)
+        self.assertEqual(self.state(1), "Triaged")
         self.cleanup.assert_not_called()
 
     def test_scrapers_and_repair_cannot_rewind_an_inflight_send(self):

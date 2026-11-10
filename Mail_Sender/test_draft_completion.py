@@ -20,7 +20,7 @@ class DraftCompletionTest(unittest.TestCase):
         self.sleep = self.stack.enter_context(patch.object(draft_cloud.time,'sleep'))
         self.reconnect = self.stack.enter_context(patch.object(draft_cloud.pipeline,'reconnect'))
         with closing(sqlite3.connect(self.path)) as c:
-            c.executescript("CREATE TABLE scrape_tracker(appid INTEGER PRIMARY KEY,Mail_status TEXT,mail_template INTEGER,emails TEXT,scrape_status TEXT); INSERT INTO scrape_tracker VALUES(1,'Writing',NULL,'test@example.invalid','seeded');")
+            c.executescript("CREATE TABLE scrape_tracker(appid INTEGER PRIMARY KEY,Mail_status TEXT,mail_template INTEGER,emails TEXT,scrape_status TEXT); INSERT INTO scrape_tracker VALUES(1,'Accepted',NULL,'test@example.invalid','seeded');")
 
     def row(self):
         with closing(sqlite3.connect(self.path)) as c:
@@ -30,7 +30,7 @@ class DraftCompletionTest(unittest.TestCase):
         for committed in (False,True):
             with self.subTest(committed=committed):
                 with closing(sqlite3.connect(self.path)) as c:
-                    c.execute("UPDATE scrape_tracker SET Mail_status='Writing',mail_template=NULL")
+                    c.execute("UPDATE scrape_tracker SET Mail_status='Accepted',mail_template=NULL")
                     c.commit()
                 opens = []
                 class Fault:
@@ -56,7 +56,7 @@ class DraftCompletionTest(unittest.TestCase):
                 with self.assertRaises(type(error)):
                     draft_cloud._complete_draft(1,3,{})
                 self.assertEqual(complete.call_count,count)
-            self.assertEqual(self.row(),('Writing',None))
+            self.assertEqual(self.row(),('Accepted',None))
 
     def test_already_advanced_state_is_confirmed_without_rewinding(self):
         for state in ('Drafted','Scheduled','Sending','Sent','Replied'):

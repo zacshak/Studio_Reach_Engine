@@ -1,10 +1,10 @@
 """Leads Reviewer — review staged game leads as individual containers.
 
-Renders one card per game that is still awaiting review (Mail_status == 'Pending',
+Renders one card per game that is still awaiting review (Mail_status == 'Triaged' as pass,
 has an email on file, and has a media folder). Each card shows the game's screenshots and short
 description with two actions:
 
-  • Allow  -> Mail_status becomes 'Writing'; the card leaves the view.
+  • Allow  -> Mail_status becomes 'Accepted'; the card leaves the view.
   • Reject -> the lead row and its media folder are deleted; the card disappears.
 
 All data + actions go through Reviewer_Interface (never pipeline.py directly).

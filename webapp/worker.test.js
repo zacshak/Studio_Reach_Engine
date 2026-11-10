@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  approveStmt, keepStmt, NOMAIL_SQL,
-  TRIAGE_KEPT_SQL, sql, updateJSON,
+  approveStmt, keepStmt, APPROVAL_SQL, NOMAIL_SQL,
+  ACCEPT_SQL, sql, updateJSON,
 } from "./worker.js";
 import worker from "./worker.js";
 
@@ -81,8 +81,8 @@ test('transaction begin and commit errors are never reported as success', async 
 
 test('dashboard state routes database flags and passes into the right queues', async () => {
   const originalFetch = globalThis.fetch;
-  const sets = [[[1], [2]], [], [[3]], [[0]], [[0]],
-    [[1, 'pass', 'Fits', 'Custom', '2026-11-09T00:00:00.000Z'], [2, 'flag', 'Does not fit', 'Custom', null]]];
+  const sets = [[[1]], [], [[3]], [[0]], [[0]],
+    [[1, 'pass', 'Fits', 'Custom', '2026-11-09T00:00:00.000Z'], [2, 'flag', 'Does not fit', 'Custom', null]], [[5]]];
   const cell = value => value === null ? { type: 'null' } : typeof value === 'number'
     ? { type: 'integer', value: String(value) } : { type: 'text', value };
   let statements;
@@ -101,7 +101,10 @@ test('dashboard state routes database flags and passes into the right queues', a
     assert.equal(response.status, 200);
     const state = await response.json();
     assert.deepEqual(reads, ['index.json']);
-    assert.match(statements.at(-1), /triage_kept=0 AND s\.triage_decision IN \('pass','flag'\)/);
+    assert.match(statements[0], /Mail_status='Triaged' AND triage_decision='pass' AND scrape_status IN \('seeded','scraped'\)/);
+    assert.match(statements.at(-2), /s\.Mail_status='Triaged' AND s\.triage_decision IN \('pass','flag'\)/);
+    assert.match(statements.at(-1), /Mail_status='Pending'/);
+    assert.equal(state.untriaged, 5);
     assert.deepEqual(state.triage, [2]);
     assert.deepEqual(state.approval, [1]);
     assert.deepEqual(state.nomail, [3]);
@@ -112,11 +115,31 @@ test('dashboard state routes database flags and passes into the right queues', a
   } finally { globalThis.fetch = originalFetch; }
 });
 
-test("No-Mail includes only pending outreach with unresolved scrape states", () => {
-  assert.equal(
-    NOMAIL_SQL,
-    "SELECT appid FROM scrape_tracker WHERE scrape_status IN ('pending','no_email','failed') AND Mail_status='Pending' ORDER BY appid",
-  );
+test("Approval and No-Mail hold games triaged as pass, split by email", () => {
+  assert.equal(APPROVAL_SQL,
+    "SELECT appid FROM scrape_tracker WHERE Mail_status='Triaged' AND triage_decision='pass' AND scrape_status IN ('seeded','scraped') ORDER BY appid");
+  assert.equal(NOMAIL_SQL,
+    "SELECT appid FROM scrape_tracker WHERE Mail_status='Triaged' AND triage_decision='pass' AND scrape_status IN ('pending','no_email','failed') ORDER BY appid");
+});
+
+test("accept moves only Triaged pass games with an email", () => {
+  assert.equal(ACCEPT_SQL,
+    "UPDATE scrape_tracker SET Mail_status='Accepted' WHERE appid=? AND Mail_status='Triaged' AND triage_decision='pass' AND scrape_status IN ('seeded','scraped') RETURNING appid");
+});
+
+test("dashboard accept and keep report refusals instead of silently succeeding", async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ results: [{ type: 'ok', response: { result: { rows: [] } } }, { type: 'ok' }] });
+  const sprite = { get: async key => key === 'index.json' ? { json: async () => ({ 7: 'G_7' }) }
+      : { json: async () => ({ images: ['SpriteSheet_Screenshots.png'] }) }, head: async () => ({ size: 10 }) };
+  try {
+    for (const [action, message] of [['accept', /only games triaged as pass with an email/], ['keep', /not a flagged Triaged game/]]) {
+      const r = await worker.fetch(new Request('https://test/api/act', { method: 'POST', body: JSON.stringify({ action, appid: 7 }) }),
+        { TURSO_URL: 'libsql://example', TURSO_TOKEN: 'test', MEDIA: sprite });
+      assert.equal(r.status, 500);
+      assert.match((await r.json()).error, message);
+    }
+  } finally { globalThis.fetch = original; }
 });
 
 test('obsolete dashboard socials actions are rejected without external requests',async()=>{
@@ -154,12 +177,13 @@ test("mail approval is one guarded database update", () => {
   ]);
 });
 
-test("triage Keep persists without advancing the mail state", () => {
-  assert.deepEqual(keepStmt(42), [
-    "UPDATE scrape_tracker SET triage_decision='kept', triage_kept=1, triaged_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE appid=? AND Mail_status='Pending'",
-    42,
-  ]);
-  assert.equal(TRIAGE_KEPT_SQL, "SELECT appid FROM scrape_tracker WHERE triage_decision='kept'");
+test("triage Keep turns a flag into pass without advancing the mail state", () => {
+  const [query, appid] = keepStmt(42);
+  assert.equal(appid, 42);
+  assert.match(query, /SET triage_decision='pass'/);
+  assert.match(query, /'Kept by user \(AI flagged: ' \|\| coalesce\(triage_reason,''\) \|\| '\)'/);
+  assert.match(query, /WHERE Mail_status='Triaged' AND triage_decision='flag' AND appid=\? RETURNING appid$/);
+  assert.doesNotMatch(query, /Mail_status=('Accepted'|'Pending')|triage_kept/);
 });
 
 test('triage save route writes eligible rows in one transaction and reports skips', async () => {
@@ -187,8 +211,9 @@ test('triage save route writes eligible rows in one transaction and reports skip
     assert.equal(steps.length, 6);
     assert.match(steps[1].stmt.sql, /INSERT INTO triage_criteria/);
     assert.equal(steps[1].stmt.args[0].value, 'Rubric');
-    assert.match(steps[2].stmt.sql, /Mail_status='Pending' AND triage_kept=0 AND coalesce\(triage_decision,''\)<>'kept'/);
-    assert.deepEqual(steps[2].stmt.args.map(a => a.value), ['flag', 'Too small', 'Rubric', 'flag', 'Too small', 'Rubric', '1']);
+    assert.match(steps[2].stmt.sql, /SET Mail_status='Triaged'/);
+    assert.match(steps[2].stmt.sql, /Mail_status='Pending' OR \(Mail_status='Triaged' AND triage_decision IS \?/);
+    assert.deepEqual(steps[2].stmt.args.map(a => a.value), ['flag', 'Too small', 'Rubric', '1', 'flag', 'Too small', 'Rubric']);
   } finally { globalThis.fetch = original; }
 });
 

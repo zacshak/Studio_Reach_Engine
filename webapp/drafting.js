@@ -66,8 +66,8 @@ async function stored(env, appid) {
 
 async function context(env, appid, sql) {
   const row = await lead(env,appid,sql);
-  if (row.Mail_status!=='Writing' || !['seeded','scraped'].includes(row.scrape_status) || !row.emails)
-    throw new Error('Only eligible Writing rows can be drafted.');
+  if (row.Mail_status!=='Accepted' || !['seeded','scraped'].includes(row.scrape_status) || !row.emails)
+    throw new Error('Only eligible Accepted rows can be drafted.');
   const media = await stored(env,appid);
   if (media.value.mail?.trim()) throw new Error('A draft is already saved. Recover it instead of replacing it.');
   const source = await env.MEDIA.get('cold_mails.txt');
@@ -93,7 +93,7 @@ export async function getDraftContext(env, appid, sql) {
   // Expose the exact original retry payload after a partial save, without inference.
   if (media.value.mail?.trim()) {
     const row=await lead(env,appid,sql), saved=media.value.draft_submission;
-    if (!['Writing','Drafted'].includes(row.Mail_status) || !saved)
+    if (!['Accepted','Drafted'].includes(row.Mail_status) || !saved)
       throw new Error('Draft already exists. No replacement is permitted.');
     return {content:[{type:'text',text:JSON.stringify({appid, recovery:true,
       revision:saved.revision, placeholder_values:saved.values,
@@ -136,7 +136,7 @@ export async function saveDraft(env, {appid,revision,placeholder_values}, sql) {
     const object=await env.MEDIA.head(input.key);
     if(!object || object.etag!==input.etag) throw new Error('Draft input changed during save. Review required; row not advanced.');
   }
-  const [changed]=await sql(env, [["UPDATE scrape_tracker SET Mail_status='Drafted',mail_template=? WHERE appid=? AND Mail_status='Writing' AND emails=? AND scrape_status=? AND COALESCE(CAST(mail_template AS TEXT),'')=? RETURNING appid",
+  const [changed]=await sql(env, [["UPDATE scrape_tracker SET Mail_status='Drafted',mail_template=? WHERE appid=? AND Mail_status='Accepted' AND emails=? AND scrape_status=? AND COALESCE(CAST(mail_template AS TEXT),'')=? RETURNING appid",
     saved.template,appid,saved.email,saved.scrape_status,saved.selected_template]]);
   if (!changed.length) {
     const current=await lead(env,appid,sql);

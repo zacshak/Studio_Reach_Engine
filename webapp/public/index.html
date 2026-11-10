@@ -67,6 +67,7 @@
                  background: #161b26; color: #9aa4b2; cursor: pointer; }
   .bulk button.armed { background: #7f1d1d; color: #fecaca; border-color: #ef4444; }
   .bulk.top { margin: 0 0 .8rem; }
+  #untriaged { font-size: .85rem; opacity: .75; white-space: nowrap; }
   .shotsall img { width: 100%; border-radius: 10px; margin-top: .4rem; display: block; }
 </style>
 </head>
@@ -77,6 +78,7 @@
   <button class="tab" data-tab="approval">🎮 Approval <b></b></button>
   <button class="tab" data-tab="mail">📧 Mail <b></b></button>
   <button class="tab" data-tab="nomail">🚫 No-Mail <b></b></button>
+  <span id="untriaged" title="Pending games not triaged yet; triage them via the MCP" hidden></span>
   <button class="refresh" onclick="load()" aria-label="Refresh dashboard">↻</button>
 </header>
 <main>
@@ -309,9 +311,12 @@ function render() {
     b.classList.toggle("on", t === tab);
     b.querySelector("b").textContent = Q[t].length;
   });
+  const untriaged = $("#untriaged");
+  untriaged.hidden = !S.untriaged;
+  untriaged.textContent = S.untriaged ? `⏳ ${S.untriaged} untriaged` : "";
   const list = Q[tab];
   const view = $("#view");
-  // drafts are pending when accepted leads ('Writing') have no draft text yet
+  // drafts are pending when accepted leads ('Accepted') have no draft text yet
   const gha =
     (tab === "approval" && !list.length && S.pendingDrafts
       ? ghaBtn("✍️ Draft pending mails", "draft") : "") +

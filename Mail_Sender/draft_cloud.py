@@ -1,5 +1,5 @@
 """Cloud cold-mail drafter: for every accepted lead awaiting a draft (Mail_status
-'Writing') that has no mail yet, the configured vision model fills a template — personalising the
+'Accepted') that has no mail yet, the configured vision model fills a template — personalising the
 critique/observation slot from the game's sprite sheet + blurb — and the finished mail is
 written into the lead's R2 manifest ('mail' + 'mail_template'), then Mail_status flips to
 'Drafted'. The review app's Mail-Approval section only shows 'Drafted' leads; Approve ->
@@ -8,7 +8,7 @@ Scheduled -> the send job mails it.
 Runs as a GHA step, fired on demand by the app's "Draft pending mails" button. Idempotent:
 re-running only drafts leads whose manifest has no mail yet, so a half-finished run resumes.
 
-Env: TURSO_* (read the 'Writing' queue) + R2 read/write (manifest) + TRIAGE_BASE_URL/MODEL/
+Env: TURSO_* (read the 'Accepted' queue) + R2 read/write (manifest) + TRIAGE_BASE_URL/MODEL/
 API_KEY (reused Gemini creds; the model must be vision-capable for the sheet).
 """
 import base64
@@ -204,8 +204,8 @@ def _complete_draft(appid, template, manifest):
 
 def main():
     if '--check-only' not in sys.argv and '--preview-appid' not in sys.argv:
-        if not pipeline.mail_status_appids('Writing'):
-            print('No leads in Writing. Nothing to draft.', flush=True)
+        if not pipeline.mail_status_appids('Accepted'):
+            print('No leads in Accepted. Nothing to draft.', flush=True)
             return 0
     try:
         client, model = configured_client()
@@ -236,8 +236,8 @@ def run_queue(client, model):
     if not templates:
         sys.exit("no valid '#Cold Mail - N' templates found")
     index = media_store.fetch_index(strict=True)
-    queue = pipeline.mail_status_appids("Writing")
-    print(f"{len(queue)} lead(s) in 'Writing'; {len(templates)} templates")
+    queue = pipeline.mail_status_appids("Accepted")
+    print(f"{len(queue)} lead(s) in 'Accepted'; {len(templates)} templates")
 
     drafted = skipped = consecutive_failures = 0
     stopped = False
@@ -245,7 +245,7 @@ def run_queue(client, model):
     tally = {n: 0 for n, _ in templates}
     for appid in queue:
         if time.monotonic() + 3 * 60 + 5 >= deadline:
-            print('Stopping before the workflow deadline. Remaining leads retain Writing.', flush=True)
+            print('Stopping before the workflow deadline. Remaining leads stay Accepted.', flush=True)
             stopped = True
             break
         folder = index.get(str(appid))
@@ -282,7 +282,7 @@ def run_queue(client, model):
             print(f'{appid} -> provider failure: {error}', file=sys.stderr, flush=True)
             if error.fatal or consecutive_failures >= 3:
                 stopped = True
-                print('Provider circuit open. Stopping this run; remaining leads retain Writing.', file=sys.stderr, flush=True)
+                print('Provider circuit open. Stopping this run; remaining leads stay Accepted.', file=sys.stderr, flush=True)
                 break
             continue
         except ModelOutputError as error:

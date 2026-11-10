@@ -71,27 +71,27 @@ export function registerWorkflowTools(server, env, run) {
       catch (error) { return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: error.message }) }] }; }
     });
 
-  tool('get_queues', 'Every review queue as appid lists with counts: approval, nomail, triage (flagged), untriaged (Pending with no triage decision), writing, mail_approval (Drafted), scheduled and sending.',
+  tool('get_queues', 'Every review queue as appid lists with counts: untriaged (Pending), approval (Triaged as pass, has email), nomail (Triaged as pass, no email), triage (Triaged as flag), accepted, mail_approval (Drafted), scheduled and sending.',
     {}, READ, () => review(env, '/api/queues'));
-  tool('get_triage', 'Stored triage for up to 100 games: decision (pass/flag/kept or null), reason, full criteria text, timestamp and mail status.',
+  tool('get_triage', 'Stored triage for up to 100 games: decision (pass/flag or null when untriaged), reason, full criteria text, timestamp and mail status.',
     { appids: appids(100) }, READ, ({ appids }) => review(env, '/api/triage/get', { appids }));
-  tool('keep_games', 'Triage Keep for up to 100 Pending games: marks them kept so AI triage can never flag them again, and returns flagged ones to their normal queue.',
+  tool('keep_games', 'Triage Keep for up to 100 flagged games: overrides the flag to pass (the reason records the override), moving them to Approval or No-Mail. Returns kept and not_flagged.',
     { appids: appids(100) }, WRITE, ({ appids }) => review(env, '/api/act', { action: 'keep_many', appids }));
-  tool('accept_games', 'Accept up to 100 Pending games for outreach (Pending -> Writing). Requires an email and a stored sprite sheet; flagged games must be kept first. Returns accepted and failed with reasons.',
+  tool('accept_games', 'Accept up to 100 games for outreach (Triaged -> Accepted). Only games triaged as pass that have an email and a stored sprite sheet; untriaged, flagged and no-email games are refused. Returns accepted and failed with reasons.',
     { appids: appids(100) }, WRITE, ({ appids }) => review(env, '/api/act', { action: 'accept_many', appids }));
   tool('reject_games', 'Permanently delete up to 1000 games: database rows plus queued R2 media cleanup. Cannot be undone. Rows in Sending are protected. Requires confirm="DELETE".',
     { appids: appids(1000), confirm: z.literal('DELETE') }, DESTROY,
     ({ appids }) => review(env, '/api/act', { action: 'reject_all', appids }));
-  tool('save_email_result', 'Record an email search for a Pending game still awaiting an email. status=scraped needs 1-5 published addresses, best first (moves it from No-Mail to Approval); no_email or failed record the outcome. Never invent addresses.',
+  tool('save_email_result', 'Record an email search for a Pending or Triaged game still awaiting an email. status=scraped needs 1-5 published addresses, best first (moves it from No-Mail to Approval); no_email or failed record the outcome. Never invent addresses.',
     { appid, status: z.enum(['scraped', 'no_email', 'failed']), emails: z.array(z.string().trim().min(3).max(254)).max(5).optional(),
       website: z.string().url().max(2000).optional() }, WRITE, args => review(env, '/api/email/save', args));
   tool('get_draft', 'Read the saved cold-mail draft for a game: subject, body, recipient, template and mail status.',
     { appid }, READ, ({ appid }) => getDraft(env, appid, run));
   tool('approve_mails', 'Approve up to 100 drafted mails (Drafted -> Scheduled). Approved mails are only sent when send_scheduled_mails or the dashboard Send button runs.',
     { appids: appids(100) }, WRITE, ({ appids }) => review(env, '/api/act', { action: 'approve_many', appids }));
-  tool('return_to_writing', 'Discard the saved draft of up to 100 Drafted games and move them back to Writing so they can be drafted again.',
-    { appids: appids(100) }, DESTROY, ({ appids }) => review(env, '/api/act', { action: 'return_to_writing', appids }));
-  tool('run_workflow', 'Start a GitHub Actions workflow on master: discover (Steam discovery), hermes or kimchi (email scraping), draft (AI drafting of Writing rows), epic (Epic discovery). Not retried automatically; check get_workflow_runs before starting it again.',
+  tool('return_to_accepted', 'Discard the saved draft of up to 100 Drafted games and move them back to Accepted so they can be drafted again.',
+    { appids: appids(100) }, DESTROY, ({ appids }) => review(env, '/api/act', { action: 'return_to_accepted', appids }));
+  tool('run_workflow', 'Start a GitHub Actions workflow on master: discover (Steam discovery), hermes or kimchi (email scraping), draft (AI drafting of Accepted rows), epic (Epic discovery). Not retried automatically; check get_workflow_runs before starting it again.',
     { workflow: z.enum(WORKFLOWS) }, RUN, ({ workflow }) => review(env, '/api/act', { action: 'trigger', workflow }));
   tool('get_workflow_runs', 'Recent GitHub Actions runs of a workflow with status and conclusion.',
     { workflow: z.enum([...WORKFLOWS, 'send']), limit: z.number().int().min(1).max(20).default(5) }, READ,
