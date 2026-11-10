@@ -3,14 +3,17 @@
 import argparse
 import json
 
-try:
+if __package__:
     from .client import QEVError, QuickEmailVerification, is_safe_to_send
     from .smtp_check import SMTPVerifier
     from .verifier import EmailVerifier
-except ImportError:
-    from client import QEVError, QuickEmailVerification, is_safe_to_send
-    from smtp_check import SMTPVerifier
-    from verifier import EmailVerifier
+else:  # run as a script: python Email_Verifier/<name>.py
+    import sys
+    from pathlib import Path as _Path
+    sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
+    from Email_Verifier.client import QEVError, QuickEmailVerification, is_safe_to_send
+    from Email_Verifier.smtp_check import SMTPVerifier
+    from Email_Verifier.verifier import EmailVerifier
 
 
 def main() -> int:

@@ -216,7 +216,9 @@ Results are cached, so the send-time check is usually free:
    day). If QEV is not set, out of credits or failing, the row stays `Scheduled` and the
    run moves on to the next row.
 Port 25 must be reachable: it is on GitHub-hosted runners, usually not on home networks.
-`python Email_Verifier/verify_single.py ADDRESS [--smtp-only | --qev]` checks one address.
+`python Email_Verifier/verify_single.py ADDRESS [--smtp-only | --qev]` checks one address;
+`python Email_Verifier/verify_bulk.py FILE.csv [--smtp-only | --qev]` checks a CSV (`email` column)
+and writes `FILE_verified.csv` with result, reason, accept_all and source columns.
 
 **Bounces** (`Mail_Sender/bounces.py`, nightly in `review-mails.yml` before the reply
 scan): reads bounce notices
