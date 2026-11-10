@@ -5,12 +5,14 @@ import verify_accepted as va
 
 
 class VerifyAcceptedTest(unittest.TestCase):
-    def run_main(self, rows, results, *, media="ok", cached=None):
+    def run_main(self, rows, results, *, media="ok", cached=None, later=None):
         verifier = Mock()
         verifier.verify.side_effect = lambda e: {"email": e, **results[e]}
+        # First read returns `rows`; later re-reads return `later` batches, then nothing.
+        rows_seq = [rows, *(later or [])] + [[]] * 5
         calls = {"reject": [], "finish": [], "returned": []}
         media_effect = media if callable(media) else (lambda appid, client: media)
-        with patch.object(va.pipeline, "verifying_rows", return_value=rows), \
+        with patch.object(va.pipeline, "verifying_rows", side_effect=rows_seq), \
                 patch.object(va.pipeline, "get_email_verification",
                              side_effect=lambda e: (cached or {}).get(e)), \
                 patch.object(va.pipeline, "cache_email_verification"), \
@@ -43,6 +45,20 @@ class VerifyAcceptedTest(unittest.TestCase):
         # Accept-time: always back to "no email", even for a researched address.
         self.assertEqual((kw["from_statuses"], kw["researched_to_invalid"], kw["source"]),
                          (("Verifying",), False, "accept"))
+
+    def test_games_accepted_during_the_run_are_picked_up(self):
+        results = {"a@x.test": {"result": "valid"}, "b@x.test": {"result": "valid"}}
+        code, calls, _ = self.run_main(
+            [(1, "a@x.test", "seeded")], results,
+            later=[[(1, "a@x.test", "seeded"), (2, "b@x.test", "seeded")]])
+        self.assertEqual(code, 0)
+        self.assertEqual(calls["finish"], [1, 2])  # game 1 not checked twice
+
+    def test_row_stuck_in_verifying_is_not_retried_forever(self):
+        stuck = [(1, "a@x.test", "seeded")]
+        code, calls, verifier = self.run_main(
+            stuck, {"a@x.test": {"result": "valid"}}, later=[stuck] * 10)
+        self.assertEqual(verifier.verify.call_count, 1)
 
     def test_cached_result_is_reused(self):
         code, calls, verifier = self.run_main(
@@ -77,7 +93,7 @@ class DeadlineTest(unittest.TestCase):
         verifier.verify.side_effect = lambda e: _time.sleep(5)
         calls = []
         with patch.object(va, "VERIFY_SECONDS", 1), \
-                patch.object(va.pipeline, "verifying_rows", return_value=[(1, "slow@x.test", "seeded")]), \
+                patch.object(va.pipeline, "verifying_rows", side_effect=[[(1, "slow@x.test", "seeded")], []]), \
                 patch.object(va.pipeline, "get_email_verification", return_value=None), \
                 patch.object(va.pipeline, "cache_email_verification") as cache, \
                 patch.object(va.pipeline, "finish_verification") as finish, \

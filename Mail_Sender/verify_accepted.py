@@ -9,6 +9,8 @@ Fired by the dashboard's Accept / Accept all (verify.yml). For each Verifying ga
      media was purged after an earlier send (e.g. after a bounce) are rebuilt from Steam.
      If that fails the game returns to Triaged with its email kept and email_issue set.
   3. Verifying -> Accepted.
+Before finishing, the run checks again for games accepted while it was working and
+handles them too, so they do not wait for another run to start.
 
 Needs outbound port 25 for the SMTP check (open on GitHub-hosted runners).
 
@@ -152,70 +154,87 @@ def main():
         print("R2 write credentials are not set; media cannot be checked or rebuilt.")
     failures = 0
     started = time.monotonic()
-    for appid, raw, _scrape in rows:
-        if RUN_BUDGET_SECONDS and time.monotonic() - started > RUN_BUDGET_SECONDS:
-            print("Run time budget reached; remaining games stay Verifying for the next run.")
-            break
-        email = pipeline.normalize_email(raw)
-        try:
-            if not email:
-                outcome = pipeline.reject_email(
-                    appid, expected_email=raw, reason="no deliverable address", source="accept",
-                    from_statuses=("Verifying",), researched_to_invalid=False)
-                print(f"NO MAIL {appid}: stored email {raw!r} is not an address")
-                stats["no_mail" if outcome else "skipped"] += 1
-                continue
-            result, cached = _verify(verifier, email)
-            verdict = str(result.get("result", "")).lower() if isinstance(result, dict) else ""
-            reason = result.get("reason", "") if isinstance(result, dict) else ""
-            if "email" in result and str(result["email"]).strip().casefold() != email.casefold():
-                raise RuntimeError(f"verification answered for a different address: {result['email']!r}")
-            print(f"  {appid} {email}: {verdict or '?'} ({reason}){' [cached]' if cached else ''}")
-            if verdict == "invalid":
-                outcome = pipeline.reject_email(
-                    appid, expected_email=raw, reason=reason or "invalid", source="accept",
-                    from_statuses=("Verifying",), researched_to_invalid=False)
-                stats["no_mail" if outcome else "skipped"] += 1
-                continue
-            if verdict == "unknown":
-                # Not provable either way (server blocked us, timed out, QEV and Abstract out):
-                # do not accept. The game stays in Passed with its email for a later retry.
-                ok = pipeline.return_unverified(
-                    appid, expected_email=raw, reason=f"could not verify: {reason or 'no answer'}")
-                print(f"  NOT ACCEPTED {appid}: could not verify {email}; email kept")
-                stats["unverified" if ok else "skipped"] += 1
-                continue
-            if verdict != "valid":
-                raise RuntimeError(f"unexpected verification result {verdict!r}")
-            if client is None:
-                raise MediaError("R2 credentials missing")
-            try:
-                state = ensure_media(appid, client)
-            except Exception as exc:
-                print(f"  RETURN {appid}: media not ready: {exc}")
-                ok = pipeline.return_unverified(
-                    appid, expected_email=raw, reason=f"media could not be rebuilt: {exc}")
-                stats["returned" if ok else "skipped"] += 1
-                continue
-            if state == "rebuilt":
-                stats["media_rebuilt"] += 1
-                print(f"  {appid}: media rebuilt from Steam")
-            if pipeline.finish_verification(appid, expected_email=raw):
-                stats["accepted"] += 1
-            else:
-                stats["skipped"] += 1
-                print(f"  SKIP {appid}: row changed while verifying")
-        except Exception as exc:
-            failures += 1
-            traceback.print_exc()
-            try:
-                ok = pipeline.return_unverified(appid, expected_email=raw,
-                                                reason=f"verification failed: {exc}")
-                stats["returned" if ok else "skipped"] += 1
-            except Exception:
-                pipeline.reconnect()
+    seen = set()
+    while rows:
+        for appid, raw, _scrape in rows:
+            if RUN_BUDGET_SECONDS and time.monotonic() - started > RUN_BUDGET_SECONDS:
+                print("Run time budget reached; remaining games stay Verifying for the next run.")
+                _summary(stats)
+                return 1 if failures else 0
+            seen.add((appid, raw))
+            failures += _process(verifier, client, appid, raw, stats)
+        # Games accepted while this run was working: pick them up now instead of
+        # leaving them for the queued run (saves its start-up time). A game is only
+        # taken once per run with the same email, so a row that could not be moved
+        # out of Verifying cannot loop forever.
+        rows = [r for r in pipeline.verifying_rows() if (r[0], r[1]) not in seen]
+        if rows:
+            print(f"{len(rows)} more game(s) were accepted during this run; checking them too")
     _summary(stats)
     return 1 if failures else 0
+
+
+def _process(verifier, client, appid, raw, stats):
+    """Verify one game and move it out of Verifying. Returns 1 on an unexpected error."""
+    email = pipeline.normalize_email(raw)
+    try:
+        if not email:
+            outcome = pipeline.reject_email(
+                appid, expected_email=raw, reason="no deliverable address", source="accept",
+                from_statuses=("Verifying",), researched_to_invalid=False)
+            print(f"NO MAIL {appid}: stored email {raw!r} is not an address")
+            stats["no_mail" if outcome else "skipped"] += 1
+            return 0
+        result, cached = _verify(verifier, email)
+        verdict = str(result.get("result", "")).lower() if isinstance(result, dict) else ""
+        reason = result.get("reason", "") if isinstance(result, dict) else ""
+        if "email" in result and str(result["email"]).strip().casefold() != email.casefold():
+            raise RuntimeError(f"verification answered for a different address: {result['email']!r}")
+        print(f"  {appid} {email}: {verdict or '?'} ({reason}){' [cached]' if cached else ''}")
+        if verdict == "invalid":
+            outcome = pipeline.reject_email(
+                appid, expected_email=raw, reason=reason or "invalid", source="accept",
+                from_statuses=("Verifying",), researched_to_invalid=False)
+            stats["no_mail" if outcome else "skipped"] += 1
+            return 0
+        if verdict == "unknown":
+            # Not provable either way (server blocked us, timed out, QEV and Abstract out):
+            # do not accept. The game stays in Passed with its email for a later retry.
+            ok = pipeline.return_unverified(
+                appid, expected_email=raw, reason=f"could not verify: {reason or 'no answer'}")
+            print(f"  NOT ACCEPTED {appid}: could not verify {email}; email kept")
+            stats["unverified" if ok else "skipped"] += 1
+            return 0
+        if verdict != "valid":
+            raise RuntimeError(f"unexpected verification result {verdict!r}")
+        if client is None:
+            raise MediaError("R2 credentials missing")
+        try:
+            state = ensure_media(appid, client)
+        except Exception as exc:
+            print(f"  RETURN {appid}: media not ready: {exc}")
+            ok = pipeline.return_unverified(
+                appid, expected_email=raw, reason=f"media could not be rebuilt: {exc}")
+            stats["returned" if ok else "skipped"] += 1
+            return 0
+        if state == "rebuilt":
+            stats["media_rebuilt"] += 1
+            print(f"  {appid}: media rebuilt from Steam")
+        if pipeline.finish_verification(appid, expected_email=raw):
+            stats["accepted"] += 1
+        else:
+            stats["skipped"] += 1
+            print(f"  SKIP {appid}: row changed while verifying")
+        return 0
+    except Exception as exc:
+        traceback.print_exc()
+        try:
+            ok = pipeline.return_unverified(appid, expected_email=raw,
+                                            reason=f"verification failed: {exc}")
+            stats["returned" if ok else "skipped"] += 1
+        except Exception:
+            pipeline.reconnect()
+        return 1
 
 
 def _summary(stats):

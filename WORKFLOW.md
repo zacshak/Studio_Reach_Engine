@@ -128,8 +128,9 @@ rows exist; **📨 Send scheduled mails** shows while `Scheduled` rows exist.
 - **Reject** → deleted (rows + queued R2 cleanup).
 
 ### ✅ Passed (`Mail_status = Triaged`, `triage_decision = pass`)
-- **Accept** → `Mail_status = Verifying` and starts `verify.yml` (about a minute). The
-  page polls it: verified → `Accepted`; a dead address → pop-up error, the email is cleared
+- **Accept** → `Mail_status = Verifying` and starts `verify.yml` (about a minute). One
+  run at a time: games accepted while a run is working are picked up by that same run
+  before it finishes (a queued run then finds nothing). The page polls it: verified → `Accepted`; a dead address → pop-up error, the email is cleared
   and the game stays in Passed with a "No email" badge, ready for a new address; an
   address nobody could check either way (blocked, timed out, QEV and Abstract out) is
   **not accepted**: it stays in Passed with its email and a "couldn't verify" badge, to
