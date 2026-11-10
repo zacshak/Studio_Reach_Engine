@@ -214,11 +214,11 @@ class SMTPVerifierTest(unittest.TestCase):
 
 
 class StubSMTP:
-    def __init__(self, result):
-        self.result = result
+    def __init__(self, result, **extra):
+        self.result, self.extra = result, extra
 
     def verify(self, email):
-        return {"email": email, "result": self.result, "reason": "r", "source": "smtp"}
+        return {"email": email, "result": self.result, "reason": "r", "source": "smtp", **self.extra}
 
 
 class StubQEV:
@@ -238,6 +238,12 @@ class EmailVerifierTest(unittest.TestCase):
             qev = StubQEV("valid")
             result = EmailVerifier(StubSMTP(outcome), qev, log=lambda *_: None).verify("a@b.dev")
             self.assertEqual((result["result"], qev.calls), (outcome, 0))
+
+    def test_catch_all_domain_is_valid_without_spending_qev(self):
+        qev = StubQEV("invalid")
+        result = EmailVerifier(StubSMTP("unknown", accept_all=True), qev, log=lambda *_: None).verify("a@b.dev")
+        self.assertEqual((result["result"], result["accept_all"], result["source"], qev.calls),
+                         ("valid", True, "smtp", 0))
 
     def test_inconclusive_smtp_falls_back_to_qev(self):
         qev = StubQEV("invalid")

@@ -1,10 +1,12 @@
 """Verification chain used by the send stage: own SMTP check first, QEV only as fallback.
 
-SMTP gives a definitive answer (valid / invalid) for most mailboxes at no cost. Only the
-ones it cannot settle (catch-all domains, servers that block probes, timeouts) are sent to
-QuickEmailVerification, whose free plan allows 100 lookups a day. When QEV is not
-configured, out of credits or failing, those stay "unknown" and the mail stays Scheduled:
-a lead is never sent unverified and never dropped on an inconclusive answer.
+SMTP gives a definitive answer (valid / invalid) for most mailboxes at no cost. Catch-all
+domains (the server accepts any address) count as valid: nobody can prove those mailboxes,
+and QEV only answers "valid" + accept_all for them. Only the ones SMTP cannot settle
+(servers that block probes, timeouts, greylisting) are sent to QuickEmailVerification,
+whose free plan allows 100 lookups a day. When QEV is not configured, out of credits or
+failing, those stay "unknown" and the mail stays Scheduled: such a lead is never sent
+unverified and never dropped on an inconclusive answer.
 """
 
 from __future__ import annotations
@@ -37,6 +39,11 @@ class EmailVerifier:
 
     def verify(self, email: str) -> dict:
         result = self.smtp.verify(email)
+        if result["result"] == "unknown" and result.get("accept_all"):
+            # Catch-all domain: the server accepts every address, so no checker (QEV
+            # included, which answers "valid" + accept_all) can prove the mailbox. Treat it
+            # as sendable without spending a QEV credit; a bounce is caught nightly.
+            return {**result, "result": "valid", "safe_to_send": True}
         if result["result"] != "unknown" or self.qev is None:
             return result
         self.log(f"  SMTP inconclusive for {email} ({result['reason']}); asking QEV")

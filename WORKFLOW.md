@@ -209,8 +209,9 @@ Results are cached, so the send-time check is usually free:
    `MAIL FROM` our sender, `RCPT TO` the address, then `RCPT TO` a random address at the
    same domain. No message is ever sent. `valid` = the address is accepted and the random
    one is refused. `invalid` = only an explicit "no such mailbox" answer (5.1.x / 5.2.1 or
-   that wording). Catch-all domains, policy/IP blocks (5.7.x), greylisting (4xx) and
-   timeouts are `unknown`. Role addresses (`info@`, `contact@`) are not penalised.
+   that wording). Catch-all domains (the random address is accepted too) count as `valid`:
+   no checker can prove those mailboxes, QEV included, and a bounce is caught nightly.
+   Policy/IP blocks (5.7.x), greylisting (4xx) and timeouts are `unknown`. Role addresses (`info@`, `contact@`) are not penalised.
 2. Only `unknown` results go to QuickEmailVerification (`QEV_API_KEY`, 100 free credits a
    day). If QEV is not set, out of credits or failing, the row stays `Scheduled` and the
    run moves on to the next row.
