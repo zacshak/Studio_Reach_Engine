@@ -2,8 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  approveStmt, keepStmt, APPROVAL_SQL, NOMAIL_SQL,
-  ACCEPT_SQL, sql, updateJSON,
+  approveStmt, VIEW_SQL, homeCounts, sql, updateJSON,
 } from "./worker.js";
 import worker from "./worker.js";
 
@@ -22,14 +21,21 @@ test('social save HTTP route reaches guarded completion',async()=>{
 
 test('accept never advances a lead with an incomplete or absent sprite', async () => {
   const original = globalThis.fetch;
-  globalThis.fetch = () => { throw new Error('database must not be called'); };
+  // Only the state read is allowed; any UPDATE would mean the lead advanced.
+  globalThis.fetch = async (_url, options) => {
+    const query = JSON.parse(options.body).requests[0].stmt.sql;
+    assert.match(query, /^SELECT Mail_status, triage_decision, scrape_status/);
+    return Response.json({ results: [{ type: 'ok', response: { result: { rows: [[
+      { type: 'text', value: 'Triaged' }, { type: 'text', value: 'pass' }, { type: 'text', value: 'seeded' }]] } } }, { type: 'ok' }] });
+  };
   try {
-    for (const images of [[], ['SpriteSheet_Screenshots.png']]) {
+    for (const [images, message] of [[[], /screenshot export is incomplete/], [['SpriteSheet_Screenshots.png'], /sprite sheet is missing/]]) {
       const response = await worker.fetch(new Request('https://example/api/act', {method:'POST',body:JSON.stringify({action:'accept',appid:1})}), {
+        TURSO_URL: 'libsql://example', TURSO_TOKEN: 'test',
         MEDIA: { get: async key => ({json: async () => key==='index.json' ? {1:'Game_1'} : {images}}), head:async()=>null }
       });
-      assert.equal(response.status,500);
-      assert.match((await response.json()).error,/Cannot draft 1/);
+      assert.equal(response.status,409);
+      assert.match((await response.json()).error, message);
     }
   } finally { globalThis.fetch=original; }
 });
@@ -79,10 +85,13 @@ test('transaction begin and commit errors are never reported as success', async 
   } finally { globalThis.fetch = original; }
 });
 
-test('dashboard state routes database flags and passes into the right queues', async () => {
+test('dashboard state returns Home counts and the Pending, Passed, Flagged and Mail views', async () => {
   const originalFetch = globalThis.fetch;
-  const sets = [[[1]], [], [[3]], [[0]], [[0]],
-    [[1, 'pass', 'Fits', 'Custom', '2026-11-09T00:00:00.000Z'], [2, 'flag', 'Does not fit', 'Custom', null]], [[5]]];
+  // pending, passed, flagged, noMail, drafted, counts, reviews
+  const sets = [[[4]], [[1], [3]], [[2]], [[3], [4]], [[6, 'a@b.co']],
+    [['Pending', '', 0, 1], ['Triaged', 'pass', 1, 1], ['Triaged', 'pass', 0, 1], ['Triaged', 'flag', 1, 1],
+     ['Accepted', '', 1, 2], ['Drafted', '', 1, 1], ['Sent', '', 1, 7], ['Invalid', '', 0, 1]],
+    [[1, 'pass', 'Fits', 'Custom', '2026-11-09T00:00:00.000Z'], [2, 'flag', 'Does not fit', 'Custom', null]]];
   const cell = value => value === null ? { type: 'null' } : typeof value === 'number'
     ? { type: 'integer', value: String(value) } : { type: 'text', value };
   let statements;
@@ -101,43 +110,50 @@ test('dashboard state routes database flags and passes into the right queues', a
     assert.equal(response.status, 200);
     const state = await response.json();
     assert.deepEqual(reads, ['index.json']);
-    assert.match(statements[0], /Mail_status='Triaged' AND triage_decision='pass' AND scrape_status IN \('seeded','scraped'\)/);
-    assert.match(statements.at(-2), /s\.Mail_status='Triaged' AND s\.triage_decision IN \('pass','flag'\)/);
-    assert.match(statements.at(-1), /Mail_status='Pending'/);
-    assert.equal(state.untriaged, 5);
-    assert.deepEqual(state.triage, [2]);
-    assert.deepEqual(state.approval, [1]);
-    assert.deepEqual(state.nomail, [3]);
+    assert.deepEqual(statements.slice(0, 4), [VIEW_SQL.pending, VIEW_SQL.passed, VIEW_SQL.flagged, VIEW_SQL.noMail]);
+    assert.deepEqual([state.pending, state.passed, state.flagged, state.noMail], [[4], [1, 3], [2], [3, 4]]);
+    assert.deepEqual(state.mail, [{ appid: 6, emails: 'a@b.co' }]);
+    assert.deepEqual(state.counts, { pending: 1, triaged: 3, passed: 2, flagged: 1, no_mail: 2, accepted: 2, drafted: 1,
+      scheduled: 0, sending: 0, sent: 7, replied: 0, invalid: 1 });
+    assert.equal(state.pendingDrafts, true);
+    assert.equal(state.scheduled, false);
     assert.deepEqual(state.triageReviews[1], { decision: 'pass', reason: 'Fits', criteria: 'Custom', reviewed_at: '2026-11-09T00:00:00.000Z' });
-    assert.equal(state.triageReviews[2].decision, 'flag');
-    assert.equal('socials' in state,false);
-    assert.equal('requireSocials' in state,false);
+    for (const gone of ['triage', 'approval', 'nomail', 'untriaged', 'socials', 'requireSocials']) assert.equal(gone in state, false, gone);
   } finally { globalThis.fetch = originalFetch; }
 });
 
-test("Approval and No-Mail hold games triaged as pass, split by email", () => {
-  assert.equal(APPROVAL_SQL,
-    "SELECT appid FROM scrape_tracker WHERE Mail_status='Triaged' AND triage_decision='pass' AND scrape_status IN ('seeded','scraped') ORDER BY appid");
-  assert.equal(NOMAIL_SQL,
-    "SELECT appid FROM scrape_tracker WHERE Mail_status='Triaged' AND triage_decision='pass' AND scrape_status IN ('pending','no_email','failed') ORDER BY appid");
+test('view queries split Pending, Passed and Flagged, and badge not-yet-accepted games without email', () => {
+  assert.equal(VIEW_SQL.pending, "SELECT appid FROM scrape_tracker WHERE Mail_status='Pending' ORDER BY appid");
+  assert.equal(VIEW_SQL.passed, "SELECT appid FROM scrape_tracker WHERE Mail_status='Triaged' AND triage_decision='pass' ORDER BY appid");
+  assert.equal(VIEW_SQL.flagged, "SELECT appid FROM scrape_tracker WHERE Mail_status='Triaged' AND triage_decision='flag' ORDER BY appid");
+  assert.equal(VIEW_SQL.noMail, "SELECT appid FROM scrape_tracker WHERE Mail_status IN ('Pending','Triaged') AND NOT (scrape_status IN ('seeded','scraped')) ORDER BY appid");
+  assert.deepEqual(homeCounts([['Sending', '', 1, 2], ['Replied', '', 1, 3], ['Scheduled', '', 1, 4]]),
+    { pending: 0, triaged: 0, passed: 0, flagged: 0, no_mail: 0, accepted: 0, drafted: 0, scheduled: 4, sending: 2, sent: 0, replied: 3, invalid: 0 });
 });
 
-test("accept moves only Triaged pass games with an email", () => {
-  assert.equal(ACCEPT_SQL,
-    "UPDATE scrape_tracker SET Mail_status='Accepted' WHERE appid=? AND Mail_status='Triaged' AND triage_decision='pass' AND scrape_status IN ('seeded','scraped') RETURNING appid");
-});
-
-test("dashboard accept and keep report refusals instead of silently succeeding", async () => {
+test('dashboard actions refuse with 409 and a reason instead of silently succeeding', async () => {
   const original = globalThis.fetch;
-  globalThis.fetch = async () => Response.json({ results: [{ type: 'ok', response: { result: { rows: [] } } }, { type: 'ok' }] });
-  const sprite = { get: async key => key === 'index.json' ? { json: async () => ({ 7: 'G_7' }) }
+  const media = { get: async key => key === 'index.json' ? { json: async () => ({ 7: 'G_7' }) }
       : { json: async () => ({ images: ['SpriteSheet_Screenshots.png'] }) }, head: async () => ({ size: 10 }) };
+  const cases = [
+    ['accept', [['Triaged', 'pass', 'no_email']], /Cannot accept 7: has no email\./],
+    ['accept', [['Triaged', 'flag', 'seeded']], /Cannot accept 7: flagged in triage; Pass it first\./],
+    ['accept', [['Pending', null, 'seeded']], /Cannot accept 7: not triaged yet\./],
+    ['accept', [], /Cannot accept 7: game no longer exists\./],
+    ['triage_pass', [], /Cannot pass 7: it is no longer Pending\./],
+    ['pass', [], /Cannot pass 7: it is not a flagged Triaged game\./],
+    ['flag', [], /Cannot flag 7: it is not a passed Triaged game\./],
+  ];
   try {
-    for (const [action, message] of [['accept', /only games triaged as pass with an email/], ['keep', /not a flagged Triaged game/]]) {
+    for (const [action, rows, message] of cases) {
+      globalThis.fetch = async () => Response.json({ results: [{ type: 'ok', response: { result: {
+        rows: rows.map(row => row.map(v => v === null ? { type: 'null' } : { type: 'text', value: v })) } } }, { type: 'ok' }] });
       const r = await worker.fetch(new Request('https://test/api/act', { method: 'POST', body: JSON.stringify({ action, appid: 7 }) }),
-        { TURSO_URL: 'libsql://example', TURSO_TOKEN: 'test', MEDIA: sprite });
-      assert.equal(r.status, 500);
-      assert.match((await r.json()).error, message);
+        { TURSO_URL: 'libsql://example', TURSO_TOKEN: 'test', MEDIA: media });
+      assert.equal(r.status, 409, action);
+      const body = await r.json();
+      assert.equal(body.refused, true);
+      assert.match(body.error, message);
     }
   } finally { globalThis.fetch = original; }
 });
@@ -175,15 +191,6 @@ test("mail approval is one guarded database update", () => {
     "UPDATE scrape_tracker SET Mail_status='Scheduled' WHERE appid=? AND Mail_status='Drafted' AND scrape_status IN ('seeded','scraped')",
     42,
   ]);
-});
-
-test("triage Keep turns a flag into pass without advancing the mail state", () => {
-  const [query, appid] = keepStmt(42);
-  assert.equal(appid, 42);
-  assert.match(query, /SET triage_decision='pass'/);
-  assert.match(query, /'Kept by user \(AI flagged: ' \|\| coalesce\(triage_reason,''\) \|\| '\)'/);
-  assert.match(query, /WHERE Mail_status='Triaged' AND triage_decision='flag' AND appid=\? RETURNING appid$/);
-  assert.doesNotMatch(query, /Mail_status=('Accepted'|'Pending')|triage_kept/);
 });
 
 test('triage save route writes eligible rows in one transaction and reports skips', async () => {

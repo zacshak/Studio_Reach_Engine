@@ -1,11 +1,12 @@
 // SRE review app — the entire backend, one Cloudflare Worker. No npm, no build step.
 //
-// The static page (public/index.html) is served by Workers Assets from this same
-// deployment; review actions update the page after server confirmation.
+// The page (public/index.html) is served by entry.js, the deployed entry point, which
+// wraps this handler; review actions update the page after server confirmation.
 //
-//   GET  /api/state   -> all review views (1 DB round-trip + 1 R2 get)
-//   POST /api/act     -> {action, ...} — accept / reject / reject_all / approve / approve_all /
-//                        keep / reject_irrelevant / reject_all_irrelevant / trigger
+//   GET  /api/state   -> Home counts + all review views (1 DB round-trip + 1 R2 get)
+//   POST /api/act     -> {action, ...} — triage_pass / pass / flag / accept / accept_many /
+//                        reject / reject_all / approve / approve_all / trigger
+//                        (409 + {refused: true} when the game's state does not allow it)
 //   POST /api/triage/save -> {criteria, results} AI recommendations (MCP submit_triage)
 //   GET  /media/<key> -> R2 passthrough (images + manifests), same-origin so no CORS/bot-block
 //
@@ -17,11 +18,11 @@
 // status strings); R2 layout mirrors Leads_Reviewer/media_store.py (index.json,
 // <GameName>_<appid>/manifest.json + images). Triage lives in scrape_tracker.
 
-import { triageSnapshot, saveTriage, TRIAGE_SQL, KEEP_SQL } from './triage.js';
+import { triageSnapshot, saveTriage, setDecision, TRIAGE_SQL, TRIAGE_PASS_SQL } from './triage.js';
 import { rejectRows, cleanupJobs } from './deletion.js';
 import { draftRequest } from './drafting.js';
 import { queueSocialsStatement, saveSocials, readSocialRequestBody } from './socials.js';
-import { WORKFLOWS, queues, keepMany, acceptMany, approveMany, returnToAccepted, saveEmail, triageDetails, workflowRuns } from './agent-actions.js';
+import { WORKFLOWS, queues, keepMany, acceptOne, acceptMany, approveMany, returnToAccepted, saveEmail, triageDetails, workflowRuns, Refused } from './agent-actions.js';
 
 // ---- Turso over HTTP (Hrana v2 pipeline; one fetch = N statements, no client lib) ----
 const hranaStmt = ([q, ...args]) => ({
@@ -102,34 +103,58 @@ async function updateJSON(env, key, fallback, mutate) {
 }
 
 
-// ---- the four-view snapshot the page renders from ----
+// ---- the snapshot the page renders from: Home counts + every view ----
+const HAS_EMAIL = "scrape_status IN ('seeded','scraped')";
+export const VIEW_SQL = {
+  pending: "SELECT appid FROM scrape_tracker WHERE Mail_status='Pending' ORDER BY appid",
+  passed: "SELECT appid FROM scrape_tracker WHERE Mail_status='Triaged' AND triage_decision='pass' ORDER BY appid",
+  flagged: "SELECT appid FROM scrape_tracker WHERE Mail_status='Triaged' AND triage_decision='flag' ORDER BY appid",
+  // games not yet accepted that have no usable email (badged on their cards)
+  noMail: `SELECT appid FROM scrape_tracker WHERE Mail_status IN ('Pending','Triaged') AND NOT (${HAS_EMAIL}) ORDER BY appid`,
+  counts: `SELECT Mail_status, coalesce(triage_decision,''), ${HAS_EMAIL}, count(*) FROM scrape_tracker GROUP BY 1, 2, 3`,
+};
+
+export function homeCounts(rows) {
+  const c = { pending: 0, triaged: 0, passed: 0, flagged: 0, no_mail: 0, accepted: 0, drafted: 0,
+    scheduled: 0, sending: 0, sent: 0, replied: 0, invalid: 0 };
+  for (const [status, decision, hasEmail, n] of rows) {
+    const count = Number(n) || 0;
+    const key = String(status).toLowerCase();
+    if (key in c && key !== 'triaged') c[key] += count;
+    if (status === 'Triaged') {
+      c.triaged += count;
+      if (decision === 'pass') c.passed += count;
+      if (decision === 'flag') c.flagged += count;
+    }
+    if ((status === 'Pending' || status === 'Triaged') && !Number(hasEmail)) c.no_mail += count;
+  }
+  return c;
+}
+
 async function state(env) {
   const [index, db] = await Promise.all([
     getJSON(env, "index.json"),
     sql(env, [
-      // Triaged as pass with an email ('pending'/'no_email'/'failed' go to No-Mail).
-      [APPROVAL_SQL],
+      [VIEW_SQL.pending], [VIEW_SQL.passed], [VIEW_SQL.flagged], [VIEW_SQL.noMail],
       ["SELECT appid, emails FROM scrape_tracker WHERE Mail_status='Drafted' ORDER BY appid"],
-      [NOMAIL_SQL],
-      ["SELECT EXISTS(SELECT 1 FROM scrape_tracker WHERE Mail_status='Scheduled')"],
-      // accepted but the drafter hasn't written the mail yet — gates the Draft button
-      ["SELECT EXISTS(SELECT 1 FROM scrape_tracker WHERE Mail_status='Accepted')"],
+      [VIEW_SQL.counts],
       [TRIAGE_SQL],
-      ["SELECT count(*) FROM scrape_tracker WHERE Mail_status='Pending'"],
     ]),
   ]);
-  const [approval, drafted, nomail, sched, accepted, reviews, untriaged] = db;
-  const { triage, triageReviews } = triageSnapshot(reviews);
+  const [pending, passed, flagged, noMail, drafted, counts, reviews] = db;
+  const ids = rows => rows.map(r => Number(r[0]));
+  const home = homeCounts(counts);
   return {
     index: index || {},
-    triage,
-    triageReviews,
-    approval: approval.map((r) => Number(r[0])),
+    counts: home,
+    pending: ids(pending),
+    passed: ids(passed),
+    flagged: ids(flagged),
+    noMail: ids(noMail),
     mail: drafted.map((r) => ({ appid: Number(r[0]), emails: r[1] || "" })),
-    nomail: nomail.map((r) => Number(r[0])),
-    scheduled: Number(sched[0]?.[0]) === 1,
-    pendingDrafts: Number(accepted[0]?.[0]) === 1,
-    untriaged: Number(untriaged[0]?.[0]) || 0,
+    triageReviews: triageSnapshot(reviews).triageReviews,
+    scheduled: home.scheduled > 0,
+    pendingDrafts: home.accepted > 0,
   };
 }
 
@@ -139,14 +164,9 @@ const approveStmt = (appid) => [
   appid,
 ];
 
-// Approval and No-Mail hold games triaged as pass, split by whether an email exists.
-const APPROVAL_SQL = "SELECT appid FROM scrape_tracker WHERE Mail_status='Triaged' AND triage_decision='pass' AND scrape_status IN ('seeded','scraped') ORDER BY appid";
-const NOMAIL_SQL = "SELECT appid FROM scrape_tracker WHERE Mail_status='Triaged' AND triage_decision='pass' AND scrape_status IN ('pending','no_email','failed') ORDER BY appid";
-// Triaged -> Accepted: only games triaged as pass that have an email.
-const ACCEPT_SQL = "UPDATE scrape_tracker SET Mail_status='Accepted' WHERE appid=? AND Mail_status='Triaged' AND triage_decision='pass' AND scrape_status IN ('seeded','scraped') RETURNING appid";
 
 
-const keepStmt = (appid) => [`${KEEP_SQL} AND appid=? RETURNING appid`, appid];
+
 
 
 
@@ -172,18 +192,23 @@ function manyIds(body) {
 
 async function act(env, body) {
   switch (body.action) {
-    case "accept": { // Game Approval ✅ -> Mail_status 'Accepted'
+    case "triage_pass": { // Pending view ✅: Pending -> Triaged as pass
       const appid = oneId(body);
-      const index = await getJSON(env, 'index.json') || {};
-      const folder = index[String(appid)];
-      const manifest = folder ? await getJSON(env, `${folder}/manifest.json`) : null;
-      if (!Array.isArray(manifest?.images) || !manifest.images.includes('SpriteSheet_Screenshots.png'))
-        throw new Error(`Cannot draft ${appid}: screenshot export is incomplete. Repair media first.`);
-      const sprite = await env.MEDIA.head(`${folder}/SpriteSheet_Screenshots.png`);
-      if (!sprite || sprite.size <= 0)
-        throw new Error(`Cannot draft ${appid}: sprite sheet is missing or empty. Repair media first.`);
-      const [moved] = await sql(env, [[ACCEPT_SQL, appid]]);
-      if (!moved.length) throw new Error(`Cannot accept ${appid}: only games triaged as pass with an email can be accepted.`);
+      const [moved] = await sql(env, [[TRIAGE_PASS_SQL, appid]]);
+      if (!moved.length) throw new Refused(`Cannot pass ${appid}: it is no longer Pending.`);
+      break;
+    }
+    case "pass": case "keep": case "flag": { // Flagged ✅ Pass / Passed 🚩 Flag
+      const appid = oneId(body);
+      const target = body.action === 'flag' ? 'flag' : 'pass';
+      const { changed } = await setDecision(env, [appid], target, sql);
+      if (!changed.length) throw new Refused(`Cannot ${target} ${appid}: it is not a ${target === 'pass' ? 'flagged' : 'passed'} Triaged game.`);
+      break;
+    }
+    case "accept": { // Passed ✅ -> Mail_status 'Accepted'
+      const appid = oneId(body);
+      try { await acceptOne(env, appid, sql, getJSON); }
+      catch (error) { throw error.refused ? new Refused(`Cannot accept ${appid}: ${error.message}.`) : error; }
       break;
     }
     case "reject": { // ❌ anywhere -> delete both tables + purge media
@@ -206,12 +231,6 @@ async function act(env, body) {
     case "approve_all": {
       const appids = manyIds(body);
       await sql(env, [["UPDATE scrape_tracker SET Mail_status='Scheduled' WHERE appid IN (SELECT value FROM json_each(?)) AND Mail_status='Drafted' AND scrape_status IN ('seeded','scraped')", JSON.stringify(appids)]]);
-      break;
-    }
-    case "keep": { // Triage: human Keep turns the flag into pass (normal queue)
-      const appid = oneId(body);
-      const [kept] = await sql(env, [keepStmt(appid)]);
-      if (!kept.length) throw new Error(`Cannot keep ${appid}: it is not a flagged Triaged game.`);
       break;
     }
     case "reject_irrelevant": { // Triage ❌: full delete (drops the recommendation with the row)
@@ -259,7 +278,7 @@ const json = (obj, status = 200) =>
   });
 
 export {
-  approveStmt, keepStmt, APPROVAL_SQL, NOMAIL_SQL, ACCEPT_SQL,
+  approveStmt,
   sql, updateJSON,
 };
 
@@ -322,13 +341,16 @@ export default {
         }
         response ||= json({ error: "not found" }, 404);
       } catch (e) {
-        console.error(JSON.stringify({ event: 'api_failed', path, message: String(e.message || e) }));
-        response = json({ error: String((e && e.message) || e) }, 500);
+        if (e?.refused) response = json({ error: e.message, refused: true }, 409);
+        else {
+          console.error(JSON.stringify({ event: 'api_failed', path, message: String(e.message || e) }));
+          response = json({ error: String((e && e.message) || e) }, 500);
+        }
       }
       return response;
     }
 
-    // "/" and static files are served by Workers Assets before this handler runs.
+    // "/" (the page) is served by entry.js before this handler runs.
     return new Response("not found", { status: 404 });
   },
 };

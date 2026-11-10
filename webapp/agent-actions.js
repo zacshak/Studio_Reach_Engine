@@ -1,4 +1,4 @@
-import { KEEP_SQL } from './triage.js';
+import { setDecision } from './triage.js';
 // Backend for the MCP workflow tools. Every write uses the same guarded SQL as the
 // dashboard so an agent cannot move a row from a state the dashboard would refuse.
 
@@ -37,24 +37,40 @@ export async function queues(env, sql) {
   return out;
 }
 
-// Triaged -> Accepted for a batch. Same media checks as the dashboard Accept; only
-// games triaged as pass that have an email can move (a flagged game must be kept).
+// A request the server refuses on purpose (wrong state, no email): HTTP 409, not retried.
+export class Refused extends Error {
+  constructor(message) { super(message); this.refused = true; }
+}
+
+// Triaged -> Accepted for one game: only games triaged as pass that have an email and
+// a stored sprite sheet. Each refusal names its reason.
+export async function acceptOne(env, appid, sql, getJSON, index) {
+  const [rows] = await sql(env, [["SELECT Mail_status, triage_decision, scrape_status FROM scrape_tracker WHERE appid=?", appid]]);
+  if (!rows.length) throw new Refused('game no longer exists');
+  const [status, decision, scrape] = rows[0];
+  if (status === 'Pending') throw new Refused('not triaged yet');
+  if (status !== 'Triaged') throw new Refused(`already ${status}`);
+  if (decision !== 'pass') throw new Refused('flagged in triage; Pass it first');
+  if (!['seeded', 'scraped'].includes(scrape)) throw new Refused('has no email');
+  const folder = (index || await getJSON(env, 'index.json') || {})[String(appid)];
+  const manifest = folder ? await getJSON(env, `${folder}/manifest.json`) : null;
+  if (!Array.isArray(manifest?.images) || !manifest.images.includes('SpriteSheet_Screenshots.png'))
+    throw new Refused('screenshot export is incomplete; repair media first');
+  const sprite = await env.MEDIA.head(`${folder}/SpriteSheet_Screenshots.png`);
+  if (!sprite || sprite.size <= 0) throw new Refused('sprite sheet is missing or empty; repair media first');
+  const [changed] = await sql(env, [[ACCEPT_SQL, appid]]);
+  if (!changed.length) throw new Refused('changed state while accepting; refresh and retry');
+}
+export const ACCEPT_SQL = "UPDATE scrape_tracker SET Mail_status='Accepted' WHERE appid=? AND Mail_status='Triaged' AND triage_decision='pass' AND scrape_status IN ('seeded','scraped') RETURNING appid";
+
+// Triaged -> Accepted for a batch (dashboard Accept All and MCP accept_games).
 export async function acceptMany(env, body, sql, getJSON) {
   const appids = batchIds(body);
   const index = await getJSON(env, 'index.json') || {};
   const results = [];
   for (const appid of appids) {
-    try {
-      const folder = index[String(appid)];
-      const manifest = folder ? await getJSON(env, `${folder}/manifest.json`) : null;
-      if (!Array.isArray(manifest?.images) || !manifest.images.includes('SpriteSheet_Screenshots.png'))
-        throw new Error('screenshot export is incomplete');
-      const sprite = await env.MEDIA.head(`${folder}/SpriteSheet_Screenshots.png`);
-      if (!sprite || sprite.size <= 0) throw new Error('sprite sheet is missing or empty');
-      const [changed] = await sql(env, [["UPDATE scrape_tracker SET Mail_status='Accepted' WHERE appid=? AND Mail_status='Triaged' AND triage_decision='pass' AND scrape_status IN ('seeded','scraped') RETURNING appid", appid]]);
-      results.push(changed.length ? { appid, ok: true }
-        : { appid, ok: false, error: 'not Triaged as pass with an email (untriaged, flagged, no email or already accepted)' });
-    } catch (error) { results.push({ appid, ok: false, error: error.message }); }
+    try { await acceptOne(env, appid, sql, getJSON, index); results.push({ appid, ok: true }); }
+    catch (error) { results.push({ appid, ok: false, error: error.message }); }
   }
   return { accepted: results.filter(r => r.ok).map(r => r.appid), failed: results.filter(r => !r.ok) };
 }
@@ -156,10 +172,8 @@ export async function workflowRuns(env, body) {
     updated_at: run.updated_at, url: run.html_url })) };
 }
 
-// Triage Keep for a batch (same SQL as the dashboard Keep): flag -> pass.
+// Triage Keep for a batch (same as the dashboard Pass): flag -> pass.
 export async function keepMany(env, body, sql) {
-  const appids = batchIds(body);
-  const [rows] = await sql(env, [[`${KEEP_SQL} AND appid IN (SELECT value FROM json_each(?)) RETURNING appid`, JSON.stringify(appids)]]);
-  const kept = new Set(rows.map(r => Number(r[0])));
-  return { kept: appids.filter(a => kept.has(a)), not_flagged: appids.filter(a => !kept.has(a)) };
+  const { changed, unchanged } = await setDecision(env, batchIds(body), 'pass', sql);
+  return { kept: changed, not_flagged: unchanged };
 }

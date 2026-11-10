@@ -12,12 +12,13 @@
 // Static page (public/) is served by Workers Assets; /api/* and /media/* hit worker.js.
 {
   "name": "sre-review",
-  "main": "worker.js",
+  "main": "entry.js",
   "workers_dev": true,
   "routes": [{ "pattern": "sre-review.zacgamedev.com", "custom_domain": true }],
   "compatibility_date": "2026-06-01",
   "triggers": { "crons": ["* * * * *"] },
-  "assets": { "directory": "./public" },
+  // The page is bundled as a Text module (served by entry.js), not uploaded as an asset.
+  "rules": [{ "type": "Text", "globs": ["**/*.html"], "fallthrough": true }],
   "r2_buckets": [
     { "binding": "MEDIA", "bucket_name": "sre-media" }
   ],
