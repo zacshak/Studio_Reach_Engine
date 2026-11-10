@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from contextlib import closing
 from email.errors import HeaderParseError
 from email.headerregistry import Address
@@ -64,10 +65,13 @@ STATUSES = ("pending", "seeded", "scraped", "no_email", "invalid", "failed")
 # claim state and is intentionally not exposed as a user-facing status.
 # Pending = not triaged yet; Triaged = triage decided pass or flag (triage_decision
 # says which); Accepted = approved for outreach, waiting for a draft.
-MAIL_STATUSES = ("Pending", "Triaged", "Invalid", "Accepted", "Drafted", "Scheduled", "Sent", "Replied")
+MAIL_STATUSES = ("Pending", "Triaged", "Invalid", "Verifying", "Accepted", "Drafted", "Scheduled",
+                 "Sent", "Replied")
 INTERNAL_MAIL_STATUSES = ("Sending",)
+# Accept moves Triaged -> Verifying; the verify job (Mail_Sender/verify_accepted.py) checks
+# the email and media and moves it on to Accepted, or back to Triaged with email_issue set.
 MAIL_TRANSITIONS = {
-    "Accepted": "Triaged",
+    "Verifying": "Triaged",
     "Drafted": "Accepted",
     "Scheduled": "Drafted",
     "Replied": "Sent",
@@ -123,6 +127,20 @@ TRIAGE_COLUMNS = (
     ("triage_criteria_id", "INTEGER"),
     ("triaged_at", "TEXT"),
 )
+# Bounce scanning (start of every send run): only bounces received after `since` are
+# processed, and each bounce message is handled once.
+_BOUNCE_STATE_SCHEMA = """(
+    id     INTEGER PRIMARY KEY CHECK (id = 1),
+    since  TEXT NOT NULL
+)"""
+_BOUNCE_LOG_SCHEMA = """(
+    message_id  TEXT PRIMARY KEY,
+    recipient   TEXT,
+    appids      TEXT,
+    outcome     TEXT NOT NULL,
+    detail      TEXT,
+    seen_at     TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+)"""
 _EMAIL_VERIFICATION_CACHE_SCHEMA = """(
     email        TEXT PRIMARY KEY,
     result_json  TEXT NOT NULL,
@@ -412,6 +430,10 @@ def init_tracker():
             if name not in cols:
                 conn.execute(f"ALTER TABLE scrape_tracker ADD COLUMN {name} {decl}")
         conn.execute(f"CREATE TABLE IF NOT EXISTS triage_criteria {_TRIAGE_CRITERIA_SCHEMA}")
+        if "email_issue" not in cols:  # why the last email was dropped (JSON), for the dashboard
+            conn.execute("ALTER TABLE scrape_tracker ADD COLUMN email_issue TEXT")
+        conn.execute(f"CREATE TABLE IF NOT EXISTS mail_bounce_state {_BOUNCE_STATE_SCHEMA}")
+        conn.execute(f"CREATE TABLE IF NOT EXISTS mail_bounce_log {_BOUNCE_LOG_SCHEMA}")
         conn.execute("CREATE TABLE IF NOT EXISTS email_verification_cache "
                      f"{_EMAIL_VERIFICATION_CACHE_SCHEMA}")
         conn.execute("CREATE TABLE IF NOT EXISTS mail_send_attempt "
@@ -522,6 +544,23 @@ def cache_email_verification(email, result):
         )
         conn.commit()
     return True
+
+
+def _without_known_invalid(conn, emails):
+    """Drop addresses already verified invalid (or bounced), so research cannot loop on
+    an address we know is dead. Keeps the original order."""
+    if not isinstance(emails, str):
+        return emails
+    parts = [e.strip() for e in emails.split(",") if e.strip()]
+    if not parts:
+        return emails
+    dead = set()
+    for email in parts:
+        row = conn.execute("SELECT result_json FROM email_verification_cache WHERE email=?",
+                           (_email_cache_key(email),)).fetchone()
+        if row and str((_jload(row[0]) or {}).get("result", "")).lower() == "invalid":
+            dead.add(email)
+    return ", ".join(e for e in parts if e not in dead)
 
 
 def discovery_status(raw):
@@ -668,6 +707,8 @@ def write_result(appid, *, scrape_status, emails=None, website=None):
             raise ValueError(f"lead {appid} no longer exists; discovery must seed it")
         if current[1] not in UNACCEPTED_STATUSES or current[2] not in ("pending", "failed", "no_email"):
             raise ValueError(f"stale scrape result for appid {appid}")
+        if emails is not None:
+            emails = _without_known_invalid(conn, emails)
         candidate = emails if emails is not None else (current[0] if current else None)
         if scrape_status in ("scraped", "invalid"):
             scrape_status = "scraped" if normalize_email(candidate) else (
@@ -786,8 +827,8 @@ def set_mail_status(appid, status):
                         else (MAIL_TRANSITIONS[status],))
             placeholders = ",".join("?" * len(previous))
             email_guard = (" AND scrape_status IN ('seeded','scraped')"
-                           if status in ("Accepted", "Drafted", "Scheduled") else "")
-            if status == "Accepted":  # only games triaged as pass can be accepted
+                           if status in ("Verifying", "Drafted", "Scheduled") else "")
+            if status == "Verifying":  # only games triaged as pass can be accepted
                 email_guard += " AND triage_decision='pass'"
             row = conn.execute(
                 f"UPDATE scrape_tracker SET Mail_status=? WHERE appid=? "
@@ -1009,6 +1050,119 @@ def quarantine_verified_invalid(appid, *, expected_email=None):
         ).fetchone()
         conn.commit()
     return row is not None
+
+
+def _issue(email, reason, source):
+    return json.dumps({"email": email, "reason": str(reason)[:300], "source": source,
+                       "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")},
+                      ensure_ascii=False)
+
+
+def verifying_rows():
+    """(appid, emails, scrape_status) for every game waiting in Verifying."""
+    _ensure()
+    with closing(_ro()) as conn:
+        return [(r[0], r[1] or "", r[2]) for r in conn.execute(
+            "SELECT appid, emails, scrape_status FROM scrape_tracker "
+            "WHERE Mail_status='Verifying' ORDER BY appid")]
+
+
+def finish_verification(appid, *, expected_email):
+    """Verifying -> Accepted once the email and the media both checked out."""
+    _ensure()
+    with closing(_rw()) as conn:
+        row = conn.execute(
+            "UPDATE scrape_tracker SET Mail_status='Accepted', email_issue=NULL "
+            "WHERE appid=? AND Mail_status='Verifying' AND emails=? AND triage_decision='pass' "
+            "AND scrape_status IN ('seeded','scraped') RETURNING appid",
+            (int(appid), expected_email)).fetchone()
+        conn.commit()
+    return row is not None
+
+
+def return_unverified(appid, *, expected_email, reason):
+    """Verifying -> Triaged keeping the email (e.g. the media could not be rebuilt)."""
+    _ensure()
+    with closing(_rw()) as conn:
+        row = conn.execute(
+            "UPDATE scrape_tracker SET Mail_status='Triaged', email_issue=? "
+            "WHERE appid=? AND Mail_status='Verifying' AND emails=? RETURNING appid",
+            (_issue(normalize_email(expected_email), reason, "accept"), int(appid),
+             expected_email)).fetchone()
+        conn.commit()
+    return row is not None
+
+
+def reject_email(appid, *, expected_email, reason, source, from_statuses,
+                 researched_to_invalid):
+    """Drop a dead address.
+
+    The game goes back to "no email" (scrape_status 'no_email', emails cleared, Pending or
+    Triaged by its triage decision) so a new address can be researched and accepted again.
+    With researched_to_invalid, an address that was already researched (scrape_status
+    'scraped') ends the game as Invalid instead, so it cannot loop forever.
+    Returns 'no_mail', 'invalid', or None when the row moved or its email changed.
+    """
+    statuses = tuple(from_statuses)
+    placeholders = ",".join("?" * len(statuses))
+    _ensure()
+    with closing(_rw()) as conn:
+        current = conn.execute(
+            "SELECT scrape_status FROM scrape_tracker WHERE appid=? AND emails=? "
+            f"AND Mail_status IN ({placeholders})",
+            (int(appid), expected_email, *statuses)).fetchone()
+        if current is None:
+            return None
+        issue = _issue(normalize_email(expected_email), reason, source)
+        if researched_to_invalid and current[0] == "scraped":
+            outcome, sql = "invalid", (
+                "UPDATE scrape_tracker SET scrape_status='invalid', Mail_status='Invalid', "
+                "email_issue=? ")
+        else:
+            outcome, sql = "no_mail", (
+                "UPDATE scrape_tracker SET scrape_status='no_email', emails='', "
+                f"Mail_status={UNACCEPTED_SQL}, email_issue=? ")
+        row = conn.execute(
+            sql + f"WHERE appid=? AND emails=? AND Mail_status IN ({placeholders}) RETURNING appid",
+            (issue, int(appid), expected_email, *statuses)).fetchone()
+        conn.commit()
+    return outcome if row else None
+
+
+def sent_rows():
+    """(appid, emails, scrape_status) for every Sent game; used to match bounces."""
+    _ensure()
+    with closing(_ro()) as conn:
+        return [(r[0], r[1] or "", r[2]) for r in conn.execute(
+            "SELECT appid, emails, scrape_status FROM scrape_tracker WHERE Mail_status='Sent'")]
+
+
+def bounce_since():
+    """The bounce watermark (UTC ISO). The first call sets it to now, so only bounces
+    that arrive after bounce handling was switched on are ever processed."""
+    _ensure()
+    with closing(_rw()) as conn:
+        conn.execute("INSERT INTO mail_bounce_state (id, since) VALUES "
+                     "(1, strftime('%Y-%m-%dT%H:%M:%SZ','now')) ON CONFLICT(id) DO NOTHING")
+        conn.commit()
+        return conn.execute("SELECT since FROM mail_bounce_state WHERE id=1").fetchone()[0]
+
+
+def bounce_seen(message_id):
+    _ensure()
+    with closing(_ro()) as conn:
+        return conn.execute("SELECT 1 FROM mail_bounce_log WHERE message_id=?",
+                            (message_id,)).fetchone() is not None
+
+
+def record_bounce(message_id, *, recipient, appids, outcome, detail=""):
+    _ensure()
+    with closing(_rw()) as conn:
+        conn.execute(
+            "INSERT INTO mail_bounce_log (message_id, recipient, appids, outcome, detail) "
+            "VALUES (?,?,?,?,?) ON CONFLICT(message_id) DO NOTHING",
+            (message_id, recipient, ",".join(map(str, appids)), outcome, str(detail)[:500]))
+        conn.commit()
 
 
 def reset_sending(appid, status, *, token=None):

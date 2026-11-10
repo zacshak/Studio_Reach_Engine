@@ -65,7 +65,7 @@ test('migration splits Pending, renames Writing, turns Keeps into pass and drops
   assert.equal(row(db, 9).s, 'Invalid');
   // The cleanup guard now covers the new active states.
   const guard = db.prepare("SELECT sql FROM sqlite_master WHERE name='cleanup_blocks_reactivation'").get().sql;
-  assert.match(guard, /'Triaged','Accepted'/);
+  assert.match(guard, /'Triaged','Verifying','Accepted'/);
   db.exec("INSERT INTO media_cleanup_jobs(appid, folder) VALUES (7, 'G_7')");
   assert.throws(() => db.exec("UPDATE scrape_tracker SET Mail_status='Accepted' WHERE appid=7"), /media cleanup pending/);
   // Re-running changes nothing.

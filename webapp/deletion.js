@@ -19,7 +19,7 @@ export const CLEANUP_GUARDS = [...['scrape_tracker', 'newly_added'].map(table =>
    WHEN EXISTS (SELECT 1 FROM media_cleanup_jobs WHERE appid=NEW.appid)
    BEGIN SELECT RAISE(ABORT, 'media cleanup pending for this appid'); END`),
   `CREATE TRIGGER IF NOT EXISTS cleanup_blocks_reactivation BEFORE UPDATE OF Mail_status ON scrape_tracker
-   WHEN NEW.Mail_status IN ('Pending','Triaged','Accepted','Drafted','Scheduled','Sending')
+   WHEN NEW.Mail_status IN ('Pending','Triaged','Verifying','Accepted','Drafted','Scheduled','Sending')
    AND EXISTS (SELECT 1 FROM media_cleanup_jobs WHERE appid=NEW.appid)
    BEGIN SELECT RAISE(ABORT, 'media cleanup pending for this appid'); END`];
 
@@ -94,7 +94,7 @@ export async function cleanupJobs(env, sql, updateJSON) {
     let metadataStarted = false;
     try {
       await requireOwnership();
-      const [existing] = await sql(env, [["SELECT appid FROM scrape_tracker WHERE appid=? AND Mail_status IN ('Pending','Triaged','Accepted','Drafted','Scheduled','Sending')", appid]]);
+      const [existing] = await sql(env, [["SELECT appid FROM scrape_tracker WHERE appid=? AND Mail_status IN ('Pending','Triaged','Verifying','Accepted','Drafted','Scheduled','Sending')", appid]]);
       if (existing.length) { cancelled += await finish(); continue; }
       if (folder) {
         await requireOwnership();

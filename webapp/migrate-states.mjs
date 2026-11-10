@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { sql } from './worker.js';
 import { CLEANUP_GUARDS } from './deletion.js';
 
+// Also adds email_issue and reinstalls the cleanup guard so it covers 'Verifying'.
 // Mail_status migration: Pending splits into Pending (not triaged) and Triaged (has a
 // pass/flag decision), Writing is renamed Accepted, and the human Keep ('kept' /
 // triage_kept) becomes a plain 'pass' whose reason records the override.
@@ -18,6 +19,8 @@ export const TRIAGE_COLUMNS = [
   ['triage_criteria_id', 'INTEGER'],
   ['triaged_at', 'TEXT'],
 ];
+// Verifying state: why a game's last email was dropped (JSON), shown on its card.
+export const VERIFY_COLUMNS = [['email_issue', 'TEXT']];
 export const TRIAGE_CRITERIA_SCHEMA = `CREATE TABLE IF NOT EXISTS triage_criteria (
   id INTEGER PRIMARY KEY,
   text TEXT NOT NULL UNIQUE,
@@ -30,7 +33,7 @@ export async function migrateStates(env, run = sql, { dropLegacy = false } = {})
   const columns = async () => new Set((await run(env, [['PRAGMA table_info(scrape_tracker)']]))[0].map(row => row[1]));
   let have = await columns();
   if (!have.has('appid')) throw new Error('scrape_tracker not found');
-  for (const [name, decl] of TRIAGE_COLUMNS)
+  for (const [name, decl] of [...TRIAGE_COLUMNS, ...VERIFY_COLUMNS])
     if (!have.has(name)) await run(env, [[`ALTER TABLE scrape_tracker ADD COLUMN ${name} ${decl}`]]);
   await run(env, [[TRIAGE_CRITERIA_SCHEMA]]);
 

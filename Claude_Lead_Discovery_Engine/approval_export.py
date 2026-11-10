@@ -107,13 +107,22 @@ class ApprovalExporter:
     # -- worker ----------------------------------------------------------
     def _export_one(self, appid):
         """Returns True if it staged a folder, False if skipped/failed."""
-        unavailable = None
         try:
             if _scrape_status(appid) != self.status:
                 return False                # only the chosen status gets staged
             lead = pipeline.read_lead(appid)
-            if not lead:
-                return False
+        except Exception as e:              # never let one lead kill the pool
+            self.errors.append((appid, repr(e)))
+            return False
+        if not lead:
+            return False
+        return self.export_lead(appid, lead)
+
+    def export_lead(self, appid, lead):
+        """Stage one lead folder from a newly_added-shaped dict (Steam appdetails keys).
+        Returns True when staged; failures are recorded in self.errors, never raised."""
+        unavailable = None
+        try:
             folder = os.path.join(self.base_dir, f"{_safe(lead.get('name'))}_{appid}")
             marker = os.path.join(folder, ".complete")
             unavailable = os.path.join(folder, ".media-unavailable.json")

@@ -4,7 +4,7 @@ import { setDecision } from './triage.js';
 
 const BATCH = 100;
 export const WORKFLOWS = {
-  send: 'send.yml', draft: 'draft.yml', discover: 'discover.yml',
+  send: 'send.yml', draft: 'draft.yml', discover: 'discover.yml', verify: 'verify.yml',
   hermes: 'hermes.yml', kimchi: 'kimchi.yml', epic: 'epic-discovery.yml',
 };
 
@@ -20,11 +20,12 @@ export function batchIds(body, max = BATCH) {
 
 // Every review queue as appid lists, without media indexes or recommendation text.
 export async function queues(env, sql) {
-  const [untriaged, approval, nomail, triage, accepted, drafted, scheduled, sending] = await sql(env, [
+  const [untriaged, approval, nomail, triage, verifying, accepted, drafted, scheduled, sending] = await sql(env, [
     ["SELECT appid FROM scrape_tracker WHERE Mail_status='Pending' ORDER BY appid"],
     ["SELECT appid FROM scrape_tracker WHERE Mail_status='Triaged' AND triage_decision='pass' AND scrape_status IN ('seeded','scraped') ORDER BY appid"],
     ["SELECT appid FROM scrape_tracker WHERE Mail_status='Triaged' AND triage_decision='pass' AND scrape_status IN ('pending','no_email','failed') ORDER BY appid"],
     ["SELECT appid FROM scrape_tracker WHERE Mail_status='Triaged' AND triage_decision='flag' ORDER BY appid"],
+    ["SELECT appid FROM scrape_tracker WHERE Mail_status='Verifying' ORDER BY appid"],
     ["SELECT appid FROM scrape_tracker WHERE Mail_status='Accepted' ORDER BY appid"],
     ["SELECT appid FROM scrape_tracker WHERE Mail_status='Drafted' ORDER BY appid"],
     ["SELECT appid FROM scrape_tracker WHERE Mail_status='Scheduled' ORDER BY appid"],
@@ -32,7 +33,7 @@ export async function queues(env, sql) {
   ]);
   const ids = rows => rows.map(r => Number(r[0]));
   const out = { untriaged: ids(untriaged), approval: ids(approval), nomail: ids(nomail), triage: ids(triage),
-    accepted: ids(accepted), mail_approval: ids(drafted), scheduled: ids(scheduled), sending: ids(sending) };
+    verifying: ids(verifying), accepted: ids(accepted), mail_approval: ids(drafted), scheduled: ids(scheduled), sending: ids(sending) };
   out.counts = Object.fromEntries(Object.entries(out).map(([k, v]) => [k, v.length]));
   return out;
 }
@@ -42,9 +43,11 @@ export class Refused extends Error {
   constructor(message) { super(message); this.refused = true; }
 }
 
-// Triaged -> Accepted for one game: only games triaged as pass that have an email and
-// a stored sprite sheet. Each refusal names its reason.
-export async function acceptOne(env, appid, sql, getJSON, index) {
+// Accept = Triaged -> Verifying, then verify.yml checks the email (own SMTP check, QEV
+// fallback) and the media (rebuilt from Steam if missing) and moves the game on to
+// Accepted, or back to "no email" when the address is dead. Cloudflare Workers cannot
+// open port 25, so the check runs on a GitHub runner. Each refusal names its reason.
+export async function acceptOne(env, appid, sql) {
   const [rows] = await sql(env, [["SELECT Mail_status, triage_decision, scrape_status FROM scrape_tracker WHERE appid=?", appid]]);
   if (!rows.length) throw new Refused('game no longer exists');
   const [status, decision, scrape] = rows[0];
@@ -52,27 +55,60 @@ export async function acceptOne(env, appid, sql, getJSON, index) {
   if (status !== 'Triaged') throw new Refused(`already ${status}`);
   if (decision !== 'pass') throw new Refused('flagged in triage; Pass it first');
   if (!['seeded', 'scraped'].includes(scrape)) throw new Refused('has no email');
-  const folder = (index || await getJSON(env, 'index.json') || {})[String(appid)];
-  const manifest = folder ? await getJSON(env, `${folder}/manifest.json`) : null;
-  if (!Array.isArray(manifest?.images) || !manifest.images.includes('SpriteSheet_Screenshots.png'))
-    throw new Refused('screenshot export is incomplete; repair media first');
-  const sprite = await env.MEDIA.head(`${folder}/SpriteSheet_Screenshots.png`);
-  if (!sprite || sprite.size <= 0) throw new Refused('sprite sheet is missing or empty; repair media first');
   const [changed] = await sql(env, [[ACCEPT_SQL, appid]]);
   if (!changed.length) throw new Refused('changed state while accepting; refresh and retry');
 }
-export const ACCEPT_SQL = "UPDATE scrape_tracker SET Mail_status='Accepted' WHERE appid=? AND Mail_status='Triaged' AND triage_decision='pass' AND scrape_status IN ('seeded','scraped') RETURNING appid";
+export const ACCEPT_SQL = "UPDATE scrape_tracker SET Mail_status='Verifying' WHERE appid=? AND Mail_status='Triaged' AND triage_decision='pass' AND scrape_status IN ('seeded','scraped') RETURNING appid";
 
-// Triaged -> Accepted for a batch (dashboard Accept All and MCP accept_games).
-export async function acceptMany(env, body, sql, getJSON) {
+// Start verify.yml. If GitHub refuses, the games just moved go back to Triaged so none is
+// left waiting in Verifying with no run to finish it.
+export async function startVerification(env, appids, sql, fetcher = fetch) {
+  if (!appids.length) return;
+  try {
+    await dispatchWorkflow(env, 'verify', fetcher);
+  } catch (error) {
+    await sql(env, [["UPDATE scrape_tracker SET Mail_status='Triaged' WHERE Mail_status='Verifying' AND appid IN (SELECT value FROM json_each(?))", JSON.stringify(appids)]]);
+    throw new Error(`could not start email verification (${error.message}); nothing was accepted`);
+  }
+}
+
+export async function dispatchWorkflow(env, workflow, fetcher = fetch) {
+  const file = WORKFLOWS[workflow];
+  if (!file) throw new Error(`unknown workflow ${workflow}`);
+  if (!env.GH_REPO) throw new Error("GH_REPO secret is not set");
+  if (!env.GH_PAT) throw new Error("GH_PAT secret is not set");
+  const r = await fetcher(`https://api.github.com/repos/${env.GH_REPO}/actions/workflows/${file}/dispatches`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${env.GH_PAT}`, Accept: "application/vnd.github+json", "User-Agent": "sre-review-worker" },
+    body: JSON.stringify({ ref: env.GH_REF || "master" }),
+  });
+  if (r.status !== 204) throw new Error(`github ${r.status}: ${await r.text()}`);
+}
+
+// Triaged -> Verifying for a batch (dashboard Accept All and MCP accept_games).
+export async function acceptMany(env, body, sql, fetcher = fetch) {
   const appids = batchIds(body);
-  const index = await getJSON(env, 'index.json') || {};
   const results = [];
   for (const appid of appids) {
-    try { await acceptOne(env, appid, sql, getJSON, index); results.push({ appid, ok: true }); }
+    try { await acceptOne(env, appid, sql); results.push({ appid, ok: true }); }
     catch (error) { results.push({ appid, ok: false, error: error.message }); }
   }
-  return { accepted: results.filter(r => r.ok).map(r => r.appid), failed: results.filter(r => !r.ok) };
+  const accepted = results.filter(r => r.ok).map(r => r.appid);
+  await startVerification(env, accepted, sql, fetcher);
+  return { accepted, verifying: accepted, failed: results.filter(r => !r.ok) };
+}
+
+// Where verification has got to, for the page's poll after Accept.
+export async function verifyStatus(env, body, sql) {
+  const appids = batchIds(body);
+  const [rows] = await sql(env, [["SELECT appid, Mail_status, email_issue FROM scrape_tracker WHERE appid IN (SELECT value FROM json_each(?)) ORDER BY appid", JSON.stringify(appids)]]);
+  return { games: rows.map(([appid, status, issue]) => ({ appid: Number(appid), mail_status: status ?? null, issue: parseIssue(issue) })) };
+}
+
+export function parseIssue(raw) {
+  if (raw == null || raw === '') return null;
+  try { const v = JSON.parse(raw); return v && typeof v === 'object' ? v : { reason: String(raw) }; }
+  catch { return { reason: String(raw) }; }
 }
 
 // Drafted -> Scheduled; returns the rows that actually moved.
@@ -124,7 +160,12 @@ export async function saveEmail(env, body, sql) {
     const list = Array.isArray(body.emails) ? body.emails.map(e => String(e).trim()).filter(Boolean) : [];
     if (!list.length || list.length > 5) throw new Error('scraped needs 1-5 emails, best first');
     for (const email of list) if (email.length > 254 || !EMAIL.test(email)) throw new Error(`invalid email: ${email}`);
-    emails = list.join(', ');
+    // Never save an address already verified invalid or bounced (same rule as pipeline.py).
+    const [dead] = await sql(env, [["SELECT email FROM email_verification_cache WHERE email IN (SELECT lower(trim(value)) FROM json_each(?)) AND json_extract(result_json,'$.result')='invalid'", JSON.stringify(list)]]);
+    const deadSet = new Set(dead.map(r => String(r[0])));
+    const live = list.filter(e => !deadSet.has(e.trim().toLowerCase()));
+    if (!live.length) throw new Error(`already verified invalid: ${list.join(', ')}`);
+    emails = live.join(', ');
   } else if (body.emails?.length) throw new Error('emails are only accepted with status scraped');
   let website = null;
   if (body.website != null && body.website !== '') {

@@ -5,6 +5,7 @@
 //
 //   GET  /api/state   -> Home counts + all review views (1 DB round-trip + 1 R2 get)
 //   POST /api/act     -> {action, ...} — triage_pass / pass / flag / accept / accept_many /
+//                        verify_status /
 //                        reject / reject_all / approve / approve_all / trigger
 //                        (409 + {refused: true} when the game's state does not allow it)
 //   POST /api/triage/save -> {criteria, results} AI recommendations (MCP submit_triage)
@@ -22,7 +23,7 @@ import { triageSnapshot, saveTriage, setDecision, TRIAGE_SQL, TRIAGE_PASS_SQL } 
 import { rejectRows, cleanupJobs } from './deletion.js';
 import { draftRequest } from './drafting.js';
 import { queueSocialsStatement, saveSocials, readSocialRequestBody } from './socials.js';
-import { WORKFLOWS, queues, keepMany, acceptOne, acceptMany, approveMany, returnToAccepted, saveEmail, triageDetails, workflowRuns, Refused } from './agent-actions.js';
+import { queues, keepMany, acceptOne, acceptMany, startVerification, dispatchWorkflow, verifyStatus, parseIssue, approveMany, returnToAccepted, saveEmail, triageDetails, workflowRuns, Refused } from './agent-actions.js';
 
 // ---- Turso over HTTP (Hrana v2 pipeline; one fetch = N statements, no client lib) ----
 const hranaStmt = ([q, ...args]) => ({
@@ -111,11 +112,14 @@ export const VIEW_SQL = {
   flagged: "SELECT appid FROM scrape_tracker WHERE Mail_status='Triaged' AND triage_decision='flag' ORDER BY appid",
   // games not yet accepted that have no usable email (badged on their cards)
   noMail: `SELECT appid FROM scrape_tracker WHERE Mail_status IN ('Pending','Triaged') AND NOT (${HAS_EMAIL}) ORDER BY appid`,
+  // why a game's last email was dropped (failed verification or bounce), for its badge
+  issues: "SELECT appid, email_issue, game_name FROM scrape_tracker WHERE Mail_status IN ('Pending','Triaged') AND email_issue IS NOT NULL ORDER BY appid",
+  verifying: "SELECT appid FROM scrape_tracker WHERE Mail_status='Verifying' ORDER BY appid",
   counts: `SELECT Mail_status, coalesce(triage_decision,''), ${HAS_EMAIL}, count(*) FROM scrape_tracker GROUP BY 1, 2, 3`,
 };
 
 export function homeCounts(rows) {
-  const c = { pending: 0, triaged: 0, passed: 0, flagged: 0, no_mail: 0, accepted: 0, drafted: 0,
+  const c = { pending: 0, triaged: 0, passed: 0, flagged: 0, no_mail: 0, verifying: 0, accepted: 0, drafted: 0,
     scheduled: 0, sending: 0, sent: 0, replied: 0, invalid: 0 };
   for (const [status, decision, hasEmail, n] of rows) {
     const count = Number(n) || 0;
@@ -139,9 +143,11 @@ async function state(env) {
       ["SELECT appid, emails FROM scrape_tracker WHERE Mail_status='Drafted' ORDER BY appid"],
       [VIEW_SQL.counts],
       [TRIAGE_SQL],
+      [VIEW_SQL.issues],
+      [VIEW_SQL.verifying],
     ]),
   ]);
-  const [pending, passed, flagged, noMail, drafted, counts, reviews] = db;
+  const [pending, passed, flagged, noMail, drafted, counts, reviews, issues, verifying] = db;
   const ids = rows => rows.map(r => Number(r[0]));
   const home = homeCounts(counts);
   return {
@@ -151,6 +157,8 @@ async function state(env) {
     passed: ids(passed),
     flagged: ids(flagged),
     noMail: ids(noMail),
+    verifying: ids(verifying),
+    issues: Object.fromEntries(issues.map(([appid, raw, game]) => [Number(appid), { ...parseIssue(raw), game: game ?? null }])),
     mail: drafted.map((r) => ({ appid: Number(r[0]), emails: r[1] || "" })),
     triageReviews: triageSnapshot(reviews).triageReviews,
     scheduled: home.scheduled > 0,
@@ -205,12 +213,14 @@ async function act(env, body) {
       if (!changed.length) throw new Refused(`Cannot ${target} ${appid}: it is not a ${target === 'pass' ? 'flagged' : 'passed'} Triaged game.`);
       break;
     }
-    case "accept": { // Passed ✅ -> Mail_status 'Accepted'
+    case "accept": { // Passed ✅ -> 'Verifying'; verify.yml moves it to Accepted or back
       const appid = oneId(body);
-      try { await acceptOne(env, appid, sql, getJSON); }
+      try { await acceptOne(env, appid, sql); }
       catch (error) { throw error.refused ? new Refused(`Cannot accept ${appid}: ${error.message}.`) : error; }
-      break;
+      await startVerification(env, [appid], sql);
+      return { ok: true, verifying: [appid] };
     }
+    case "verify_status": return verifyStatus(env, body, sql);
     case "reject": { // ❌ anywhere -> delete both tables + purge media
       const appid = oneId(body);
       return rejectGames(env, [appid]);
@@ -225,7 +235,7 @@ async function act(env, body) {
       break;
     }
     case "keep_many": return keepMany(env, body, sql);
-    case "accept_many": return acceptMany(env, body, sql, getJSON);
+    case "accept_many": return acceptMany(env, body, sql);
     case "approve_many": return approveMany(env, body, sql);
     case "return_to_accepted": return returnToAccepted(env, body, sql, getJSON);
     case "approve_all": {
@@ -241,28 +251,12 @@ async function act(env, body) {
       const appids = manyIds(body);
       return rejectGames(env, appids);
     }
-    case "trigger": { // fire a GHA workflow (send / draft) on master
-      const file = WORKFLOWS[body.workflow];
-      if (!file) throw new Error(`unknown workflow ${body.workflow}`);
-      if (!env.GH_REPO) throw new Error("GH_REPO secret is not set");
-      if (!env.GH_PAT) throw new Error("GH_PAT secret is not set");
+    case "trigger": { // fire a GHA workflow (send / draft / verify ...) on master
       if (body.workflow === 'send') {
         const [queued] = await sql(env, [queueSocialsStatement()]);
         console.log(JSON.stringify({event:'social_requests_queued',count:queued.length}));
       }
-      const r = await fetch(
-        `https://api.github.com/repos/${env.GH_REPO}/actions/workflows/${file}/dispatches`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${env.GH_PAT}`,
-            Accept: "application/vnd.github+json",
-            "User-Agent": "sre-review-worker",
-          },
-          body: JSON.stringify({ ref: env.GH_REF || "master" }),
-        },
-      );
-      if (r.status !== 204) throw new Error(`github ${r.status}: ${await r.text()}`);
+      await dispatchWorkflow(env, body.workflow);
       break;
     }
     default:

@@ -28,7 +28,7 @@ import discovery_recovery  # noqa: E402
 
 BASES = [os.path.join(ROOT, "Leads_Reviewer", "Studios_To_Review", "Approval_Pending_Games"),
          os.path.join(ROOT, "Leads_Reviewer", "Studios_To_Review", "No_Mail_Games")]
-ACTIVE_MAIL = {"Pending", "Triaged", "Accepted", "Drafted", "Scheduled", "Sending"}
+ACTIVE_MAIL = {"Pending", "Triaged", "Verifying", "Accepted", "Drafted", "Scheduled", "Sending"}
 
 
 def _card(data, appid):
@@ -88,7 +88,7 @@ def _queue_cleanup(candidates):
             row = conn.execute(
                 "INSERT INTO media_cleanup_jobs(appid,folder) SELECT ?,? "
                 "WHERE NOT EXISTS (SELECT 1 FROM scrape_tracker WHERE appid=? "
-                "AND Mail_status IN ('Pending','Triaged','Accepted','Drafted','Scheduled','Sending')) "
+                "AND Mail_status IN ('Pending','Triaged','Verifying','Accepted','Drafted','Scheduled','Sending')) "
                 "ON CONFLICT(appid) DO NOTHING RETURNING appid",
                 (appid, folder, appid)).fetchone()
             queued += row is not None

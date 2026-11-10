@@ -31,6 +31,7 @@ class DeliveryTest(unittest.TestCase):
         mailer.pipeline.init_tracker()
         self.send = enter(patch.object(mailer, "_send"))
         self.cleanup = enter(patch.object(mailer, "_delete_media"))
+        self.bounce_scan = enter(patch.object(mailer, "_scan_bounces"))  # tested in test_bounces.py
         self.drafts = enter(patch.object(mailer, "_load_mail", return_value=("Subject", "Body", "draft.txt")))
         self.verifier = Mock()
         self.verifier.verify.return_value = {"result": "valid"}

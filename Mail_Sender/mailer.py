@@ -338,6 +338,18 @@ def _summary(stats, unprocessed, error):
             print(f"WARN: could not write the Actions summary: {exc}")
 
 
+def _scan_bounces(user, password):
+    """Act on new bounce notices before sending; a failure here never blocks sending."""
+    try:
+        import bounces
+        stats = bounces.process(user, password)
+        print("bounces: " + json.dumps(stats))
+    except Exception as exc:
+        print(f"WARN: bounce scan failed: {exc}")
+        with suppress(Exception):
+            pipeline.reconnect()
+
+
 def main(dry_run=False, limit=None):
     _load_env()
     user = os.environ.get("GMAIL_USER", "")
@@ -355,6 +367,8 @@ def main(dry_run=False, limit=None):
     deadline = time.monotonic() + budget if budget else float("inf")
     verifier = None
     uncertain = 0 if dry_run else _reconcile_sending(user, password)
+    if not dry_run:
+        _scan_bounces(user, password)
 
     scheduled = pipeline.mail_status_emails("Scheduled")
     valid = []
@@ -444,11 +458,19 @@ def main(dry_run=False, limit=None):
                 stats["unknown"] += 1
                 continue
             if verification == "invalid":
-                if pipeline.quarantine_verified_invalid(appid, expected_email=raw):
+                # Same rule as bounces: a Steam-provided address goes back to "no email" for
+                # research (media kept); an already-researched one ends the game as Invalid.
+                outcome = pipeline.reject_email(
+                    appid, expected_email=raw, reason=result.get("reason", "invalid"),
+                    source="send", from_statuses=("Scheduled",), researched_to_invalid=True)
+                if outcome == "invalid":
                     try:
                         _delete_media(appid)
                     except Exception as exc:
                         print(f"WARN {appid}: invalid, but media cleanup failed: {exc}")
+                    stats["invalid"] += 1
+                elif outcome == "no_mail":
+                    print(f"NO MAIL {appid}: {to} is invalid -> back to no-email for research")
                     stats["invalid"] += 1
                 else:
                     stats["skipped"] += 1

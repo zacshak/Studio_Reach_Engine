@@ -1,0 +1,39 @@
+name: Verify accepted games
+
+# Fired by the dashboard's Accept / Accept all. Each 'Verifying' game gets its email checked
+# (own SMTP check, QEV fallback) and its R2 media checked (rebuilt from Steam if it was
+# purged after an earlier send). Then it moves to Accepted, or back to "no email" when the
+# address is dead. One run handles every Verifying game, so queued runs collapse safely.
+on:
+  workflow_dispatch: {}
+
+concurrency:
+  group: verify
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install --quiet libsql==0.1.11 boto3==1.43.22 dnspython==2.7.0 Pillow==12.2.0
+      - name: Verify accepted games
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          QEV_API_KEY: ${{ secrets.QEV_API_KEY }}
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          R2_PUBLIC_BASE: ${{ secrets.R2_PUBLIC_BASE }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: python -u SRE.py --verify-accepted
