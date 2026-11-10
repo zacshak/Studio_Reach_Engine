@@ -155,6 +155,11 @@ class SMTPVerifierTest(unittest.TestCase):
         result = verifier(server).verify("hello@studio.dev")
         self.assertEqual((result["result"], result["mx"]), ("valid", "mx2.studio.dev"))
 
+    def test_unexpected_client_error_is_unknown_not_a_crash(self):
+        server = Server({"hello@studio.dev"})
+        server.mail_reply = None  # unpacking None raises TypeError inside the session
+        self.assertEqual(verifier(server).verify("hello@studio.dev")["result"], "unknown")
+
     def test_all_mx_down_is_unknown(self):
         server = Server(down={"mx1.studio.dev", "mx2.studio.dev"})
         self.assertEqual(verifier(server).verify("hello@studio.dev")["result"], "unknown")

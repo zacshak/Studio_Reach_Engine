@@ -58,7 +58,7 @@ All local/manual commands still exist through the one launcher: `python SRE.py <
   rejection returns the row to `Drafted`; a missing draft returns it to `Accepted`;
   a recipient that turns out to be missing returns an unsent row to `Triaged` (or
   `Pending` if it was never triaged);
-  QEV `unknown` leaves it `Scheduled`. Reject deletes the row; it is not a status.
+  an inconclusive verification (`unknown`) leaves it `Scheduled`. Reject deletes the row; it is not a status.
 - **Triage** (in `scrape_tracker`): `triage_decision` is `pass` / `flag` from MCP
   `submit_triage`; `triage_reason` is the reviewer's reason; `triage_criteria_id` points
   at the rubric text in the `triage_criteria` table; `triaged_at` is the UTC timestamp.
@@ -158,7 +158,8 @@ Hermes socials writer alongside MCP ownership.
 **📨 Send scheduled mails** button (Home or Mail view) → fires `send.yml`. `Scheduled` only
 means *waiting*; nothing is sent until this button (or a manual `--send-mails`) runs.
 The run works through the `Scheduled` rows **one at a time**, paced 2–4 min apart. For
-each row it reads the draft from the R2 manifest, verifies the address with QEV, then
+each row it reads the draft from the R2 manifest, verifies the address (see *Email
+verification* below), then
 claims that single row `Scheduled → Sending` just before SMTP submission and flips it
 `Sending → Sent` after. Rows not yet reached stay `Scheduled`, so at most one row is
 `Sending` at a time. It preserves `Require_Socials` and `Socials_Data` and purges the
@@ -181,8 +182,23 @@ solely because an uncertain message is absent from search results.
 The Actions summary reports sent, deferred, unknown, invalid, uncertain, and unprocessed
 counts. There is no daily email-count cap. The job stops between mails after 330 minutes
 to avoid the runner's 350-minute hard timeout. Unprocessed rows stay `Scheduled`.
-QEV unknown/API failure never permits sending. Repeated addresses reuse verification
-within the batch, and only definitive valid/invalid results are persisted.
+An `unknown` verification or a verifier failure never permits sending. Repeated addresses
+reuse verification within the batch, and only definitive valid/invalid results are persisted
+(`email_verification_cache`).
+
+**Email verification** (`Email_Verifier/`, run per row just before SMTP submission):
+1. Own SMTP check (`smtp_check.py`, free): syntax → DNS MX (lowest preference first;
+   A-record fallback; no domain / null MX → `invalid`) → connect to the MX on port 25,
+   `MAIL FROM` our sender, `RCPT TO` the address, then `RCPT TO` a random address at the
+   same domain. No message is ever sent. `valid` = the address is accepted and the random
+   one is refused. `invalid` = only an explicit "no such mailbox" answer (5.1.x / 5.2.1 or
+   that wording). Catch-all domains, policy/IP blocks (5.7.x), greylisting (4xx) and
+   timeouts are `unknown`. Role addresses (`info@`, `contact@`) are not penalised.
+2. Only `unknown` results go to QuickEmailVerification (`QEV_API_KEY`, 100 free credits a
+   day). If QEV is not set, out of credits or failing, the row stays `Scheduled` and the
+   run moves on to the next row.
+Port 25 must be reachable: it is on GitHub-hosted runners, usually not on home networks.
+`python Email_Verifier/verify_single.py ADDRESS [--smtp-only | --qev]` checks one address.
 `Sent` means Gmail accepted the message, not proof of final delivery to the recipient.
 The metadata table is additive and does not change dashboard columns. A code rollback
 can leave that table in place. Preserve unresolved `Sending` rows and their metadata
@@ -229,7 +245,7 @@ No redeploy needed — the next draft run reads the new templates.
 `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `R2_PUBLIC_BASE`, `R2_BUCKET`, `R2_ACCOUNT_ID`,
 `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `TRIAGE_BASE_URL`, `TRIAGE_MODEL`,
 `TRIAGE_API_KEY` (Hermes; also a local drafting fallback), `MAIL_WRITER_BASE_URL`, `MAIL_WRITER_MODEL`,
-`MAIL_WRITER_API_KEY` (drafting), `QEV_API_KEY` (send-time email verification),
+`MAIL_WRITER_API_KEY` (drafting), `QEV_API_KEY` (optional fallback for addresses the SMTP check cannot settle),
 `GMAIL_USER`, `GMAIL_APP_PASSWORD`, `KIMCHI_API_KEY`, and for Epic
 `EPIC_TURSO_DATABASE_URL`, `EPIC_TURSO_AUTH_TOKEN`.
 

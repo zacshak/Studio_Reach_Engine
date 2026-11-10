@@ -124,7 +124,9 @@ class SMTPVerifier:
 
     # ---- SMTP --------------------------------------------------------------------------
     def _session(self, host: str, rcpts: list[str]) -> list[_Probe] | _Probe:
-        """One SMTP conversation; RCPT each address (RSET between). Never sends DATA."""
+        """One SMTP conversation; RCPT each address (RSET between). Never sends DATA.
+
+        No STARTTLS: nothing secret is exchanged and no message is sent."""
         smtp = self._smtp()
         try:
             code, msg = smtp.connect(host, 25)
@@ -135,12 +137,6 @@ class SMTPVerifier:
                 code, msg = smtp.helo(self.helo)
                 if not 200 <= code < 300:
                     return _Probe(None, f"helo {code}")
-            if smtp.has_extn("starttls"):
-                try:
-                    smtp.starttls()
-                    smtp.ehlo(self.helo)
-                except (smtplib.SMTPException, OSError):
-                    pass  # plain-text probe is fine; nothing secret is exchanged
             replies = []
             for i, rcpt in enumerate(rcpts):
                 if i:
@@ -153,7 +149,7 @@ class SMTPVerifier:
                 if not 200 <= code < 300:
                     break  # the real address was refused: catch-all probe is pointless
             return replies
-        except (smtplib.SMTPServerDisconnected, smtplib.SMTPException, OSError) as exc:
+        except Exception as exc:  # any failure is inconclusive, never a verdict
             return _Probe(None, f"{type(exc).__name__}: {exc}")
         finally:
             try:
