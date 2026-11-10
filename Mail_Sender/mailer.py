@@ -48,7 +48,7 @@ sys.path.insert(0, os.path.join(ROOT, "Leads_Reviewer"))
 sys.path.insert(0, ROOT)
 import pipeline      # noqa: E402
 import media_store   # noqa: E402  (cloud send: draft from R2 manifest, media purge in R2)
-from Email_Verifier import QEVError, QuickEmailVerification  # noqa: E402
+from Email_Verifier import EmailVerifier, QEVError  # noqa: E402
 
 MEDIA_DIR = os.path.join(ROOT, "Leads_Reviewer", "Studios_To_Review", "Approval_Pending_Games")
 # Cloud (GHA send job): no local media folders — drafts + media live in R2. Same test
@@ -422,7 +422,7 @@ def main(dry_run=False, limit=None):
             if result is None:
                 result = pipeline.get_email_verification(to)
                 if result is None:
-                    verifier = verifier or QuickEmailVerification.from_env(timeout=60)
+                    verifier = verifier or EmailVerifier.from_env()
                     result = verifier.verify(to)
                     try:
                         pipeline.cache_email_verification(to, result)
@@ -430,7 +430,7 @@ def main(dry_run=False, limit=None):
                         print(f"WARN {appid}: verification cache write failed: {exc}")
                         pipeline.reconnect()
                 else:
-                    print(f"  CACHED {appid} -> {to}: QEV result reused")
+                    print(f"  CACHED {appid} -> {to}: earlier verification reused")
                 verified[key] = result
             verification = str(result.get("result", "")).lower() if isinstance(result, dict) else ""
             if verification not in ("valid", "invalid", "unknown"):

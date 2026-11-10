@@ -2,24 +2,21 @@ name: port25 probe (temporary)
 on:
   push:
     branches: [claude/gifted-planck-qayhpu]
-    paths: [.github/workflows/port25-probe.yml]
+    paths: [.github/workflows/port25-probe.yml, .github/probe/**]
 permissions:
   contents: read
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 20
     steps:
-      - run: |
-          for h in gmail-smtp-in.l.google.com mx1.zoho.com aspmx.l.google.com; do
-            timeout 10 bash -c "</dev/tcp/$h/25" && echo "$h:25 OPEN" || echo "$h:25 BLOCKED"
-            timeout 10 bash -c "</dev/tcp/$h/587" 2>/dev/null && echo "$h:587 OPEN" || echo "$h:587 closed"
-          done
-          python3 - <<'PY'
-          import smtplib, socket
-          try:
-              s = smtplib.SMTP("gmail-smtp-in.l.google.com", 25, timeout=15)
-              print("banner ok", s.ehlo()[0]); s.quit()
-          except Exception as e:
-              print("smtp fail", type(e).__name__, e)
-          PY
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet libsql==0.1.11 dnspython==2.7.0
+      - env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: python -u .github/probe/compare.py
