@@ -67,6 +67,29 @@ class VerifyAcceptedTest(unittest.TestCase):
         self.assertEqual(calls["finish"], [1])
 
 
+class DeadlineTest(unittest.TestCase):
+    def test_hanging_check_is_cut_off_as_unknown_and_the_game_still_accepted(self):
+        import time as _time
+        verifier = Mock()
+        verifier.verify.side_effect = lambda e: _time.sleep(5)
+        calls = []
+        with patch.object(va, "VERIFY_SECONDS", 1), \
+                patch.object(va.pipeline, "verifying_rows", return_value=[(1, "slow@x.test", "seeded")]), \
+                patch.object(va.pipeline, "get_email_verification", return_value=None), \
+                patch.object(va.pipeline, "cache_email_verification") as cache, \
+                patch.object(va.pipeline, "finish_verification",
+                             side_effect=lambda a, **kw: calls.append(a) or True), \
+                patch.object(va.EmailVerifier, "from_env", return_value=verifier), \
+                patch.object(va.media_store, "write_enabled", return_value=True), \
+                patch.object(va.media_store, "_client", return_value=object()), \
+                patch.object(va, "ensure_media", return_value="ok"):
+            started = _time.monotonic()
+            self.assertEqual(va.main(), 0)
+            self.assertLess(_time.monotonic() - started, 4)
+        self.assertEqual(calls, [1])
+        cache.assert_not_called()  # an inconclusive timeout is never cached
+
+
 class MediaReadyTest(unittest.TestCase):
     def test_requires_index_manifest_and_nonempty_sprite(self):
         client = Mock()

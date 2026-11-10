@@ -13,10 +13,13 @@ Needs outbound port 25 for the SMTP check (open on GitHub-hosted runners).
 
     python SRE.py --verify-accepted
 """
+import contextlib
 import json
 import os
+import signal
 import sys
 import tempfile
+import time
 import traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -29,6 +32,34 @@ import media_store   # noqa: E402
 from Email_Verifier import EmailVerifier  # noqa: E402
 
 SPRITE = "SpriteSheet_Screenshots.png"
+# Hard cap on one address's check. Socket timeouts alone do not bound a server that
+# trickles its reply byte by byte, which once hung a run for 40+ minutes.
+VERIFY_SECONDS = 60
+# Stop taking new games before the job's timeout; the rest stay Verifying for the next run.
+RUN_BUDGET_SECONDS = float(os.environ.get("VERIFY_TIME_BUDGET_SECONDS", "0") or 0)
+
+
+class VerifyTimeout(Exception):
+    pass
+
+
+@contextlib.contextmanager
+def _deadline(seconds):
+    """Raise VerifyTimeout after `seconds` (Unix main thread only; otherwise no cap)."""
+    if not hasattr(signal, "SIGALRM"):
+        yield
+        return
+
+    def expire(_signum, _frame):
+        raise VerifyTimeout(f"verification took longer than {seconds}s")
+
+    previous = signal.signal(signal.SIGALRM, expire)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 class MediaError(RuntimeError):
@@ -93,7 +124,12 @@ def _verify(verifier, email):
     result = pipeline.get_email_verification(email)
     if result is not None:
         return result, True
-    result = verifier.verify(email)
+    try:
+        with _deadline(VERIFY_SECONDS):
+            result = verifier.verify(email)
+    except VerifyTimeout as exc:
+        # Inconclusive, not invalid: the game is accepted and the send step checks again.
+        return {"email": email, "result": "unknown", "reason": str(exc), "source": "timeout"}, False
     try:
         pipeline.cache_email_verification(email, result)
     except Exception as exc:
@@ -114,7 +150,11 @@ def main():
     if client is None:
         print("R2 write credentials are not set; media cannot be checked or rebuilt.")
     failures = 0
+    started = time.monotonic()
     for appid, raw, _scrape in rows:
+        if RUN_BUDGET_SECONDS and time.monotonic() - started > RUN_BUDGET_SECONDS:
+            print("Run time budget reached; remaining games stay Verifying for the next run.")
+            break
         email = pipeline.normalize_email(raw)
         try:
             if not email:
