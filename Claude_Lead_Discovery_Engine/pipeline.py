@@ -127,7 +127,7 @@ TRIAGE_COLUMNS = (
     ("triage_criteria_id", "INTEGER"),
     ("triaged_at", "TEXT"),
 )
-# Bounce scanning (start of every send run): only bounces received after `since` are
+# Bounce scanning (nightly reply check, review-mails.yml): only bounces received after `since` are
 # processed, and each bounce message is handled once.
 _BOUNCE_STATE_SCHEMA = """(
     id     INTEGER PRIMARY KEY CHECK (id = 1),

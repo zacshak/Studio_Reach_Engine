@@ -29,7 +29,7 @@ All local/manual commands still exist through the one launcher: `python SRE.py <
                               │ (📨 Send scheduled mails button → send.yml)
                               ▼
                           Sending (one row at a time) → Sent
-                                                          │  bounce (scanned at each send run):
+                                                          │  bounce (nightly reply check):
                                                           │  Steam email → no-email · researched → Invalid
                               review-mails.yml (nightly cron) ──► Replied
 ```
@@ -217,7 +217,8 @@ Results are cached, so the send-time check is usually free:
 Port 25 must be reachable: it is on GitHub-hosted runners, usually not on home networks.
 `python Email_Verifier/verify_single.py ADDRESS [--smtp-only | --qev]` checks one address.
 
-**Bounces** (`Mail_Sender/bounces.py`, start of every send run): reads bounce notices
+**Bounces** (`Mail_Sender/bounces.py`, nightly in `review-mails.yml` before the reply
+scan): reads bounce notices
 (mailer-daemon / postmaster) from Gmail All Mail without marking them read. Only bounces
 received after this was first switched on are handled (`mail_bounce_state`), each once
 (`mail_bounce_log`). Only "mailbox / domain does not exist" (DSN 5.1.x, 5.2.1 or that
@@ -230,8 +231,9 @@ can leave that table in place. Preserve unresolved `Sending` rows and their meta
 during rollback so delivery evidence is not lost.
 
 ## 4. Review replies — automatic, nightly (`review-mails.yml`)
-Cron `30 18 * * *` (00:00 IST). Read-only IMAP scan of the Gmail inbox.
-Verified replies to retained outgoing message IDs flip `Sent → Replied`. No mail is sent.
+Cron `30 18 * * *` (00:00 IST). Read-only IMAP scan of the Gmail inbox (nothing is
+marked read). First new bounce notices are handled (see *Bounces* above), then
+verified replies to retained outgoing message IDs flip `Sent → Replied`. No mail is sent.
 Older sends without retained message IDs require manual confirmation.
 
 ---
@@ -253,7 +255,7 @@ No redeploy needed — the next draft run reads the new templates.
 | `--draft-mails` | AI-draft cold mails for `Accepted` leads → R2 manifests (`draft.yml`) |
 | `--verify-accepted` | check email + media of `Verifying` games → `Accepted` or back to no-email (`verify.yml`) |
 | `--send-mails` | send `Scheduled` mails (`send.yml`); `--dry-run`, `--limit N` locally |
-| `--review-mails` | check `Sent` leads for replies → `Replied` (`review-mails.yml`) |
+| `--review-mails` | handle new bounces, then check `Sent` leads for replies → `Replied` (`review-mails.yml`) |
 | `--repair-invalid` | quarantine existing unsent rows with missing/invalid recipients |
 | `--sync-templates` | push cold-mail templates → R2 |
 | `--sync-media` | mirror local staged media → R2 |

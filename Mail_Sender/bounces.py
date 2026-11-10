@@ -1,6 +1,6 @@
 """Read bounce notices from the sending Gmail account and act on dead addresses.
 
-Runs at the start of every send run (mailer.main). Only bounces received after bounce
+Runs in the nightly reply check (review-mails.yml -> mailer.review), before replies. Only bounces received after bounce
 handling was first switched on are processed (pipeline.bounce_since), and each bounce
 message is handled once (mail_bounce_log).
 

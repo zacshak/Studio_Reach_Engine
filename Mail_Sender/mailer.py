@@ -339,7 +339,7 @@ def _summary(stats, unprocessed, error):
 
 
 def _scan_bounces(user, password):
-    """Act on new bounce notices before sending; a failure here never blocks sending."""
+    """Act on new bounce notices (nightly reply check); a failure never blocks the reply scan."""
     try:
         import bounces
         stats = bounces.process(user, password)
@@ -367,8 +367,6 @@ def main(dry_run=False, limit=None):
     deadline = time.monotonic() + budget if budget else float("inf")
     verifier = None
     uncertain = 0 if dry_run else _reconcile_sending(user, password)
-    if not dry_run:
-        _scan_bounces(user, password)
 
     scheduled = pipeline.mail_status_emails("Scheduled")
     valid = []
@@ -547,7 +545,8 @@ def _matches_reply(raw_headers, addr, message_id, started_at):
 
 
 def review():
-    """Read-only inbox scan for replies to retained outgoing Message-IDs."""
+    """Nightly inbox scan: first bounce notices (dead addresses leave Sent, see bounces.py),
+    then replies to retained outgoing Message-IDs (read-only)."""
     _load_env()
     user = os.environ.get("GMAIL_USER", "")
     password = os.environ.get("GMAIL_APP_PASSWORD", "")
@@ -557,6 +556,7 @@ def review():
         sys.exit("GMAIL_APP_PASSWORD not set. Add it to the repo-root .env "
                  "(see this file's header).")
 
+    _scan_bounces(user, password)
     sent = pipeline.reply_evidence()
     if not sent:
         print("no Sent leads with retained reply evidence to review.")
