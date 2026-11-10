@@ -1,4 +1,4 @@
-"""Temporary: compare our SMTP verdicts with cached QEV verdicts. Prints masked addresses."""
+"""Temporary (run 2): compare our SMTP verdicts with cached QEV verdicts. Prints masked addresses."""
 import json, os, random, sys, collections
 sys.path.insert(0, "."); sys.path.insert(0, "Claude_Lead_Discovery_Engine")
 import pipeline
