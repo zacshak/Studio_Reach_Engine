@@ -6,7 +6,7 @@ import vm from 'node:vm';
 const html = readFileSync(new URL('./public/index.html', import.meta.url), 'utf8');
 const source = html.slice(html.indexOf('let bulkBusy ='), html.indexOf('// ---- touch swipe'));
 const context = extra => vm.createContext({ pendingCards: new Set(), failed: [], writeBusy: false, noMail: new Set(),
-  render() {}, toast() {}, load: async () => {}, ...extra });
+  render() {}, toast() {}, load: async () => {}, watchVerification() {}, ...extra });
 
 for (const failAt of [0, 2]) {
   test(`Flagged Delete all confirms each batch and stops safely on failure ${failAt}`, async () => {
@@ -78,7 +78,7 @@ test('Passed Accept all skips games without email, batches by 10 and reports ref
   assert.deepEqual(ctx.Q.passed.map(c => c.appid), [3, 4, 7]);
   assert.equal(loads, 1);
   assert.equal(toasts.length, 1);
-  assert.match(toasts[0][0], /Accepted 22\. Skipped 2 without an email\. 1 refused: sprite sheet is missing or empty\./);
+  assert.match(toasts[0][0], /Checking the email of 22\. Skipped 2 without an email\. 1 refused: sprite sheet is missing or empty\./);
   assert.equal(toasts[0][1], 'error');
 });
 
@@ -92,5 +92,5 @@ test('Accept all stops at a failed batch and still reports what was accepted', a
   await vm.runInContext('acceptAll()', ctx);
   assert.equal(calls, 2);
   assert.equal(ctx.Q.passed.length, 20);
-  assert.match(toasts[0], /^Accepted 10\.$/);
+  assert.match(toasts[0], /^Checking the email of 10\.$/);
 });

@@ -25,8 +25,8 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install deps
-        run: pip install --quiet libsql==0.1.11
-      - name: Check Sent leads for replies
+        run: pip install --quiet libsql==0.1.11 dnspython==2.7.0
+      - name: Check bounces, then Sent leads for replies
         env:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}

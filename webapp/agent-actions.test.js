@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
-import { queues, keepMany, acceptMany, approveMany, returnToAccepted, saveEmail, triageDetails, workflowRuns, batchIds } from './agent-actions.js';
+import { queues, keepMany, acceptMany, startVerification, verifyStatus, approveMany, returnToAccepted, saveEmail, triageDetails, workflowRuns, batchIds } from './agent-actions.js';
 import { migrateStates } from './migrate-states.mjs';
 
 // appid, Mail_status, scrape_status, emails, triage_decision
@@ -13,7 +13,8 @@ const ROWS = [
 ];
 async function fixture() {
   const db = new DatabaseSync(':memory:');
-  db.exec(`CREATE TABLE scrape_tracker(appid INTEGER PRIMARY KEY, Mail_status TEXT, scrape_status TEXT, emails TEXT, website TEXT)`);
+  db.exec(`CREATE TABLE scrape_tracker(appid INTEGER PRIMARY KEY, Mail_status TEXT, scrape_status TEXT, emails TEXT, website TEXT);
+    CREATE TABLE email_verification_cache(email TEXT PRIMARY KEY, result_json TEXT NOT NULL)`);
   const sql = async (_env, stmts) => stmts.map(([query, ...args]) => db.prepare(query).all(...args).map(r => Object.values(r)));
   await migrateStates({}, sql);
   const add = db.prepare('INSERT INTO scrape_tracker(appid, Mail_status, scrape_status, emails, triage_decision) VALUES (?,?,?,?,?)');
@@ -53,13 +54,21 @@ test('keep turns only flagged Triaged games into pass and moves them to Approval
   assert.deepEqual((await queues({}, sql)).approval, [1, 3]);
 });
 
-test('accept needs Triaged as pass, an email and a sprite sheet', async () => {
+// GitHub workflow dispatch double: records calls, answers 204 (or `status`).
+function github(status = 204) {
+  const calls = [];
+  const fetcher = async (url, init) => { calls.push({ url, body: JSON.parse(init.body) });
+    return { status, text: async () => 'nope' }; };
+  return { calls, fetcher };
+}
+const GH_ENV = { GH_REPO: 'o/r', GH_PAT: 't' };
+
+test('accept moves Triaged-pass games with an email to Verifying and starts one verify run', async () => {
   const { db, sql } = await fixture();
-  const sprite = id => ({ [`G_${id}/manifest.json`]: { images: ['SpriteSheet_Screenshots.png'] }, [`G_${id}/SpriteSheet_Screenshots.png`]: {} });
-  const env = { MEDIA: media({ 'index.json': { 1: 'G_1', 2: 'G_2', 3: 'G_3', 4: 'G_4', 9: 'G_9' },
-    ...sprite(1), ...sprite(2), ...sprite(3), ...sprite(4), ...sprite(9) }) };
-  const result = await acceptMany(env, { appids: [1, 2, 3, 4, 9, 99] }, sql, getJSON(env));
+  const gh = github();
+  const result = await acceptMany(GH_ENV, { appids: [1, 2, 3, 4, 9, 99] }, sql, gh.fetcher);
   assert.deepEqual(result.accepted, [1]);
+  assert.deepEqual(result.verifying, [1]);
   assert.deepEqual(result.failed.map(f => f.appid), [2, 3, 4, 9, 99]);
   const error = id => result.failed.find(f => f.appid === id).error;
   assert.equal(error(99), 'game no longer exists');
@@ -67,23 +76,44 @@ test('accept needs Triaged as pass, an email and a sprite sheet', async () => {
   assert.equal(error(2), 'has no email');
   assert.equal(error(3), 'flagged in triage; Pass it first');
   assert.equal(error(4), 'already Accepted');
-  assert.equal(status(db, 1), 'Accepted'); assert.equal(status(db, 2), 'Triaged'); assert.equal(status(db, 3), 'Triaged');
+  assert.equal(status(db, 1), 'Verifying'); assert.equal(status(db, 2), 'Triaged'); assert.equal(status(db, 3), 'Triaged');
   assert.equal(status(db, 9), 'Pending');
+  assert.equal(gh.calls.length, 1);
+  assert.match(gh.calls[0].url, /actions\/workflows\/verify\.yml\/dispatches$/);
+  assert.deepEqual(gh.calls[0].body, { ref: 'master' });
+});
+
+test('accept starts no run when nothing was accepted', async () => {
+  const { sql } = await fixture();
+  const gh = github();
+  const result = await acceptMany(GH_ENV, { appids: [2, 3] }, sql, gh.fetcher);
+  assert.deepEqual([result.accepted, gh.calls.length], [[], 0]);
+});
+
+test('a failed dispatch puts the games back to Triaged instead of leaving them stuck', async () => {
+  const { db, sql } = await fixture();
+  db.exec("UPDATE scrape_tracker SET Mail_status='Triaged', triage_decision='pass' WHERE appid=9");
+  await assert.rejects(acceptMany(GH_ENV, { appids: [1, 9] }, sql, github(422).fetcher), /could not start email verification/);
+  assert.equal(status(db, 1), 'Triaged'); assert.equal(status(db, 9), 'Triaged');
+  await assert.rejects(startVerification({}, [1], sql, github().fetcher), /GH_REPO/);
+});
+
+test('verify status reports state and the parsed email issue', async () => {
+  const { db, sql } = await fixture();
+  db.prepare("UPDATE scrape_tracker SET Mail_status='Triaged', scrape_status='no_email', emails='', email_issue=? WHERE appid=1")
+    .run(JSON.stringify({ email: 'a@studio.com', reason: 'mailbox_does_not_exist', source: 'accept' }));
+  db.exec("UPDATE scrape_tracker SET email_issue='plain text' WHERE appid=4");
+  const { games } = await verifyStatus({}, { appids: [1, 4, 5] }, sql);
+  assert.deepEqual(games, [
+    { appid: 1, mail_status: 'Triaged', issue: { email: 'a@studio.com', reason: 'mailbox_does_not_exist', source: 'accept' } },
+    { appid: 4, mail_status: 'Accepted', issue: { reason: 'plain text' } },
+    { appid: 5, mail_status: 'Drafted', issue: null }]);
 });
 
 test('approve moves only Drafted rows', async () => {
   const { db, sql } = await fixture();
   assert.deepEqual(await approveMany({}, { appids: [5, 4] }, sql), { approved: [5], not_drafted: [4] });
   assert.equal(status(db, 5), 'Scheduled');
-});
-
-test('accept refuses a passed game whose sprite sheet is missing', async () => {
-  const { db, sql } = await fixture();
-  const env = { MEDIA: media({ 'index.json': { 1: 'G_1' }, 'G_1/manifest.json': { images: ['SpriteSheet_Screenshots.png'] } }) };
-  const result = await acceptMany(env, { appids: [1] }, sql, getJSON(env));
-  assert.deepEqual(result.accepted, []);
-  assert.match(result.failed[0].error, /sprite sheet is missing/);
-  assert.equal(status(db, 1), 'Triaged');
 });
 
 test('return to accepted clears the saved draft first and only for Drafted rows', async () => {
@@ -114,6 +144,15 @@ test('save email follows the scraper contract', async () => {
   await assert.rejects(saveEmail({}, { appid: 7, status: 'scraped' }, sql), /1-5 emails/);
   await assert.rejects(saveEmail({}, { appid: 7, status: 'no_email', emails: ['a@b.co'] }, sql), /only accepted/);
   await assert.rejects(saveEmail({}, { appid: 7, status: 'scraped', emails: ['a@b.co'], website: 'ftp://x' }, sql), /http/);
+});
+
+test('save email never stores an address already verified invalid or bounced', async () => {
+  const { sql, db } = await fixture();
+  db.prepare('INSERT INTO email_verification_cache VALUES (?,?)').run('dead@studio.com', JSON.stringify({ result: 'invalid' }));
+  db.prepare('INSERT INTO email_verification_cache VALUES (?,?)').run('ok@studio.com', JSON.stringify({ result: 'valid' }));
+  await assert.rejects(saveEmail({}, { appid: 7, status: 'scraped', emails: ['Dead@Studio.com'] }, sql), /already verified invalid/);
+  const saved = await saveEmail({}, { appid: 7, status: 'scraped', emails: ['dead@studio.com', 'ok@studio.com'] }, sql);
+  assert.equal(saved.emails, 'ok@studio.com');
 });
 
 test('triage details include criteria text and report missing games', async () => {

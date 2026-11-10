@@ -19,25 +19,33 @@ test('social save HTTP route reaches guarded completion',async()=>{
   }finally{globalThis.fetch=original;}
 });
 
-test('accept never advances a lead with an incomplete or absent sprite', async () => {
+test('accept moves the game to Verifying and dispatches verify.yml; a failed dispatch reverts it', async () => {
   const original = globalThis.fetch;
-  // Only the state read is allowed; any UPDATE would mean the lead advanced.
-  globalThis.fetch = async (_url, options) => {
-    const query = JSON.parse(options.body).requests[0].stmt.sql;
-    assert.match(query, /^SELECT Mail_status, triage_decision, scrape_status/);
-    return Response.json({ results: [{ type: 'ok', response: { result: { rows: [[
-      { type: 'text', value: 'Triaged' }, { type: 'text', value: 'pass' }, { type: 'text', value: 'seeded' }]] } } }, { type: 'ok' }] });
-  };
-  try {
-    for (const [images, message] of [[[], /screenshot export is incomplete/], [['SpriteSheet_Screenshots.png'], /sprite sheet is missing/]]) {
-      const response = await worker.fetch(new Request('https://example/api/act', {method:'POST',body:JSON.stringify({action:'accept',appid:1})}), {
-        TURSO_URL: 'libsql://example', TURSO_TOKEN: 'test',
-        MEDIA: { get: async key => ({json: async () => key==='index.json' ? {1:'Game_1'} : {images}}), head:async()=>null }
-      });
-      assert.equal(response.status,409);
-      assert.match((await response.json()).error, message);
-    }
-  } finally { globalThis.fetch=original; }
+  for (const ghStatus of [204, 500]) {
+    const queries = [], github = [];
+    globalThis.fetch = async (url, options) => {
+      if (String(url).startsWith('https://api.github.com/')) { github.push(String(url)); return new Response(null, { status: ghStatus }); }
+      const query = JSON.parse(options.body).requests[0].stmt.sql;
+      queries.push(query);
+      const rows = query.startsWith('SELECT Mail_status') ? [[{ type: 'text', value: 'Triaged' }, { type: 'text', value: 'pass' }, { type: 'text', value: 'seeded' }]]
+        : query.includes("SET Mail_status='Verifying'") ? [[{ type: 'integer', value: '1' }]] : [];
+      return Response.json({ results: [{ type: 'ok', response: { result: { rows } } }, { type: 'ok' }] });
+    };
+    try {
+      const response = await worker.fetch(new Request('https://example/api/act', { method: 'POST', body: JSON.stringify({ action: 'accept', appid: 1 }) }),
+        { TURSO_URL: 'libsql://example', TURSO_TOKEN: 'test', GH_REPO: 'o/r', GH_PAT: 'p' });
+      assert.match(github[0], /verify\.yml\/dispatches$/);
+      assert.ok(queries.some(q => q.includes("SET Mail_status='Verifying'")));
+      if (ghStatus === 204) {
+        assert.equal(response.status, 200);
+        assert.deepEqual(await response.json(), { ok: true, verifying: [1] });
+      } else {
+        assert.equal(response.status, 500);
+        assert.match((await response.json()).error, /could not start email verification/);
+        assert.ok(queries.some(q => q.includes("SET Mail_status='Triaged' WHERE Mail_status='Verifying'")));
+      }
+    } finally { globalThis.fetch = original; }
+  }
 });
 
 test('oversized deletion batches fail before touching storage', async () => {
@@ -87,11 +95,12 @@ test('transaction begin and commit errors are never reported as success', async 
 
 test('dashboard state returns Home counts and the Pending, Passed, Flagged and Mail views', async () => {
   const originalFetch = globalThis.fetch;
-  // pending, passed, flagged, noMail, drafted, counts, reviews
+  // pending, passed, flagged, noMail, drafted, counts, reviews, issues, verifying
   const sets = [[[4]], [[1], [3]], [[2]], [[3], [4]], [[6, 'a@b.co']],
     [['Pending', '', 0, 1], ['Triaged', 'pass', 1, 1], ['Triaged', 'pass', 0, 1], ['Triaged', 'flag', 1, 1],
-     ['Accepted', '', 1, 2], ['Drafted', '', 1, 1], ['Sent', '', 1, 7], ['Invalid', '', 0, 1]],
-    [[1, 'pass', 'Fits', 'Custom', '2026-11-09T00:00:00.000Z'], [2, 'flag', 'Does not fit', 'Custom', null]]];
+     ['Verifying', 'pass', 1, 1], ['Accepted', '', 1, 2], ['Drafted', '', 1, 1], ['Sent', '', 1, 7], ['Invalid', '', 0, 1]],
+    [[1, 'pass', 'Fits', 'Custom', '2026-11-09T00:00:00.000Z'], [2, 'flag', 'Does not fit', 'Custom', null]],
+    [[3, JSON.stringify({ email: 'x@y.co', reason: 'bounced 5.1.1', source: 'bounce' }), 'Three']], [[8]]];
   const cell = value => value === null ? { type: 'null' } : typeof value === 'number'
     ? { type: 'integer', value: String(value) } : { type: 'text', value };
   let statements;
@@ -113,8 +122,10 @@ test('dashboard state returns Home counts and the Pending, Passed, Flagged and M
     assert.deepEqual(statements.slice(0, 4), [VIEW_SQL.pending, VIEW_SQL.passed, VIEW_SQL.flagged, VIEW_SQL.noMail]);
     assert.deepEqual([state.pending, state.passed, state.flagged, state.noMail], [[4], [1, 3], [2], [3, 4]]);
     assert.deepEqual(state.mail, [{ appid: 6, emails: 'a@b.co' }]);
-    assert.deepEqual(state.counts, { pending: 1, triaged: 3, passed: 2, flagged: 1, no_mail: 2, accepted: 2, drafted: 1,
+    assert.deepEqual(state.counts, { pending: 1, triaged: 3, passed: 2, flagged: 1, no_mail: 2, verifying: 1, accepted: 2, drafted: 1,
       scheduled: 0, sending: 0, sent: 7, replied: 0, invalid: 1 });
+    assert.deepEqual(state.verifying, [8]);
+    assert.deepEqual(state.issues, { 3: { email: 'x@y.co', reason: 'bounced 5.1.1', source: 'bounce', game: 'Three' } });
     assert.equal(state.pendingDrafts, true);
     assert.equal(state.scheduled, false);
     assert.deepEqual(state.triageReviews[1], { decision: 'pass', reason: 'Fits', criteria: 'Custom', reviewed_at: '2026-11-09T00:00:00.000Z' });
@@ -128,7 +139,7 @@ test('view queries split Pending, Passed and Flagged, and badge not-yet-accepted
   assert.equal(VIEW_SQL.flagged, "SELECT appid FROM scrape_tracker WHERE Mail_status='Triaged' AND triage_decision='flag' ORDER BY appid");
   assert.equal(VIEW_SQL.noMail, "SELECT appid FROM scrape_tracker WHERE Mail_status IN ('Pending','Triaged') AND NOT (scrape_status IN ('seeded','scraped')) ORDER BY appid");
   assert.deepEqual(homeCounts([['Sending', '', 1, 2], ['Replied', '', 1, 3], ['Scheduled', '', 1, 4]]),
-    { pending: 0, triaged: 0, passed: 0, flagged: 0, no_mail: 0, accepted: 0, drafted: 0, scheduled: 4, sending: 2, sent: 0, replied: 3, invalid: 0 });
+    { pending: 0, triaged: 0, passed: 0, flagged: 0, no_mail: 0, verifying: 0, accepted: 0, drafted: 0, scheduled: 4, sending: 2, sent: 0, replied: 3, invalid: 0 });
 });
 
 test('dashboard actions refuse with 409 and a reason instead of silently succeeding', async () => {

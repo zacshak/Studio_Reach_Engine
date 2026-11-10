@@ -43,6 +43,10 @@ class ReplyTest(unittest.TestCase):
         self.assertTrue(mailer._matches_reply(
             headers, "studio@example.com", self.message_id, self.started))
 
+    def test_bounces_are_scanned_first_even_without_reply_evidence(self):
+        self.review([], self.headers())
+        self.bounces.assert_called_once_with("sender@example.com", "fake")
+
     def review(self, evidence, headers, select="OK", fetch="OK"):
         imap = Mock()
         imap.select.return_value = (select, [b"1"])
@@ -52,6 +56,7 @@ class ReplyTest(unittest.TestCase):
                 patch.dict(os.environ, {"GMAIL_USER": "sender@example.com", "GMAIL_APP_PASSWORD": "fake"}), \
                 patch.object(mailer.pipeline, "reply_evidence", return_value=evidence), \
                 patch.object(mailer.pipeline, "set_mail_status") as status, \
+                patch.object(mailer, "_scan_bounces") as self.bounces, \
                 patch.object(mailer.imaplib, "IMAP4_SSL", return_value=imap) as connect:
             if select != "OK":
                 with self.assertRaises(RuntimeError):

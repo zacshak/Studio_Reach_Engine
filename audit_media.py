@@ -12,7 +12,7 @@ from Claude_Lead_Discovery_Engine.pipeline import email_state
 
 BASE = 'https://sre-review.meshakzac.workers.dev'
 MCP = 'https://sre-db-mcp.meshakzac.workers.dev/mcp'
-ACTIVE = {'Pending', 'Triaged', 'Accepted', 'Drafted', 'Scheduled', 'Sending'}
+ACTIVE = {'Pending', 'Triaged', 'Verifying', 'Accepted', 'Drafted', 'Scheduled', 'Sending'}
 
 
 def request(url, data=None, head=False):

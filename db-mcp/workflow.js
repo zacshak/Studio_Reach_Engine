@@ -71,13 +71,13 @@ export function registerWorkflowTools(server, env, run) {
       catch (error) { return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: error.message }) }] }; }
     });
 
-  tool('get_queues', 'Every review queue as appid lists with counts: untriaged (Pending), approval (Triaged as pass, has email), nomail (Triaged as pass, no email), triage (Triaged as flag), accepted, mail_approval (Drafted), scheduled and sending.',
+  tool('get_queues', 'Every review queue as appid lists with counts: untriaged (Pending), approval (Triaged as pass, has email), nomail (Triaged as pass, no email), triage (Triaged as flag), verifying (email check running), accepted, mail_approval (Drafted), scheduled and sending.',
     {}, READ, () => review(env, '/api/queues'));
   tool('get_triage', 'Stored triage for up to 100 games: decision (pass/flag or null when untriaged), reason, full criteria text, timestamp and mail status.',
     { appids: appids(100) }, READ, ({ appids }) => review(env, '/api/triage/get', { appids }));
   tool('keep_games', 'Triage Keep for up to 100 flagged games: overrides the flag to pass (the reason records the override), moving them to the dashboard Passed view. Returns kept and not_flagged.',
     { appids: appids(100) }, WRITE, ({ appids }) => review(env, '/api/act', { action: 'keep_many', appids }));
-  tool('accept_games', 'Accept up to 100 games for outreach (Triaged -> Accepted). Only games triaged as pass that have an email and a stored sprite sheet; untriaged, flagged and no-email games are refused. Returns accepted and failed with reasons.',
+  tool('accept_games', 'Accept up to 100 games for outreach (Triaged -> Verifying). Only games triaged as pass that have an email; untriaged, flagged and no-email games are refused. A verify run then checks each email and its media (rebuilt from Steam if missing): verified games become Accepted, dead addresses are cleared back to no-email (get_queues nomail). Returns accepted and failed with reasons.',
     { appids: appids(100) }, WRITE, ({ appids }) => review(env, '/api/act', { action: 'accept_many', appids }));
   tool('reject_games', 'Permanently delete up to 1000 games: database rows plus queued R2 media cleanup. Cannot be undone. Rows in Sending are protected. Requires confirm="DELETE".',
     { appids: appids(1000), confirm: z.literal('DELETE') }, DESTROY,

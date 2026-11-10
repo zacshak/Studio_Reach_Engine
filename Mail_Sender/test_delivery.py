@@ -34,7 +34,7 @@ class DeliveryTest(unittest.TestCase):
         self.drafts = enter(patch.object(mailer, "_load_mail", return_value=("Subject", "Body", "draft.txt")))
         self.verifier = Mock()
         self.verifier.verify.return_value = {"result": "valid"}
-        enter(patch.object(mailer.QuickEmailVerification, "from_env", return_value=self.verifier))
+        enter(patch.object(mailer.EmailVerifier, "from_env", return_value=self.verifier))
         self.sleep = enter(patch.object(mailer.time, "sleep"))
         enter(patch.object(mailer.time, "monotonic", return_value=1000))
         enter(patch.object(mailer.random, "randint", return_value=120))

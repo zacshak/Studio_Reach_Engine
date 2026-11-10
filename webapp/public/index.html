@@ -84,6 +84,13 @@
   #toast.info { background: #14532d; color: #bbf7d0; }
   #toast:empty { display: none; }
   .shotsall img { width: 100%; border-radius: 10px; margin-top: .4rem; display: block; }
+  .badge.warn { background: #3b2f0b; color: #fde68a; }
+  #verifyDialog { background: #1b2230; color: #e6e9ef; border: 1px solid #7f1d1d; border-radius: 12px;
+                  max-width: min(92vw, 560px); padding: 1rem 1.2rem; }
+  #verifyDialog::backdrop { background: #0009; }
+  #verifyDialog h2 { margin: 0 0 .5rem; font-size: 1.05rem; color: #fecaca; }
+  #verifyDialog li { margin: .35rem 0; }
+  #verifyDialog button { margin-top: .6rem; }
 </style>
 </head>
 <body>
@@ -104,6 +111,11 @@
   <div id="view"></div>
 </main>
 <div id="toast" role="alert" aria-live="assertive"></div>
+<dialog id="verifyDialog" aria-labelledby="verifyTitle">
+  <h2 id="verifyTitle">Email verification failed</h2>
+  <div id="verifyBody"></div>
+  <form method="dialog"><button>OK</button></form>
+</dialog>
 
 <script>
 "use strict";
@@ -127,10 +139,12 @@ let writeBusy = false;
 const pendingCards = new Set();
 let cardWrites = Promise.resolve();
 let actionNotice = '';
+let verifyWatch = new Set(), verifyTimer = null, verifyStarted = 0;   // games awaiting verify.yml
 function persistWrites() { localStorage.setItem('sre_pending_writes', JSON.stringify(failed)); }
 function showBanner() {
   const unresolved = failed.filter(item => !pendingCards.has(item[1].appid));
-  $("#activity").textContent = pendingCards.size ? `Saving ${pendingCards.size} action(s)…` : writeBusy ? 'Saving…' : '';
+  $("#activity").textContent = pendingCards.size ? `Saving ${pendingCards.size} action(s)…` : writeBusy ? 'Saving…'
+    : verifyWatch.size ? `Verifying email of ${verifyWatch.size} game(s)… (about a minute)` : '';
   $("#banner").hidden = unresolved.length === 0 && !actionNotice;
   $("#retryWrites").hidden = unresolved.length === 0;
   $("#bannerText").textContent = [actionNotice, unresolved.length ? `${unresolved.length} unconfirmed action(s). ${unresolved.at(-1)[2] || 'Retry to confirm the saved action.'}` : ''].filter(Boolean).join(' ');
@@ -218,9 +232,11 @@ let armed = null;                      // two-tap confirm for bulk buttons
 let showAll = false;                   // "All N screenshots" toggle on current card
 
 function queues() {
+  // A game whose media was purged after an earlier send (it bounced) has no folder; it
+  // still shows, so a new email can be researched and the game accepted again.
   const mk = (ids) => ids.map((a) => ({ appid: a, folder: S.index[String(a)] }))
-                         .filter((c) => c.folder && !pendingCards.has(c.appid))
-                         .sort((x, y) => x.folder.toLowerCase() < y.folder.toLowerCase() ? -1 : 1);
+                         .filter((c) => (c.folder || S.issues?.[c.appid]) && !pendingCards.has(c.appid))
+                         .sort((x, y) => sortName(x) < sortName(y) ? -1 : 1);
   return {
     pending: mk(S.pending),
     passed: mk(S.passed),
@@ -228,6 +244,7 @@ function queues() {
     mail: mk(S.mail.map((m) => m.appid)),
   };
 }
+const sortName = c => (c.folder || S.issues?.[c.appid]?.game || String(c.appid)).toLowerCase();
 let Q = null;
 const emailsOf = (appid) => (S.mail.find((m) => m.appid === appid) || {}).emails || "";
 
@@ -293,7 +310,7 @@ const PRELOAD_OFFSETS = [1, 2, 3, -1];
 function prefetch(list, i) {
   for (const j of PRELOAD_OFFSETS.map(offset => i + offset)) {
     const c = list[j];
-    if (!c) continue;
+    if (!c?.folder) continue;
     preloadNeighbor(c.folder);
   }
 }
@@ -357,11 +374,13 @@ function render() {
   idx[tab] = Math.min(idx[tab], list.length - 1);
   const i = idx[tab];
   const card = list[i];
-  const m = manifests.get(card.folder);
+  const issue = S.issues?.[card.appid];
+  const m = card.folder ? manifests.get(card.folder) : { name: issue?.game || String(card.appid), images: [], meta: '',
+    desc: 'Screenshots were removed after the earlier send. Accepting rebuilds them from Steam.' };
   if (m === undefined) manifest(card.folder);     // kick off fetch; rerenders when done
   prefetch(list, i);
 
-  const name = (m && m.name) || card.folder.split("_").slice(0, -1).join("_") || card.appid;
+  const name = (m && m.name) || (card.folder || '').split("_").slice(0, -1).join("_") || card.appid;
   let imgs = (m && m.images) || [];
   // sprite sheet first — same preference as the Streamlit card
   imgs = [...imgs].sort((a, b) => b.includes("SpriteSheet") - a.includes("SpriteSheet"));
@@ -411,9 +430,10 @@ function render() {
       <h2>${escapeHtml(String(name))}</h2>
       <div class="meta">${escapeHtml((m && m.meta) || "")} · appid ${card.appid} ·
         <a href="https://store.steampowered.com/app/${card.appid}/" target="_blank" rel="noopener">Steam page 🔗</a>${
-        noMail.has(card.appid) ? '<span class="badge">📭 No email</span>' : ''}</div>
+        noMail.has(card.appid) ? '<span class="badge">📭 No email</span>' : ''}${
+        issue ? `<span class="badge warn" title="${escapeHtml(issue.reason || '')}">⚠️ ${escapeHtml(issueText(issue))}</span>` : ''}</div>
       ${img}${thumbs}${shotsCtl}${allShots}
-      ${tab === 'passed' && m && (!Array.isArray(m.images) || !m.images.includes('SpriteSheet_Screenshots.png')) ? '<p>Drafting unavailable: this game’s screenshot export needs repair.</p>' : ''}
+      ${tab === 'passed' && card.folder && m && !m.missing && Array.isArray(m.images) && !m.images.includes('SpriteSheet_Screenshots.png') ? '<p>Screenshots are incomplete; accepting rebuilds them from Steam.</p>' : ''}
       ${review ? `<details><summary>Triage: ${escapeHtml(review.decision)}</summary><p>${escapeHtml(review.reason || "")}</p>${review.criteria ? `<p>Criteria: ${escapeHtml(review.criteria)}</p>` : ''}</details>` : ""}
       <div class="desc">${m ? escapeHtml(m.desc || "") : "Loading…"}</div>
       ${mail}
@@ -437,7 +457,7 @@ function render() {
 const TILES = [
   ["Review", [["pending", "Pending", "pending"], ["triaged", "Triaged"], ["passed", "Passed", "passed"],
               ["flagged", "Flagged", "flagged"], ["no_mail", "No email (not accepted)"]]],
-  ["Outreach", [["accepted", "Accepted"], ["drafted", "Drafted", "mail"], ["scheduled", "Scheduled", "mail"],
+  ["Outreach", [["verifying", "Verifying email"], ["accepted", "Accepted"], ["drafted", "Drafted", "mail"], ["scheduled", "Scheduled", "mail"],
                 ["sending", "Sending"], ["sent", "Sent"], ["replied", "Replied"]]],
   ["Quarantine", [["invalid", "Invalid"]]],
 ];
@@ -524,7 +544,7 @@ async function doAct(action) {
         S.mail = S.mail.filter(row => row.appid !== card.appid);
         if (action === 'triage_pass' || action === 'pass') S.passed.push(card.appid);
         if (action === 'flag') S.flagged.push(card.appid);
-        if (action === 'accept') S.pendingDrafts = true;
+        if (action === 'accept') watchVerification([card.appid]);
         if (action === 'approve') S.scheduled = true;
       }
     } finally {
@@ -584,6 +604,7 @@ async function acceptAll() {
       if (!result) break;
       accepted += result.accepted.length;
       refused.push(...result.failed);
+      watchVerification(result.accepted);
       const moved = new Set(result.accepted);
       Q.passed = Q.passed.filter(c => !moved.has(c.appid));
       bulkDone += batch.length;
@@ -591,7 +612,7 @@ async function acceptAll() {
   } finally {
     bulkBusy = false;
     const reasons = [...new Set(refused.map(f => f.error))].slice(0, 3).join('; ');
-    toast(`Accepted ${accepted}.` + (skipped ? ` Skipped ${skipped} without an email.` : '') +
+    toast(`Checking the email of ${accepted}.` + (skipped ? ` Skipped ${skipped} without an email.` : '') +
       (refused.length ? ` ${refused.length} refused: ${reasons}.` : ''), refused.length ? 'error' : 'info');
     await load({ background: true });
   }
@@ -611,6 +632,68 @@ document.addEventListener("touchend", (e) => {
   if (e.target.closest(".thumbs")) return;                        // that strip scrolls sideways
   move(dx < 0 ? 1 : -1);
 }, { passive: true });
+
+// ---- email verification after Accept ----
+// Accept puts a game in Verifying and starts verify.yml on GitHub (Cloudflare cannot reach
+// mail servers). This polls those games until they leave Verifying, then reports: Accepted,
+// or a pop-up for each game whose email was invalid and has been cleared. The watched
+// games survive a reload (per-browser convenience only; the server state is the truth).
+const VERIFY_KEY = 'sre_verify_watch';
+try { verifyWatch = new Set((JSON.parse(localStorage.getItem(VERIFY_KEY) || '[]')).map(Number).filter(Boolean)); } catch {}
+function saveWatch() { try { localStorage.setItem(VERIFY_KEY, JSON.stringify([...verifyWatch])); } catch {} }
+function issueText(issue) {
+  const why = { accept: 'failed verification', send: 'failed verification at send', bounce: 'bounced' }[issue.source] || 'was dropped';
+  return `${issue.email || 'Previous email'} ${why}`;
+}
+function watchVerification(appids) {
+  for (const a of appids || []) verifyWatch.add(Number(a));
+  saveWatch();
+  if (verifyWatch.size) { verifyStarted = Date.now(); scheduleVerifyPoll(); activity(); }
+}
+function activity() { showBanner(); }
+function scheduleVerifyPoll(delay = 8000) {
+  clearTimeout(verifyTimer);
+  verifyTimer = setTimeout(pollVerification, delay);
+}
+async function pollVerification() {
+  if (!verifyWatch.size) { activity(); return; }
+  const ids = [...verifyWatch].slice(0, 100);
+  let games;
+  try {
+    const r = await fetch("/api/act", { method: "POST", signal: AbortSignal.timeout(20000),
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "verify_status", appids: ids }) });
+    if (!r.ok) throw new Error(String(r.status));
+    games = (await r.json()).games || [];
+  } catch { scheduleVerifyPoll(20000); return; }
+  const accepted = [], failures = [];
+  const seen = new Set(games.map(g => g.appid));
+  for (const id of ids) if (!seen.has(id)) verifyWatch.delete(id);          // deleted meanwhile
+  for (const g of games) {
+    if (g.mail_status === 'Verifying') continue;
+    verifyWatch.delete(g.appid);
+    if (['Pending', 'Triaged'].includes(g.mail_status)) failures.push(g);
+    else accepted.push(g);
+  }
+  saveWatch(); activity();
+  if (accepted.length) toast(`Email verified: ${accepted.length} game(s) accepted.`, 'info');
+  if (failures.length) showVerifyFailures(failures);
+  if (accepted.length || failures.length) await load({ background: true });
+  // GitHub runners usually start within a minute; keep checking, more slowly after 5 min.
+  if (verifyWatch.size) scheduleVerifyPoll(Date.now() - verifyStarted > 300000 ? 30000 : 8000);
+}
+function showVerifyFailures(games) {
+  const name = g => S?.issues?.[g.appid]?.game || manifests.get(S?.index?.[String(g.appid)])?.name || `appid ${g.appid}`;
+  const items = games.map(g => {
+    const i = g.issue || {};
+    const what = i.email ? `${i.email} is not a working address (${i.reason || 'invalid'}). The email was cleared — research a new one, then accept again.`
+      : `could not be accepted: ${i.reason || 'unknown reason'}. Its email was kept; try Accept again.`;
+    return `<li><b>${escapeHtml(name(g))}</b>: ${escapeHtml(what)}</li>`;
+  });
+  $("#verifyBody").innerHTML = `<ul>${items.join('')}</ul>`;
+  const dialog = $("#verifyDialog");
+  if (dialog.showModal && !dialog.open) dialog.showModal(); else toast(games.map(name).join(', ') + ': email verification failed.');
+}
+if (verifyWatch.size) { verifyStarted = Date.now(); scheduleVerifyPoll(1000); }
 
 // ---- tabs + keyboard ----
 document.querySelectorAll(".tab").forEach((b) =>

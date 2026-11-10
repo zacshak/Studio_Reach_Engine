@@ -45,6 +45,13 @@ def insert_lead(conn, appid, name="Game", brief="brief", website="http://x.com",
     conn.commit()
 
 
+def accept(appid):
+    """Accept the way the dashboard does: Triaged -> Verifying -> Accepted."""
+    pipeline.set_mail_status(appid, "Verifying")
+    email = next(e for a, e, _ in pipeline.verifying_rows() if a == appid)
+    assert pipeline.finish_verification(appid, expected_email=email)
+
+
 class PipelineTest(unittest.TestCase):
     def setUp(self):
         fd, self.db = tempfile.mkstemp(suffix=".sqlite")
@@ -265,7 +272,7 @@ class PipelineTest(unittest.TestCase):
                             "WHERE appid=113").fetchone()
         self.assertEqual(row, ("invalid", "Invalid"))
         with self.assertRaises(ValueError):
-            pipeline.set_mail_status(113, "Accepted")
+            pipeline.set_mail_status(113, "Verifying")
 
     def test_claim_mail_rejects_invalid_row_even_if_scheduled_directly(self):
         with self._raw() as c:
@@ -438,7 +445,7 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(c.execute("SELECT Mail_status FROM scrape_tracker WHERE appid=442")
                              .fetchone()[0], "Triaged")
         # An accepted lead that loses its email returns to Triaged, not Pending.
-        pipeline.set_mail_status(440, "Accepted")
+        accept(440)
         with self._raw() as c:
             c.execute("UPDATE scrape_tracker SET emails=NULL WHERE appid=440")
             c.commit()
@@ -448,7 +455,7 @@ class PipelineTest(unittest.TestCase):
                                        "WHERE appid=440").fetchone(), ("pending", "Triaged"))
         # Accepted leads are no longer scraped.
         pipeline.write_result(440, scrape_status="scraped", emails="jobs@studio.test")
-        pipeline.set_mail_status(440, "Accepted")
+        accept(440)
         with self.assertRaises(ValueError):
             pipeline.write_result(440, scrape_status="failed")
 
@@ -649,17 +656,19 @@ class PipelineTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             pipeline.set_mail_status(950, "Scheduled")
         with self.assertRaises(ValueError):  # untriaged
+            pipeline.set_mail_status(950, "Verifying")
+        with self.assertRaises(ValueError):  # Accepted is only reachable through verification
             pipeline.set_mail_status(950, "Accepted")
         with self._raw() as c:
             c.execute("UPDATE scrape_tracker SET Mail_status='Triaged', triage_decision='flag' "
                       "WHERE appid=950")
             c.commit()
         with self.assertRaises(ValueError):  # flagged
-            pipeline.set_mail_status(950, "Accepted")
+            pipeline.set_mail_status(950, "Verifying")
         with self._raw() as c:
             c.execute("UPDATE scrape_tracker SET triage_decision='pass' WHERE appid=950")
             c.commit()
-        pipeline.set_mail_status(950, "Accepted")
+        accept(950)
         pipeline.set_mail_template(950, 1)
         pipeline.set_mail_status(950, "Drafted")
         pipeline.set_mail_template(950, 2)
@@ -719,7 +728,8 @@ class PipelineTest(unittest.TestCase):
             c.execute("UPDATE scrape_tracker SET Mail_status='Triaged', triage_decision='pass' "
                       "WHERE appid=951")
             c.commit()
-        for status in ("Accepted", "Drafted", "Scheduled"):
+        accept(951)
+        for status in ("Drafted", "Scheduled"):
             pipeline.set_mail_status(951, status)
         self.assertTrue(pipeline.claim_mail(951))
         pipeline.reset_sending(951, "Drafted")
@@ -911,3 +921,84 @@ class PipelineTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class VerificationAndBounceTest(unittest.TestCase):
+    setUp = PipelineTest.setUp
+    tearDown = PipelineTest.tearDown
+    _raw = PipelineTest._raw
+
+    def _lead(self, appid, email="hello@studio.test", scrape="seeded", status="Triaged"):
+        with self._raw() as c:
+            insert_lead(c, appid, support_email=email)
+            c.execute("UPDATE scrape_tracker SET Mail_status=?, triage_decision='pass', "
+                      "scrape_status=?, emails=? WHERE appid=?", (status, scrape, email, appid))
+            c.commit()
+
+    def _row(self, appid):
+        with self._raw() as c:
+            return c.execute("SELECT Mail_status, scrape_status, emails, email_issue "
+                             "FROM scrape_tracker WHERE appid=?", (appid,)).fetchone()
+
+    def test_accept_goes_through_verifying(self):
+        self._lead(1)
+        pipeline.set_mail_status(1, "Verifying")
+        self.assertEqual(pipeline.verifying_rows(), [(1, "hello@studio.test", "seeded")])
+        self.assertFalse(pipeline.finish_verification(1, expected_email="other@x.test"))
+        self.assertTrue(pipeline.finish_verification(1, expected_email="hello@studio.test"))
+        self.assertEqual(self._row(1)[0], "Accepted")
+
+    def test_rejected_email_clears_it_and_records_why(self):
+        for appid, scrape in ((2, "seeded"), (3, "scraped")):
+            self._lead(appid, scrape=scrape, status="Verifying")
+            self.assertEqual(pipeline.reject_email(
+                appid, expected_email="hello@studio.test", reason="mailbox_does_not_exist",
+                source="accept", from_statuses=("Verifying",), researched_to_invalid=False),
+                "no_mail")
+            status, scrape_now, emails, issue = self._row(appid)
+            self.assertEqual((status, scrape_now, emails), ("Triaged", "no_email", ""))
+            self.assertEqual(json.loads(issue)["email"], "hello@studio.test")
+        self.assertIn(2, pipeline.nomail_ready_appids())
+
+    def test_bounce_rule_researched_address_becomes_invalid(self):
+        self._lead(4, scrape="seeded", status="Sent")
+        self._lead(5, scrape="scraped", status="Sent")
+        kw = dict(expected_email="hello@studio.test", reason="5.1.1", source="bounce",
+                  from_statuses=("Sent",), researched_to_invalid=True)
+        self.assertEqual(pipeline.reject_email(4, **kw), "no_mail")
+        self.assertEqual(pipeline.reject_email(5, **kw), "invalid")
+        self.assertEqual(self._row(4)[:2], ("Triaged", "no_email"))
+        self.assertEqual(self._row(5)[:2], ("Invalid", "invalid"))
+        self.assertIsNone(pipeline.reject_email(5, **kw))  # already moved
+
+    def test_untriaged_row_returns_to_pending(self):
+        self._lead(6, status="Sent")
+        with self._raw() as c:
+            c.execute("UPDATE scrape_tracker SET triage_decision=NULL WHERE appid=6")
+            c.commit()
+        pipeline.reject_email(6, expected_email="hello@studio.test", reason="r", source="bounce",
+                              from_statuses=("Sent",), researched_to_invalid=True)
+        self.assertEqual(self._row(6)[0], "Pending")
+
+    def test_media_failure_keeps_email(self):
+        self._lead(7, status="Verifying")
+        self.assertTrue(pipeline.return_unverified(7, expected_email="hello@studio.test",
+                                                   reason="media rebuild failed"))
+        self.assertEqual(self._row(7)[:3], ("Triaged", "seeded", "hello@studio.test"))
+
+    def test_known_invalid_address_is_not_saved_again(self):
+        self._lead(8, email="", scrape="no_email")
+        pipeline.cache_email_verification("dead@studio.test", {"result": "invalid"})
+        pipeline.write_result(8, scrape_status="scraped", emails="dead@studio.test, ok@studio.test")
+        self.assertEqual(self._row(8)[1:3], ("scraped", "ok@studio.test"))
+        self._lead(9, email="", scrape="no_email")
+        pipeline.write_result(9, scrape_status="scraped", emails="dead@studio.test")
+        self.assertEqual(self._row(9)[1], "no_email")
+
+    def test_bounce_watermark_and_log(self):
+        first = pipeline.bounce_since()
+        self.assertEqual(pipeline.bounce_since(), first)
+        self.assertFalse(pipeline.bounce_seen("<m1>"))
+        pipeline.record_bounce("<m1>", recipient="a@b.test", appids=[1, 2], outcome="no_mail")
+        pipeline.record_bounce("<m1>", recipient="a@b.test", appids=[1], outcome="again")
+        self.assertTrue(pipeline.bounce_seen("<m1>"))

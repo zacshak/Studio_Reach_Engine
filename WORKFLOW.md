@@ -19,6 +19,8 @@ All local/manual commands still exist through the one launcher: `python SRE.py <
    Pending view ── Accept (→ Triaged pass) ──► Passed view ◄── Pass / Flag ──► Flagged view
                               │ Accept (Triaged + pass + email only)   (Reject / Delete = delete)
                               ▼
+                          Verifying ── verify.yml: email check + media ──► dead email: back to no-email
+                              ▼
                           Accepted ──(✍️ Draft button or MCP save_draft)──► Drafted
                                                                              │
                                           Mail view: Approve ◄───────────────┘
@@ -27,7 +29,8 @@ All local/manual commands still exist through the one launcher: `python SRE.py <
                               │ (📨 Send scheduled mails button → send.yml)
                               ▼
                           Sending (one row at a time) → Sent
-                                                          │
+                                                          │  bounce (nightly reply check):
+                                                          │  Steam email → no-email · researched → Invalid
                               review-mails.yml (nightly cron) ──► Replied
 ```
 
@@ -38,7 +41,7 @@ All local/manual commands still exist through the one launcher: `python SRE.py <
 - **`scrape_status`**: `pending` (awaiting email scraping) · `seeded` (Steam listed a
   valid one) · `scraped` (Hermes/Kimchi found a valid one) · `no_email` · `invalid`
   (a non-empty value failed validation) · `failed`.
-- **`Mail_status`**: valid leads follow `Pending` → `Triaged` → `Accepted` → `Drafted` →
+- **`Mail_status`**: valid leads follow `Pending` → `Triaged` → `Verifying` → `Accepted` → `Drafted` →
   `Scheduled` → `Sending` → `Sent` → `Replied`; invalid leads branch to `Invalid` and
   stop. `Invalid` is quarantined and never rendered in the review views.
 
@@ -46,7 +49,8 @@ All local/manual commands still exist through the one launcher: `python SRE.py <
   |---|---|---|
   | `Pending` | new lead, not triaged yet | discovery |
   | `Triaged` | triaged; `triage_decision` says `pass` or `flag` | MCP `submit_triage` |
-  | `Accepted` | accepted for outreach; needs a draft. Only `Triaged` + `pass` + an email can be accepted | dashboard **Accept** or MCP `accept_games` |
+  | `Verifying` | accepted; `verify.yml` is checking the email and the media | dashboard **Accept** or MCP `accept_games` |
+  | `Accepted` | email verified (or inconclusive) and media ready; needs a draft. Only `Triaged` + `pass` + an email can be accepted | `verify.yml` |
   | `Drafted` | draft saved; awaiting your approval | `draft.yml` or MCP `save_draft` |
   | `Scheduled` | approved; **waiting**. Nothing sends it until the Send button (or a manual `--send-mails`) runs | dashboard **Approve** |
   | `Sending` | hidden claim held only while one mail is being submitted | `send.yml`, per row |
@@ -58,7 +62,15 @@ All local/manual commands still exist through the one launcher: `python SRE.py <
   rejection returns the row to `Drafted`; a missing draft returns it to `Accepted`;
   a recipient that turns out to be missing returns an unsent row to `Triaged` (or
   `Pending` if it was never triaged);
-  QEV `unknown` leaves it `Scheduled`. Reject deletes the row; it is not a status.
+  an inconclusive verification (`unknown`) leaves it `Scheduled`. Reject deletes the row; it is not a status.
+
+  **Dead addresses** (see *Email verification* and *Bounces* below) clear the email:
+  `emails=''`, `scrape_status='no_email'`, back to `Triaged` (or `Pending`), with
+  `email_issue` (JSON: email, reason, source `accept`/`send`/`bounce`, time) shown as a badge
+  on the card. Research a new address, then Accept again. At send time and on a bounce, an
+  address that was already researched (`scrape_status='scraped'`) makes the game `Invalid`
+  instead, so it cannot loop. Addresses known to be invalid are never saved again (scrapers
+  and MCP `save_email` skip them).
 - **Triage** (in `scrape_tracker`): `triage_decision` is `pass` / `flag` from MCP
   `submit_triage`; `triage_reason` is the reviewer's reason; `triage_criteria_id` points
   at the rubric text in the `triage_criteria` table; `triaged_at` is the UTC timestamp.
@@ -105,7 +117,7 @@ its decision, reason and criteria.
 
 ### 🏠 Home — control panel
 Counts of Pending, Triaged, Passed, Flagged, No email (not yet accepted: Pending or
-Triaged without an email), Accepted, Drafted, Scheduled, Sent, Replied and Invalid
+Triaged without an email), Verifying email, Accepted, Drafted, Scheduled, Sent, Replied and Invalid
 (Sending only while non-zero). The Pending, Passed, Flagged, Drafted and Scheduled tiles
 open their view. **✍️ Draft accepted mails** (fires `draft.yml`) shows while `Accepted`
 rows exist; **📨 Send scheduled mails** shows while `Scheduled` rows exist.
@@ -116,8 +128,11 @@ rows exist; **📨 Send scheduled mails** shows while `Scheduled` rows exist.
 - **Reject** → deleted (rows + queued R2 cleanup).
 
 ### ✅ Passed (`Mail_status = Triaged`, `triage_decision = pass`)
-- **Accept** → `Mail_status = Accepted`. A game without an email is refused with a pop-up
-  error (also refused if its sprite sheet is missing in R2).
+- **Accept** → `Mail_status = Verifying` and starts `verify.yml` (about a minute). The
+  page polls it: verified → `Accepted`; a dead address → pop-up error, the email is cleared
+  and the game stays in Passed with a "No email" badge, ready for a new address. A game
+  without an email is refused at once with a pop-up. Missing media (e.g. purged after an
+  earlier send) is rebuilt from Steam by the verify run.
 - **Flag** → `triage_decision = flag` (reason records the override); it moves to Flagged.
 - **Accept all** (two taps) → accepts every passed game with an email, 10 per request;
   games without an email are skipped and the result pop-up lists any refusals.
@@ -158,7 +173,8 @@ Hermes socials writer alongside MCP ownership.
 **📨 Send scheduled mails** button (Home or Mail view) → fires `send.yml`. `Scheduled` only
 means *waiting*; nothing is sent until this button (or a manual `--send-mails`) runs.
 The run works through the `Scheduled` rows **one at a time**, paced 2–4 min apart. For
-each row it reads the draft from the R2 manifest, verifies the address with QEV, then
+each row it reads the draft from the R2 manifest, verifies the address (see *Email
+verification* below), then
 claims that single row `Scheduled → Sending` just before SMTP submission and flips it
 `Sending → Sent` after. Rows not yet reached stay `Scheduled`, so at most one row is
 `Sending` at a time. It preserves `Require_Socials` and `Socials_Data` and purges the
@@ -181,16 +197,43 @@ solely because an uncertain message is absent from search results.
 The Actions summary reports sent, deferred, unknown, invalid, uncertain, and unprocessed
 counts. There is no daily email-count cap. The job stops between mails after 330 minutes
 to avoid the runner's 350-minute hard timeout. Unprocessed rows stay `Scheduled`.
-QEV unknown/API failure never permits sending. Repeated addresses reuse verification
-within the batch, and only definitive valid/invalid results are persisted.
+An `unknown` verification or a verifier failure never permits sending. Repeated addresses
+reuse verification within the batch, and only definitive valid/invalid results are persisted
+(`email_verification_cache`).
+
+**Email verification** (`Email_Verifier/`) runs twice: when a game is accepted
+(`verify.yml`, `Mail_Sender/verify_accepted.py`) and per row just before SMTP submission.
+Results are cached, so the send-time check is usually free:
+1. Own SMTP check (`smtp_check.py`, free): syntax → DNS MX (lowest preference first;
+   A-record fallback; no domain / null MX → `invalid`) → connect to the MX on port 25,
+   `MAIL FROM` our sender, `RCPT TO` the address, then `RCPT TO` a random address at the
+   same domain. No message is ever sent. `valid` = the address is accepted and the random
+   one is refused. `invalid` = only an explicit "no such mailbox" answer (5.1.x / 5.2.1 or
+   that wording). Catch-all domains, policy/IP blocks (5.7.x), greylisting (4xx) and
+   timeouts are `unknown`. Role addresses (`info@`, `contact@`) are not penalised.
+2. Only `unknown` results go to QuickEmailVerification (`QEV_API_KEY`, 100 free credits a
+   day). If QEV is not set, out of credits or failing, the row stays `Scheduled` and the
+   run moves on to the next row.
+Port 25 must be reachable: it is on GitHub-hosted runners, usually not on home networks.
+`python Email_Verifier/verify_single.py ADDRESS [--smtp-only | --qev]` checks one address.
+
+**Bounces** (`Mail_Sender/bounces.py`, nightly in `review-mails.yml` before the reply
+scan): reads bounce notices
+(mailer-daemon / postmaster) from Gmail All Mail without marking them read. Only bounces
+received after this was first switched on are handled (`mail_bounce_state`), each once
+(`mail_bounce_log`). Only "mailbox / domain does not exist" (DSN 5.1.x, 5.2.1 or that
+wording) counts; spam blocks, full mailboxes and delays are logged and ignored. The
+matching `Sent` game follows the dead-address rule above and the address is cached as
+invalid. `python Mail_Sender/bounces.py --report --since YYYY-MM-DD` is a read-only check.
 `Sent` means Gmail accepted the message, not proof of final delivery to the recipient.
 The metadata table is additive and does not change dashboard columns. A code rollback
 can leave that table in place. Preserve unresolved `Sending` rows and their metadata
 during rollback so delivery evidence is not lost.
 
 ## 4. Review replies — automatic, nightly (`review-mails.yml`)
-Cron `30 18 * * *` (00:00 IST). Read-only IMAP scan of the Gmail inbox.
-Verified replies to retained outgoing message IDs flip `Sent → Replied`. No mail is sent.
+Cron `30 18 * * *` (00:00 IST). Read-only IMAP scan of the Gmail inbox (nothing is
+marked read). First new bounce notices are handled (see *Bounces* above), then
+verified replies to retained outgoing message IDs flip `Sent → Replied`. No mail is sent.
 Older sends without retained message IDs require manual confirmation.
 
 ---
@@ -210,8 +253,9 @@ No redeploy needed — the next draft run reads the new templates.
 |---|---|
 | `--discover` | discovery → stage to Turso + R2 (the nightly job's first step) |
 | `--draft-mails` | AI-draft cold mails for `Accepted` leads → R2 manifests (`draft.yml`) |
+| `--verify-accepted` | check email + media of `Verifying` games → `Accepted` or back to no-email (`verify.yml`) |
 | `--send-mails` | send `Scheduled` mails (`send.yml`); `--dry-run`, `--limit N` locally |
-| `--review-mails` | check `Sent` leads for replies → `Replied` (`review-mails.yml`) |
+| `--review-mails` | handle new bounces, then check `Sent` leads for replies → `Replied` (`review-mails.yml`) |
 | `--repair-invalid` | quarantine existing unsent rows with missing/invalid recipients |
 | `--sync-templates` | push cold-mail templates → R2 |
 | `--sync-media` | mirror local staged media → R2 |
@@ -229,7 +273,7 @@ No redeploy needed — the next draft run reads the new templates.
 `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `R2_PUBLIC_BASE`, `R2_BUCKET`, `R2_ACCOUNT_ID`,
 `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `TRIAGE_BASE_URL`, `TRIAGE_MODEL`,
 `TRIAGE_API_KEY` (Hermes; also a local drafting fallback), `MAIL_WRITER_BASE_URL`, `MAIL_WRITER_MODEL`,
-`MAIL_WRITER_API_KEY` (drafting), `QEV_API_KEY` (send-time email verification),
+`MAIL_WRITER_API_KEY` (drafting), `QEV_API_KEY` (optional fallback for addresses the SMTP check cannot settle),
 `GMAIL_USER`, `GMAIL_APP_PASSWORD`, `KIMCHI_API_KEY`, and for Epic
 `EPIC_TURSO_DATABASE_URL`, `EPIC_TURSO_AUTH_TOKEN`.
 

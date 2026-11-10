@@ -276,9 +276,10 @@ def mails_to_review():
 
 
 def Accept_Game(gameId):
-    """Accept: mark the lead for outreach (Triaged -> 'Accepted'). Only games
+    """Accept: queue the lead for verification (Triaged -> 'Verifying'); the verify job
+    (python SRE.py --verify-accepted) moves it to Accepted. Only games
     triaged as pass with an email can be accepted. The media folder is kept."""
-    pipeline.set_mail_status(gameId, "Accepted")
+    pipeline.set_mail_status(gameId, "Verifying")
 
 
 def Approve_Mail(gameId):
