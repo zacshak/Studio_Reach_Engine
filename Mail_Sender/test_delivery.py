@@ -32,9 +32,6 @@ class DeliveryTest(unittest.TestCase):
         self.send = enter(patch.object(mailer, "_send"))
         self.cleanup = enter(patch.object(mailer, "_delete_media"))
         self.drafts = enter(patch.object(mailer, "_load_mail", return_value=("Subject", "Body", "draft.txt")))
-        self.verifier = Mock()
-        self.verifier.verify.return_value = {"result": "valid"}
-        enter(patch.object(mailer.EmailVerifier, "from_env", return_value=self.verifier))
         self.sleep = enter(patch.object(mailer.time, "sleep"))
         enter(patch.object(mailer.time, "monotonic", return_value=1000))
         enter(patch.object(mailer.random, "randint", return_value=120))
@@ -232,41 +229,6 @@ class DeliveryTest(unittest.TestCase):
         self.assertEqual(self.state(1), "Sending")
         self.assertEqual(mailer.pipeline.get_send_attempt(1)[0], "new")
 
-    def test_same_address_is_verified_only_once_even_when_cache_write_fails(self):
-        self.seed(1, "shared@example.com")
-        self.seed(2, "shared@example.com")
-        with patch.object(mailer.pipeline, "cache_email_verification", side_effect=ValueError("connection closed")), \
-                patch.object(mailer.pipeline, "reconnect"):
-            self.assertEqual(mailer.main(), 0)
-        self.verifier.verify.assert_called_once()
-        self.assertEqual(self.send.call_count, 2)
-
-    def test_unknown_verification_is_not_invalid_and_is_not_repeated_in_the_batch(self):
-        self.seed(1, "shared@example.com")
-        self.seed(2, "shared@example.com")
-        self.verifier.verify.return_value = {"result": "unknown"}
-        self.assertEqual(mailer.main(), 0)
-        self.assertEqual((self.state(1), self.state(2)), ("Scheduled", "Scheduled"))
-        self.verifier.verify.assert_called_once()
-        self.send.assert_not_called()
-
-    def test_quota_exhaustion_never_bypasses_verification(self):
-        self.seed(1)
-        self.seed(2)
-        self.verifier.verify.side_effect = mailer.QEVError("quota", status_code=402)
-        self.assertEqual(mailer.main(), 0)
-        self.assertEqual((self.state(1), self.state(2)), ("Scheduled", "Scheduled"))
-        self.send.assert_not_called()
-
-    def test_wrong_recipient_and_malformed_verification_fail_closed(self):
-        self.seed(1)
-        for result in ({"result": "valid", "email": "other@example.com"}, [], {"result": "unexpected"}):
-            with self.subTest(result=result):
-                self.verifier.verify.return_value = result
-                self.assertEqual(mailer.main(), 1)
-                self.assertEqual(self.state(1), "Scheduled")
-                self.send.assert_not_called()
-
     def test_missing_draft_and_r2_failure_do_not_affect_other_rows(self):
         for appid in (1, 2, 3):
             self.seed(appid)
@@ -399,25 +361,11 @@ class DeliveryTest(unittest.TestCase):
         self.assertIsNone(mailer.pipeline.get_email_verification(email))
         self.assertFalse(mailer.pipeline.cache_email_verification(email, {"result": "valid", "email": 123}))
 
-    def test_dry_run_never_verifies_claims_sends_or_deletes_media(self):
+    def test_dry_run_never_claims_sends_or_deletes_media(self):
         self.seed(1)
         self.assertEqual(mailer.main(dry_run=True), 0)
         self.assertEqual(self.state(1), "Scheduled")
         self.assertIsNone(mailer.pipeline.get_send_attempt(1))
-        self.verifier.verify.assert_not_called()
-        self.send.assert_not_called()
-        self.cleanup.assert_not_called()
-
-    def test_recipient_change_during_verification_is_not_quarantined_or_sent(self):
-        original = self.seed(1)
-
-        def verify_and_change(email):
-            self.sql("UPDATE scrape_tracker SET emails=? WHERE appid=1", ("new@example.com",))
-            return {"result": "invalid", "email": original}
-
-        self.verifier.verify.side_effect = verify_and_change
-        self.assertEqual(mailer.main(), 0)
-        self.assertEqual(self.state(1), "Scheduled")
         self.send.assert_not_called()
         self.cleanup.assert_not_called()
 

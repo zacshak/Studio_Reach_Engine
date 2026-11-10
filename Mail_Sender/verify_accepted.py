@@ -3,7 +3,8 @@
 Fired by the dashboard's Accept / Accept all (verify.yml). For each Verifying game:
   1. Verify its email: cached result, else own SMTP check, QEV only if inconclusive.
      invalid  -> email cleared, back to Triaged/Pending as "no email" (email_issue says why)
-     valid / unknown -> continue (the send step re-checks unknown addresses before sending)
+     unknown  -> not accepted: back to Triaged with the email kept, to retry later
+     valid    -> continue (this is the only check: the send step does not verify again)
   2. Make sure its media (screenshots + sprite sheet + manifest) is in R2. Games whose
      media was purged after an earlier send (e.g. after a bounce) are rebuilt from Steam.
      If that fails the game returns to Triaged with its email kept and email_issue set.
@@ -128,7 +129,7 @@ def _verify(verifier, email):
         with _deadline(VERIFY_SECONDS):
             result = verifier.verify(email)
     except VerifyTimeout as exc:
-        # Inconclusive, not invalid: the game is accepted and the send step checks again.
+        # Inconclusive, not invalid: the game is not accepted and keeps its email.
         return {"email": email, "result": "unknown", "reason": str(exc), "source": "timeout"}, False
     try:
         pipeline.cache_email_verification(email, result)
@@ -141,7 +142,7 @@ def _verify(verifier, email):
 def main():
     rows = pipeline.verifying_rows()
     print(f"{len(rows)} game(s) waiting in Verifying")
-    stats = dict(accepted=0, media_rebuilt=0, no_mail=0, returned=0, skipped=0)
+    stats = dict(accepted=0, media_rebuilt=0, no_mail=0, unverified=0, returned=0, skipped=0)
     if not rows:
         _summary(stats)
         return 0
@@ -176,7 +177,15 @@ def main():
                     from_statuses=("Verifying",), researched_to_invalid=False)
                 stats["no_mail" if outcome else "skipped"] += 1
                 continue
-            if verdict not in ("valid", "unknown"):
+            if verdict == "unknown":
+                # Not provable either way (server blocked us, timed out, QEV and Abstract out):
+                # do not accept. The game stays in Passed with its email for a later retry.
+                ok = pipeline.return_unverified(
+                    appid, expected_email=raw, reason=f"could not verify: {reason or 'no answer'}")
+                print(f"  NOT ACCEPTED {appid}: could not verify {email}; email kept")
+                stats["unverified" if ok else "skipped"] += 1
+                continue
+            if verdict != "valid":
                 raise RuntimeError(f"unexpected verification result {verdict!r}")
             if client is None:
                 raise MediaError("R2 credentials missing")

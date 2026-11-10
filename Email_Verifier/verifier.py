@@ -1,4 +1,4 @@
-"""Verification chain used by the send stage: own SMTP check first, QEV only as fallback.
+"""Verification chain used when a game is accepted: own SMTP check, then QEV, then Abstract.
 
 SMTP gives a definitive answer (valid / invalid) for most mailboxes at no cost. Catch-all
 domains (the server accepts any address) count as valid: nobody can prove those mailboxes,
@@ -6,9 +6,9 @@ and QEV only answers "valid" + accept_all for them. Only the ones SMTP cannot se
 (servers that block probes, timeouts, greylisting) are sent to QuickEmailVerification,
 whose free plan allows 100 lookups a day. When QEV is not configured, out of credits or
 failing, Abstract API's Email Reputation endpoint (100 free requests a month) takes over
-for the rest of the run. When that is missing or exhausted too, those stay "unknown" and
-the mail stays Scheduled: such a lead is never sent unverified and never dropped on an
-inconclusive answer. A fallback error never turns into "valid".
+for the rest of the run. When that is missing or exhausted too, those stay "unknown": the
+game is not accepted, keeps its email, and can be accepted again later. A fallback error
+never turns into "valid".
 """
 
 from __future__ import annotations
@@ -67,7 +67,7 @@ class EmailVerifier:
             fallback = self.abstract.verify(email)
         except AbstractError as exc:
             self.log(f"  Abstract exhausted or unavailable ({exc}); "
-                     "inconclusive addresses stay Scheduled")
+                     "inconclusive addresses stay unverified")
             self.abstract = None  # stop asking for the rest of this run
             return result
         return {**fallback, "source": "abstract", "smtp_reason": result["reason"]}
@@ -82,7 +82,7 @@ class EmailVerifier:
             problem = ("daily credits used up" if exc.status_code == 402
                        else f"unavailable ({exc})")
             then = ("switching to Abstract for the rest of the run" if self.abstract
-                    else "inconclusive addresses stay Scheduled")
+                    else "inconclusive addresses stay unverified")
             self.log(f"  QEV {problem}; {then}")
             self.qev = None  # stop asking for the rest of this run
             return None

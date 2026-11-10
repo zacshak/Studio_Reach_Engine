@@ -48,7 +48,6 @@ sys.path.insert(0, os.path.join(ROOT, "Leads_Reviewer"))
 sys.path.insert(0, ROOT)
 import pipeline      # noqa: E402
 import media_store   # noqa: E402  (cloud send: draft from R2 manifest, media purge in R2)
-from Email_Verifier import EmailVerifier, QEVError  # noqa: E402
 
 MEDIA_DIR = os.path.join(ROOT, "Leads_Reviewer", "Studios_To_Review", "Approval_Pending_Games")
 # Cloud (GHA send job): no local media folders — drafts + media live in R2. Same test
@@ -365,7 +364,6 @@ def main(dry_run=False, limit=None):
     if budget < 0 or not math.isfinite(budget):
         raise ValueError("SEND_TIME_BUDGET_SECONDS must be finite and nonnegative")
     deadline = time.monotonic() + budget if budget else float("inf")
-    verifier = None
     uncertain = 0 if dry_run else _reconcile_sending(user, password)
 
     scheduled = pipeline.mail_status_emails("Scheduled")
@@ -392,7 +390,7 @@ def main(dry_run=False, limit=None):
     malformed = sum(pipeline.email_state(raw) == "invalid" for _, raw in invalid)
     stats = dict(sent=0, accepted_unrecorded=0, deferred=0, invalid=malformed,
                  missing_email=len(invalid) - malformed,
-                 unknown=0, rejected=0, uncertain=uncertain, skipped=0)
+                 rejected=0, uncertain=uncertain, skipped=0)
     print(f"scheduled: {len(scheduled)} ({len(valid)} syntactically valid) | "
           f"sending up to: {sending}{' (DRY RUN)' if dry_run else ''}")
     if not valid or room == 0:
@@ -402,7 +400,6 @@ def main(dry_run=False, limit=None):
         return int(bool(uncertain))
 
     processed, attempted, error = 0, False, ""
-    verified = {}
     try:
         for appid, to, raw in valid:
             if room is not None and stats["sent"] + stats["accepted_unrecorded"] >= room:
@@ -429,50 +426,8 @@ def main(dry_run=False, limit=None):
                 print(f"  [dry] {appid} -> {to} | {subject!r} | {os.path.basename(path)}")
                 stats["sent"] += 1
                 continue
-            key = to.casefold()
-            result = verified.get(key)
-            if result is None:
-                result = pipeline.get_email_verification(to)
-                if result is None:
-                    verifier = verifier or EmailVerifier.from_env()
-                    result = verifier.verify(to)
-                    try:
-                        pipeline.cache_email_verification(to, result)
-                    except Exception as exc:
-                        print(f"WARN {appid}: verification cache write failed: {exc}")
-                        pipeline.reconnect()
-                else:
-                    print(f"  CACHED {appid} -> {to}: earlier verification reused")
-                verified[key] = result
-            verification = str(result.get("result", "")).lower() if isinstance(result, dict) else ""
-            if verification not in ("valid", "invalid", "unknown"):
-                raise QEVError(f"unexpected verification result for {to}: {verification!r}")
-            if "email" in result and (not isinstance(result["email"], str) or
-                                      result["email"].strip().casefold() != key):
-                raise QEVError(f"verification response does not match recipient {to}")
-            if verification == "unknown":
-                print(f"SKIP {appid}: verification unknown ({result.get('reason', 'no reason')}). "
-                      "Left Scheduled.")
-                stats["unknown"] += 1
-                continue
-            if verification == "invalid":
-                # Same rule as bounces: a Steam-provided address goes back to "no email" for
-                # research (media kept); an already-researched one ends the game as Invalid.
-                outcome = pipeline.reject_email(
-                    appid, expected_email=raw, reason=result.get("reason", "invalid"),
-                    source="send", from_statuses=("Scheduled",), researched_to_invalid=True)
-                if outcome == "invalid":
-                    try:
-                        _delete_media(appid)
-                    except Exception as exc:
-                        print(f"WARN {appid}: invalid, but media cleanup failed: {exc}")
-                    stats["invalid"] += 1
-                elif outcome == "no_mail":
-                    print(f"NO MAIL {appid}: {to} is invalid -> back to no-email for research")
-                    stats["invalid"] += 1
-                else:
-                    stats["skipped"] += 1
-                continue
+            # No mailbox check here: addresses are verified once, when the game is accepted
+            # (verify.yml). A dead address found later is caught by the nightly bounce scan.
             if attempted:
                 gap = random.randint(MIN_GAP, MAX_GAP)
                 if time.monotonic() + gap + 120 >= deadline:
@@ -491,12 +446,6 @@ def main(dry_run=False, limit=None):
                 error = "SMTP account/setup error. Remaining mails stay Scheduled."
                 break
             stats[outcome] += 1
-    except QEVError as exc:
-        error = str(exc)
-        print(f"STOP: {error}. Remaining mails stay Scheduled.")
-        if exc.status_code == 402:
-            error = ""  # quota exhaustion is an expected deferral, never a verification bypass
-        stats["deferred"] += 1
     except KeyboardInterrupt:
         error = "interrupted. Review any Sending rows before resolving them."
         print(f"STOP: {error}")

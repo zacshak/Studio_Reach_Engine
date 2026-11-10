@@ -112,7 +112,7 @@
 </main>
 <div id="toast" role="alert" aria-live="assertive"></div>
 <dialog id="verifyDialog" aria-labelledby="verifyTitle">
-  <h2 id="verifyTitle">Email verification failed</h2>
+  <h2 id="verifyTitle">Not accepted</h2>
   <div id="verifyBody"></div>
   <form method="dialog"><button>OK</button></form>
 </dialog>
@@ -642,6 +642,7 @@ const VERIFY_KEY = 'sre_verify_watch';
 try { verifyWatch = new Set((JSON.parse(localStorage.getItem(VERIFY_KEY) || '[]')).map(Number).filter(Boolean)); } catch {}
 function saveWatch() { try { localStorage.setItem(VERIFY_KEY, JSON.stringify([...verifyWatch])); } catch {} }
 function issueText(issue) {
+  if (issue.kept) return `Couldn't verify ${issue.email || 'the email'}; try Accept again later`;
   const why = { accept: 'failed verification', send: 'failed verification at send', bounce: 'bounced' }[issue.source] || 'was dropped';
   return `${issue.email || 'Previous email'} ${why}`;
 }
@@ -685,8 +686,10 @@ function showVerifyFailures(games) {
   const name = g => S?.issues?.[g.appid]?.game || manifests.get(S?.index?.[String(g.appid)])?.name || `appid ${g.appid}`;
   const items = games.map(g => {
     const i = g.issue || {};
-    const what = i.email ? `${i.email} is not a working address (${i.reason || 'invalid'}). The email was cleared — research a new one, then accept again.`
-      : `could not be accepted: ${i.reason || 'unknown reason'}. Its email was kept; try Accept again.`;
+    const what = i.kept
+      ? `could not be accepted: ${i.reason || 'the email could not be verified'}. Its email was kept; try Accept again later.`
+      : i.email ? `${i.email} is not a working address (${i.reason || 'invalid'}). The email was cleared — research a new one, then accept again.`
+      : `could not be accepted: ${i.reason || 'unknown reason'}.`;
     return `<li><b>${escapeHtml(name(g))}</b>: ${escapeHtml(what)}</li>`;
   });
   $("#verifyBody").innerHTML = `<ul>${items.join('')}</ul>`;

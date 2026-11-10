@@ -1052,9 +1052,9 @@ def quarantine_verified_invalid(appid, *, expected_email=None):
     return row is not None
 
 
-def _issue(email, reason, source):
+def _issue(email, reason, source, **extra):
     return json.dumps({"email": email, "reason": str(reason)[:300], "source": source,
-                       "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")},
+                       "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), **extra},
                       ensure_ascii=False)
 
 
@@ -1081,13 +1081,15 @@ def finish_verification(appid, *, expected_email):
 
 
 def return_unverified(appid, *, expected_email, reason):
-    """Verifying -> Triaged keeping the email (e.g. the media could not be rebuilt)."""
+    """Verifying -> Triaged keeping the email: the address could not be verified either way,
+    or the media could not be rebuilt. email_issue has kept=true so the dashboard says
+    "try again" rather than "email cleared"."""
     _ensure()
     with closing(_rw()) as conn:
         row = conn.execute(
             "UPDATE scrape_tracker SET Mail_status='Triaged', email_issue=? "
             "WHERE appid=? AND Mail_status='Verifying' AND emails=? RETURNING appid",
-            (_issue(normalize_email(expected_email), reason, "accept"), int(appid),
+            (_issue(normalize_email(expected_email), reason, "accept", kept=True), int(appid),
              expected_email)).fetchone()
         conn.commit()
     return row is not None
