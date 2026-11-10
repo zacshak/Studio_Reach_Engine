@@ -1,3 +1,4 @@
+import { KEEP_SQL } from './triage.js';
 // Backend for the MCP workflow tools. Every write uses the same guarded SQL as the
 // dashboard so an agent cannot move a row from a state the dashboard would refuse.
 
@@ -19,26 +20,25 @@ export function batchIds(body, max = BATCH) {
 
 // Every review queue as appid lists, without media indexes or recommendation text.
 export async function queues(env, sql) {
-  const [approval, nomail, triage, writing, drafted, scheduled, sending] = await sql(env, [
-    ["SELECT appid FROM scrape_tracker WHERE Mail_status='Pending' AND scrape_status IN ('seeded','scraped') AND coalesce(triage_decision,'')<>'flag' ORDER BY appid"],
-    ["SELECT appid FROM scrape_tracker WHERE Mail_status='Pending' AND scrape_status IN ('pending','no_email','failed') AND coalesce(triage_decision,'')<>'flag' ORDER BY appid"],
-    ["SELECT appid FROM scrape_tracker WHERE Mail_status='Pending' AND triage_kept=0 AND triage_decision='flag' ORDER BY appid"],
-    ["SELECT appid FROM scrape_tracker WHERE Mail_status='Writing' ORDER BY appid"],
+  const [untriaged, approval, nomail, triage, accepted, drafted, scheduled, sending] = await sql(env, [
+    ["SELECT appid FROM scrape_tracker WHERE Mail_status='Pending' ORDER BY appid"],
+    ["SELECT appid FROM scrape_tracker WHERE Mail_status='Triaged' AND triage_decision='pass' AND scrape_status IN ('seeded','scraped') ORDER BY appid"],
+    ["SELECT appid FROM scrape_tracker WHERE Mail_status='Triaged' AND triage_decision='pass' AND scrape_status IN ('pending','no_email','failed') ORDER BY appid"],
+    ["SELECT appid FROM scrape_tracker WHERE Mail_status='Triaged' AND triage_decision='flag' ORDER BY appid"],
+    ["SELECT appid FROM scrape_tracker WHERE Mail_status='Accepted' ORDER BY appid"],
     ["SELECT appid FROM scrape_tracker WHERE Mail_status='Drafted' ORDER BY appid"],
     ["SELECT appid FROM scrape_tracker WHERE Mail_status='Scheduled' ORDER BY appid"],
     ["SELECT appid FROM scrape_tracker WHERE Mail_status='Sending' ORDER BY appid"],
   ]);
   const ids = rows => rows.map(r => Number(r[0]));
-  const out = { approval: ids(approval), nomail: ids(nomail), triage: ids(triage), writing: ids(writing),
-    mail_approval: ids(drafted), scheduled: ids(scheduled), sending: ids(sending) };
-  const [untriaged] = await sql(env, [["SELECT appid FROM scrape_tracker WHERE Mail_status='Pending' AND triage_decision IS NULL ORDER BY appid"]]);
-  out.untriaged = ids(untriaged);
+  const out = { untriaged: ids(untriaged), approval: ids(approval), nomail: ids(nomail), triage: ids(triage),
+    accepted: ids(accepted), mail_approval: ids(drafted), scheduled: ids(scheduled), sending: ids(sending) };
   out.counts = Object.fromEntries(Object.entries(out).map(([k, v]) => [k, v.length]));
   return out;
 }
 
-// Pending -> Writing for a batch. Same media checks as the dashboard Accept, and a
-// flagged game must be kept (or re-triaged as pass) before it can be accepted.
+// Triaged -> Accepted for a batch. Same media checks as the dashboard Accept; only
+// games triaged as pass that have an email can move (a flagged game must be kept).
 export async function acceptMany(env, body, sql, getJSON) {
   const appids = batchIds(body);
   const index = await getJSON(env, 'index.json') || {};
@@ -51,9 +51,9 @@ export async function acceptMany(env, body, sql, getJSON) {
         throw new Error('screenshot export is incomplete');
       const sprite = await env.MEDIA.head(`${folder}/SpriteSheet_Screenshots.png`);
       if (!sprite || sprite.size <= 0) throw new Error('sprite sheet is missing or empty');
-      const [changed] = await sql(env, [["UPDATE scrape_tracker SET Mail_status='Writing' WHERE appid=? AND Mail_status='Pending' AND scrape_status IN ('seeded','scraped') AND coalesce(triage_decision,'')<>'flag' RETURNING appid", appid]]);
+      const [changed] = await sql(env, [["UPDATE scrape_tracker SET Mail_status='Accepted' WHERE appid=? AND Mail_status='Triaged' AND triage_decision='pass' AND scrape_status IN ('seeded','scraped') RETURNING appid", appid]]);
       results.push(changed.length ? { appid, ok: true }
-        : { appid, ok: false, error: 'not Pending with an email, or flagged in triage' });
+        : { appid, ok: false, error: 'not Triaged as pass with an email (untriaged, flagged, no email or already accepted)' });
     } catch (error) { results.push({ appid, ok: false, error: error.message }); }
   }
   return { accepted: results.filter(r => r.ok).map(r => r.appid), failed: results.filter(r => !r.ok) };
@@ -67,17 +67,17 @@ export async function approveMany(env, body, sql) {
   return { approved: appids.filter(a => moved.has(a)), not_drafted: appids.filter(a => !moved.has(a)) };
 }
 
-// Drafted -> Writing: discard the saved draft so it can be drafted again.
+// Drafted -> Accepted: discard the saved draft so it can be drafted again.
 // The manifest draft is cleared first; if the row then fails to move, the sender would
-// find no draft and requeue it to Writing anyway, so no mail can go out unreviewed.
-export async function returnToWriting(env, body, sql, getJSON) {
+// find no draft and requeue it to Accepted anyway, so no mail can go out unreviewed.
+export async function returnToAccepted(env, body, sql, getJSON) {
   const appids = batchIds(body);
   const index = await getJSON(env, 'index.json') || {};
   const results = [];
   for (const appid of appids) {
     try {
       const [status] = await sql(env, [["SELECT Mail_status FROM scrape_tracker WHERE appid=?", appid]]);
-      if (status[0]?.[0] !== 'Drafted') throw new Error('only Drafted rows can be returned to Writing');
+      if (status[0]?.[0] !== 'Drafted') throw new Error('only Drafted rows can be returned to Accepted');
       const folder = index[String(appid)];
       if (!folder) throw new Error('game has no indexed media');
       const key = `${folder}/manifest.json`;
@@ -88,7 +88,7 @@ export async function returnToWriting(env, body, sql, getJSON) {
       const written = await env.MEDIA.put(key, JSON.stringify(rest), {
         onlyIf: { etagMatches: object.etag }, httpMetadata: { contentType: 'application/json' } });
       if (!written) throw new Error('manifest changed concurrently; retry');
-      const [changed] = await sql(env, [["UPDATE scrape_tracker SET Mail_status='Writing' WHERE appid=? AND Mail_status='Drafted' RETURNING appid", appid]]);
+      const [changed] = await sql(env, [["UPDATE scrape_tracker SET Mail_status='Accepted' WHERE appid=? AND Mail_status='Drafted' RETURNING appid", appid]]);
       results.push(changed.length ? { appid, ok: true } : { appid, ok: false, error: 'row changed before it could move' });
     } catch (error) { results.push({ appid, ok: false, error: error.message }); }
   }
@@ -96,7 +96,8 @@ export async function returnToWriting(env, body, sql, getJSON) {
 }
 
 const EMAIL = /^[^\s@,<>"()[\]\\;:]+@[^\s@,<>"()[\]\\;:]+\.[^\s@,<>"()[\]\\;:.]+$/;
-// Same contract as pipeline.write_result: only Pending rows still awaiting an email.
+// Same contract as pipeline.write_result: only unaccepted (Pending or Triaged) rows
+// still awaiting an email.
 export async function saveEmail(env, body, sql) {
   const appid = Number(body?.appid);
   if (!Number.isSafeInteger(appid) || appid <= 0) throw new Error('invalid appid');
@@ -121,9 +122,9 @@ export async function saveEmail(env, body, sql) {
   if (emails) { sets.push('emails=?'); args.push(emails); }
   if (website) { sets.push('website=?'); args.push(website); }
   const [rows] = await sql(env, [[`UPDATE scrape_tracker SET ${sets.join(', ')}
-    WHERE appid=? AND Mail_status='Pending' AND scrape_status IN ('pending','failed','no_email')
+    WHERE appid=? AND Mail_status IN ('Pending','Triaged') AND scrape_status IN ('pending','failed','no_email')
     RETURNING appid, scrape_status, emails`, ...args, appid]]);
-  if (!rows.length) throw new Error('lead is missing, not Pending, or already has an email');
+  if (!rows.length) throw new Error('lead is missing, already accepted, or already has an email');
   return { appid, scrape_status: rows[0][1], emails: rows[0][2] ?? null };
 }
 
@@ -155,10 +156,10 @@ export async function workflowRuns(env, body) {
     updated_at: run.updated_at, url: run.html_url })) };
 }
 
-// Triage Keep for a batch (same SQL as the dashboard Keep); reports rows that changed.
+// Triage Keep for a batch (same SQL as the dashboard Keep): flag -> pass.
 export async function keepMany(env, body, sql) {
   const appids = batchIds(body);
-  const [rows] = await sql(env, [["UPDATE scrape_tracker SET triage_decision='kept', triage_kept=1, triaged_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE appid IN (SELECT value FROM json_each(?)) AND Mail_status='Pending' RETURNING appid", JSON.stringify(appids)]]);
+  const [rows] = await sql(env, [[`${KEEP_SQL} AND appid IN (SELECT value FROM json_each(?)) RETURNING appid`, JSON.stringify(appids)]]);
   const kept = new Set(rows.map(r => Number(r[0])));
-  return { kept: appids.filter(a => kept.has(a)), not_pending: appids.filter(a => !kept.has(a)) };
+  return { kept: appids.filter(a => kept.has(a)), not_flagged: appids.filter(a => !kept.has(a)) };
 }

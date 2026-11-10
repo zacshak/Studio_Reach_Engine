@@ -10,7 +10,7 @@ the single front door so you don't memorise six script paths.
     python SRE.py --irrelevants-list          # AI-triage staged games -> Rejected Games = [..]
     python SRE.py --noseed-urls               # print websites of pending (no-email) leads
     python SRE.py --ingest-mailids '{"url":..,"email":..}, ..'   # feed scraped emails back
-    python SRE.py --draft-mails               # AI-draft cold mails for 'Writing' leads -> R2
+    python SRE.py --draft-mails               # AI-draft cold mails for 'Accepted' leads -> R2
     python SRE.py --sync-templates            # push cold-mail templates -> R2 (drafter source)
     python SRE.py --send-mails                # send scheduled cold mails (--dry-run, --limit N)
     python SRE.py --review-mails              # check Sent leads for replies -> mark 'Replied'

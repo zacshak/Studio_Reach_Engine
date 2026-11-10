@@ -17,11 +17,11 @@
 // status strings); R2 layout mirrors Leads_Reviewer/media_store.py (index.json,
 // <GameName>_<appid>/manifest.json + images). Triage lives in scrape_tracker.
 
-import { triageSnapshot, saveTriage, TRIAGE_SQL } from './triage.js';
+import { triageSnapshot, saveTriage, TRIAGE_SQL, KEEP_SQL } from './triage.js';
 import { rejectRows, cleanupJobs } from './deletion.js';
 import { draftRequest } from './drafting.js';
 import { queueSocialsStatement, saveSocials, readSocialRequestBody } from './socials.js';
-import { WORKFLOWS, queues, keepMany, acceptMany, approveMany, returnToWriting, saveEmail, triageDetails, workflowRuns } from './agent-actions.js';
+import { WORKFLOWS, queues, keepMany, acceptMany, approveMany, returnToAccepted, saveEmail, triageDetails, workflowRuns } from './agent-actions.js';
 
 // ---- Turso over HTTP (Hrana v2 pipeline; one fetch = N statements, no client lib) ----
 const hranaStmt = ([q, ...args]) => ({
@@ -107,29 +107,29 @@ async function state(env) {
   const [index, db] = await Promise.all([
     getJSON(env, "index.json"),
     sql(env, [
-      // has-email states only ('pending'/'no_email'/'failed' belong in No-Mail or
-      // nowhere yet — a bare Mail_status check let those leak in here too, GH-bug).
-      ["SELECT appid FROM scrape_tracker WHERE Mail_status='Pending' AND scrape_status IN ('seeded','scraped') ORDER BY appid"],
+      // Triaged as pass with an email ('pending'/'no_email'/'failed' go to No-Mail).
+      [APPROVAL_SQL],
       ["SELECT appid, emails FROM scrape_tracker WHERE Mail_status='Drafted' ORDER BY appid"],
       [NOMAIL_SQL],
       ["SELECT EXISTS(SELECT 1 FROM scrape_tracker WHERE Mail_status='Scheduled')"],
       // accepted but the drafter hasn't written the mail yet — gates the Draft button
-      ["SELECT EXISTS(SELECT 1 FROM scrape_tracker WHERE Mail_status='Writing')"],
+      ["SELECT EXISTS(SELECT 1 FROM scrape_tracker WHERE Mail_status='Accepted')"],
       [TRIAGE_SQL],
+      ["SELECT count(*) FROM scrape_tracker WHERE Mail_status='Pending'"],
     ]),
   ]);
-  const [pending, drafted, nomail, sched, writing, reviews] = db;
+  const [approval, drafted, nomail, sched, accepted, reviews, untriaged] = db;
   const { triage, triageReviews } = triageSnapshot(reviews);
-  const flagged = new Set(triage);
   return {
     index: index || {},
     triage,
     triageReviews,
-    approval: pending.map((r) => Number(r[0])).filter((a) => !flagged.has(a)),
+    approval: approval.map((r) => Number(r[0])),
     mail: drafted.map((r) => ({ appid: Number(r[0]), emails: r[1] || "" })),
-    nomail: nomail.map((r) => Number(r[0])).filter((a) => !flagged.has(a)),
+    nomail: nomail.map((r) => Number(r[0])),
     scheduled: Number(sched[0]?.[0]) === 1,
-    pendingDrafts: Number(writing[0]?.[0]) === 1,
+    pendingDrafts: Number(accepted[0]?.[0]) === 1,
+    untriaged: Number(untriaged[0]?.[0]) || 0,
   };
 }
 
@@ -139,15 +139,14 @@ const approveStmt = (appid) => [
   appid,
 ];
 
-const NOMAIL_SQL = "SELECT appid FROM scrape_tracker WHERE scrape_status IN ('pending','no_email','failed') AND Mail_status='Pending' ORDER BY appid";
-const TRIAGE_KEPT_SQL = "SELECT appid FROM scrape_tracker WHERE triage_decision='kept'";
+// Approval and No-Mail hold games triaged as pass, split by whether an email exists.
+const APPROVAL_SQL = "SELECT appid FROM scrape_tracker WHERE Mail_status='Triaged' AND triage_decision='pass' AND scrape_status IN ('seeded','scraped') ORDER BY appid";
+const NOMAIL_SQL = "SELECT appid FROM scrape_tracker WHERE Mail_status='Triaged' AND triage_decision='pass' AND scrape_status IN ('pending','no_email','failed') ORDER BY appid";
+// Triaged -> Accepted: only games triaged as pass that have an email.
+const ACCEPT_SQL = "UPDATE scrape_tracker SET Mail_status='Accepted' WHERE appid=? AND Mail_status='Triaged' AND triage_decision='pass' AND scrape_status IN ('seeded','scraped') RETURNING appid";
 
 
-const keepStmt = (appid) => [
-  // triage_kept is still written so a rolled-back Worker keeps honouring the Keep.
-  "UPDATE scrape_tracker SET triage_decision='kept', triage_kept=1, triaged_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE appid=? AND Mail_status='Pending'",
-  appid,
-];
+const keepStmt = (appid) => [`${KEEP_SQL} AND appid=? RETURNING appid`, appid];
 
 
 
@@ -173,7 +172,7 @@ function manyIds(body) {
 
 async function act(env, body) {
   switch (body.action) {
-    case "accept": { // Game Approval ✅ -> Mail_status 'Writing'
+    case "accept": { // Game Approval ✅ -> Mail_status 'Accepted'
       const appid = oneId(body);
       const index = await getJSON(env, 'index.json') || {};
       const folder = index[String(appid)];
@@ -183,7 +182,8 @@ async function act(env, body) {
       const sprite = await env.MEDIA.head(`${folder}/SpriteSheet_Screenshots.png`);
       if (!sprite || sprite.size <= 0)
         throw new Error(`Cannot draft ${appid}: sprite sheet is missing or empty. Repair media first.`);
-      await sql(env, [["UPDATE scrape_tracker SET Mail_status='Writing' WHERE appid=? AND Mail_status='Pending' AND scrape_status IN ('seeded','scraped')", appid]]);
+      const [moved] = await sql(env, [[ACCEPT_SQL, appid]]);
+      if (!moved.length) throw new Error(`Cannot accept ${appid}: only games triaged as pass with an email can be accepted.`);
       break;
     }
     case "reject": { // ❌ anywhere -> delete both tables + purge media
@@ -202,16 +202,16 @@ async function act(env, body) {
     case "keep_many": return keepMany(env, body, sql);
     case "accept_many": return acceptMany(env, body, sql, getJSON);
     case "approve_many": return approveMany(env, body, sql);
-    case "return_to_writing": return returnToWriting(env, body, sql, getJSON);
+    case "return_to_accepted": return returnToAccepted(env, body, sql, getJSON);
     case "approve_all": {
       const appids = manyIds(body);
       await sql(env, [["UPDATE scrape_tracker SET Mail_status='Scheduled' WHERE appid IN (SELECT value FROM json_each(?)) AND Mail_status='Drafted' AND scrape_status IN ('seeded','scraped')", JSON.stringify(appids)]]);
       break;
     }
-    case "keep": { // Triage: persist human Keep, then unflag into the normal queue
+    case "keep": { // Triage: human Keep turns the flag into pass (normal queue)
       const appid = oneId(body);
-      await sql(env, [keepStmt(appid)]);
-      // triage_decision='kept' is authoritative; AI recommendations can no longer change it.
+      const [kept] = await sql(env, [keepStmt(appid)]);
+      if (!kept.length) throw new Error(`Cannot keep ${appid}: it is not a flagged Triaged game.`);
       break;
     }
     case "reject_irrelevant": { // Triage ❌: full delete (drops the recommendation with the row)
@@ -259,7 +259,7 @@ const json = (obj, status = 200) =>
   });
 
 export {
-  approveStmt, keepStmt, NOMAIL_SQL, TRIAGE_KEPT_SQL,
+  approveStmt, keepStmt, APPROVAL_SQL, NOMAIL_SQL, ACCEPT_SQL,
   sql, updateJSON,
 };
 

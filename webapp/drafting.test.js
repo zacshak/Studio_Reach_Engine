@@ -5,7 +5,7 @@ import {getDraftContext,saveDraft,render,draftRequest} from './drafting.js';
 
 function fixture(t) {
   const db=new DatabaseSync(':memory:');t.after(()=>db.close());
-  db.exec("CREATE TABLE scrape_tracker(appid INTEGER PRIMARY KEY,game_name TEXT,short_descript TEXT,emails TEXT,scrape_status TEXT,Mail_status TEXT,mail_template INTEGER); INSERT INTO scrape_tracker VALUES(1,'Game','Description','studio@example.com','seeded','Writing',NULL)");
+  db.exec("CREATE TABLE scrape_tracker(appid INTEGER PRIMARY KEY,game_name TEXT,short_descript TEXT,emails TEXT,scrape_status TEXT,Mail_status TEXT,mail_template INTEGER); INSERT INTO scrape_tracker VALUES(1,'Game','Description','studio@example.com','seeded','Accepted',NULL)");
   let version=0;
   const objects=new Map();
   function put(key,value){objects.set(key,{bytes:typeof value==='string'?new TextEncoder().encode(value):value,etag:String(++version)});}
@@ -28,7 +28,7 @@ function fixture(t) {
   return {db,env,sql,put,get,args,template,objects};
 }
 
-test('context returns actual image and slots; save preserves fixed text and only advances Writing',async t=>{
+test('context returns actual image and slots; save preserves fixed text and only advances Accepted',async t=>{
   const f=fixture(t), context=await f.get();
   assert.equal(context.content[1].type,'image');
   assert.deepEqual(JSON.parse(context.content[0].text).placeholders,{observation_1:'observation'});
@@ -52,7 +52,7 @@ test('changed source, media or template invalidates a pending submission',async 
     f=>f.put('Game_1/SpriteSheet_Screenshots.png',new Uint8Array([137,80,78,71,13,10,26,10,1]))]){
     const f=fixture(t),args=await f.args();change(f);
     await assert.rejects(saveDraft(f.env,args,f.sql),/Stale/);
-    assert.equal(f.db.prepare('SELECT Mail_status FROM scrape_tracker').get().Mail_status,'Writing');
+    assert.equal(f.db.prepare('SELECT Mail_status FROM scrape_tracker').get().Mail_status,'Accepted');
   }
 });
 
@@ -78,8 +78,8 @@ test('competing manifest save wins and cannot be overwritten',async t=>{
 test('advanced and deleted rows cannot be drafted, missing images fail closed',async t=>{
   const f=fixture(t);
   f.db.exec("UPDATE scrape_tracker SET Mail_status='Scheduled'");
-  await assert.rejects(f.get(),/Writing/);
-  f.db.exec("UPDATE scrape_tracker SET Mail_status='Writing'");
+  await assert.rejects(f.get(),/Accepted/);
+  f.db.exec("UPDATE scrape_tracker SET Mail_status='Accepted'");
   f.objects.delete('Game_1/SpriteSheet_Screenshots.png');
   await assert.rejects(f.get(),/missing/);
   f.db.exec('DELETE FROM scrape_tracker');
@@ -98,7 +98,7 @@ test('recipient change during publication never advances the changed row',async 
     return result;
   };
   await assert.rejects(saveDraft(f.env,args,f.sql),/row changed/);
-  assert.equal(f.db.prepare('SELECT Mail_status FROM scrape_tracker').get().Mail_status,'Writing');
+  assert.equal(f.db.prepare('SELECT Mail_status FROM scrape_tracker').get().Mail_status,'Accepted');
 });
 
 test('template selection and image changes during publication do not advance the row',async t=>{
@@ -107,6 +107,6 @@ test('template selection and image changes during publication do not advance the
     const f=fixture(t),args=await f.args(),write=f.env.MEDIA.put;
     f.env.MEDIA.put=async(...params)=>{const result=await write(...params);change(f);return result;};
     await assert.rejects(saveDraft(f.env,args,f.sql),/changed/);
-    assert.equal(f.db.prepare('SELECT Mail_status FROM scrape_tracker').get().Mail_status,'Writing');
+    assert.equal(f.db.prepare('SELECT Mail_status FROM scrape_tracker').get().Mail_status,'Accepted');
   }
 });

@@ -47,7 +47,7 @@ test('submit_triage forwards the batch to the review backend and returns its res
   const calls = [];
   const REVIEW = { fetch: async request => {
     calls.push({ url: request.url, method: request.method, body: await request.json() });
-    return Response.json({ saved: [1], skipped: [{ appid: 3, reason: 'Missing game/media, human-kept, or mail status is no longer Pending.' }] });
+    return Response.json({ saved: [1], skipped: [{ appid: 3, reason: 'Missing game/media, or already triaged (only Pending games can be triaged).' }] });
   } };
   const input = { criteria: 'Only games with vehicles', results: [
     { appid: 1, decision: 'flag', reason: 'No vehicles visible' },

@@ -34,7 +34,7 @@ test('workflow tools forward to the guarded review backend', async () => {
     ['reject_games', { appids: [3], confirm: 'DELETE' }, '/api/act', { action: 'reject_all', appids: [3] }],
     ['save_email_result', { appid: 4, status: 'no_email' }, '/api/email/save', { appid: 4, status: 'no_email' }],
     ['approve_mails', { appids: [5] }, '/api/act', { action: 'approve_many', appids: [5] }],
-    ['return_to_writing', { appids: [5] }, '/api/act', { action: 'return_to_writing', appids: [5] }],
+    ['return_to_accepted', { appids: [5] }, '/api/act', { action: 'return_to_accepted', appids: [5] }],
     ['run_workflow', { workflow: 'hermes' }, '/api/act', { action: 'trigger', workflow: 'hermes' }],
     ['get_workflow_runs', { workflow: 'send' }, '/api/workflows/runs', { workflow: 'send', limit: 5 }],
     ['send_scheduled_mails', { confirm: 'SEND_REAL_EMAILS' }, '/api/act', { action: 'trigger', workflow: 'send' }],
@@ -82,7 +82,7 @@ const bucket = objects => ({
 test('get_draft splits subject and body and reports a missing draft', async () => {
   const MEDIA = bucket({ 'index.json': { 5: 'G_5', 6: 'G_6' },
     'G_5/manifest.json': { mail: 'Subject: Hello Studio\n\nBody text.', mail_template: 2 }, 'G_6/manifest.json': {} });
-  const run = async (_env, _sql, [id]) => ({ rows: id === 9 ? [] : [[id === 5 ? 'Drafted' : 'Writing', 'jobs@studio.com, hi@studio.com', 2]] });
+  const run = async (_env, _sql, [id]) => ({ rows: id === 9 ? [] : [[id === 5 ? 'Drafted' : 'Accepted', 'jobs@studio.com, hi@studio.com', 2]] });
   assert.deepEqual(await getDraft({ MEDIA }, 5, run), { appid: 5, mail_status: 'Drafted', recipient: 'jobs@studio.com',
     template_id: 2, has_draft: true, subject: 'Hello Studio', body: 'Body text.' });
   assert.equal((await getDraft({ MEDIA }, 6, run)).has_draft, false);

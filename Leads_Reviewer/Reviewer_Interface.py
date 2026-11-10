@@ -9,7 +9,7 @@ pipeline.py.
 
     for g in review.games_to_review():   # Mail_status == 'Pending' AND has email AND media
         ...
-    review.Accept_Game(appid)            # Mail_status -> 'Writing', leaves the list
+    review.Accept_Game(appid)            # Mail_status -> 'Accepted', leaves the list
     review.Reject_Game(appid)            # row deleted + media folder removed
 """
 import glob
@@ -117,7 +117,7 @@ def _load_mail(folder, appid):
 
 
 def games_to_review():
-    """Games to show: those with Mail_status 'Pending' AND an actual email on file
+    """Games to show: Triaged as pass AND an actual email on file
     (scrape_status 'seeded'/'scraped') that still have a media folder. Sorted by
     name. Each item: {appid, name, desc, meta, shots[]}."""
     if _CLOUD:
@@ -126,7 +126,7 @@ def games_to_review():
 
 
 def nomail_games_to_review():
-    """Leads awaiting scraping, with no email, or with a scraper error."""
+    """Triaged-as-pass leads awaiting scraping, with no email, or a scraper error."""
     if _CLOUD:
         return _lazy_list(pipeline.nomail_ready_appids())
     return _local_queue(pipeline.nomail_ready_appids(), NOMAIL_DIR)
@@ -183,8 +183,8 @@ def hydrate(item):
 
 def has_pending_drafts():
     """True if any accepted lead is still awaiting a cold-mail draft (Mail_status
-    'Writing'). One cheap Turso query — used to gate the app's Draft button."""
-    return bool(pipeline.mail_status_appids("Writing"))
+    'Accepted'). One cheap Turso query — used to gate the app's Draft button."""
+    return bool(pipeline.mail_status_appids("Accepted"))
 
 
 def has_scheduled():
@@ -255,7 +255,7 @@ def leads_by_appids(appids):
 
 def mails_to_review():
     """Games with Mail_status 'Drafted' (accepted AND the drafter has actually written
-    the mail — 'Writing' alone means still awaiting a draft). Same shape as
+    the mail — 'Accepted' alone means still awaiting a draft). Same shape as
     games_to_review() plus 'mail' (the drafted message) and 'emails' (recipient).
     Cloud: lazy like the other views — instant from index.json, with hydrate()
     pulling the manifest + recipient on view."""
@@ -276,9 +276,9 @@ def mails_to_review():
 
 
 def Accept_Game(gameId):
-    """Accept: mark the lead for outreach (Mail_status -> 'Writing'). The media
-    folder is kept. The game drops out of games_to_review()."""
-    pipeline.set_mail_status(gameId, "Writing")
+    """Accept: mark the lead for outreach (Triaged -> 'Accepted'). Only games
+    triaged as pass with an email can be accepted. The media folder is kept."""
+    pipeline.set_mail_status(gameId, "Accepted")
 
 
 def Approve_Mail(gameId):
@@ -333,7 +333,7 @@ def irrelevant_to_review():
 
 
 def Keep_Irrelevant(appid):
-    """The AI was wrong — persist Keep; the lead returns to its normal queue."""
+    """The AI was wrong — Keep turns the flag into pass; the lead moves to its normal queue."""
     pipeline.mark_triage_kept(appid)
 
 

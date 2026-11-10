@@ -192,17 +192,18 @@ class PipelineTest(unittest.TestCase):
             insert_lead(c, 8, support_email="a@b.com")
             c.execute("UPDATE scrape_tracker SET Mail_status='Sent', sent_at='2026-01-02' "
                       "WHERE appid=8")
-            c.execute("ALTER TABLE scrape_tracker DROP COLUMN triage_kept")
             c.execute("ALTER TABLE scrape_tracker DROP COLUMN Require_Socials")
             c.execute("ALTER TABLE scrape_tracker DROP COLUMN Socials_Data")
             c.commit()
         pipeline._ensured = False
         pipeline.init_tracker()
         with self._raw() as c:
-            row = c.execute("SELECT game_name, Mail_status, sent_at, triage_kept, "
+            row = c.execute("SELECT game_name, Mail_status, sent_at, "
                             "Require_Socials, Socials_Data "
                             "FROM scrape_tracker WHERE appid=8").fetchone()
-        self.assertEqual(row, ("Game", "Sent", "2026-01-02", 0, 0, "{}"))
+            cols = {r[1] for r in c.execute("PRAGMA table_info(scrape_tracker)")}
+        self.assertEqual(row, ("Game", "Sent", "2026-01-02", 0, "{}"))
+        self.assertNotIn("triage_kept", cols, "the retired column is never re-added")
 
     # ---- trigger auto-sync --------------------------------------------
     def test_trigger_seeds_row_with_transforms(self):
@@ -264,7 +265,7 @@ class PipelineTest(unittest.TestCase):
                             "WHERE appid=113").fetchone()
         self.assertEqual(row, ("invalid", "Invalid"))
         with self.assertRaises(ValueError):
-            pipeline.set_mail_status(113, "Writing")
+            pipeline.set_mail_status(113, "Accepted")
 
     def test_claim_mail_rejects_invalid_row_even_if_scheduled_directly(self):
         with self._raw() as c:
@@ -278,8 +279,8 @@ class PipelineTest(unittest.TestCase):
             insert_lead(c, 115)
             insert_lead(c, 116, support_email="bad.example.com")
             insert_lead(c, 117, support_email="fixed@example.com")
-            c.execute("UPDATE scrape_tracker SET scrape_status='seeded', Mail_status='Writing' WHERE appid=115")
-            c.execute("UPDATE scrape_tracker SET Mail_status='Writing' WHERE appid=116")
+            c.execute("UPDATE scrape_tracker SET scrape_status='seeded', Mail_status='Accepted' WHERE appid=115")
+            c.execute("UPDATE scrape_tracker SET Mail_status='Accepted' WHERE appid=116")
             c.execute("UPDATE scrape_tracker SET scrape_status='invalid', Mail_status='Invalid' WHERE appid=117")
             c.commit()
         self.assertEqual(pipeline.repair_invalid_rows(), [115, 116, 117])
@@ -379,44 +380,92 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(pipeline.get_pending(), [400, 402])
         self.assertEqual(pipeline.get_pending(limit=1), [400])
 
-    def test_nomail_queue_requires_pending_mail_and_unresolved_scrape_state(self):
+    def test_nomail_queue_requires_triaged_pass_and_unresolved_scrape_state(self):
         with self._raw() as c:
-            for appid in range(410, 416):
+            for appid in range(410, 418):
                 insert_lead(c, appid)
+            c.execute("UPDATE scrape_tracker SET Mail_status='Triaged', triage_decision='pass' "
+                      "WHERE appid BETWEEN 410 AND 415")
             c.execute("UPDATE scrape_tracker SET scrape_status='no_email' WHERE appid=411")
             c.execute("UPDATE scrape_tracker SET scrape_status='failed' WHERE appid=412")
             c.execute("UPDATE scrape_tracker SET scrape_status='invalid', Mail_status='Invalid' WHERE appid=413")
             c.execute("UPDATE scrape_tracker SET scrape_status='seeded' WHERE appid=414")
-            c.execute("UPDATE scrape_tracker SET scrape_status='failed', Mail_status='Writing' WHERE appid=415")
-            c.commit()
+            c.execute("UPDATE scrape_tracker SET scrape_status='failed', Mail_status='Accepted' WHERE appid=415")
+            c.execute("UPDATE scrape_tracker SET Mail_status='Triaged', triage_decision='flag' WHERE appid=416")
+            c.commit()  # 417 stays Pending (untriaged)
         self.assertEqual(pipeline.nomail_ready_appids(), [410, 411, 412])
+        self.assertEqual(pipeline.approval_ready_appids(), [414])
 
-    def test_human_kept_lead_never_reenters_ai_triage(self):
+    def test_only_untriaged_leads_enter_ai_triage_and_keep_turns_flag_into_pass(self):
         with self._raw() as c:
-            insert_lead(c, 420)
-            insert_lead(c, 421)
-        self.assertEqual(pipeline.triage_pending_appids(), [420, 421])
-        self.assertTrue(pipeline.mark_triage_kept(420))
+            for appid in (420, 421, 422):
+                insert_lead(c, appid)
+            c.execute("UPDATE scrape_tracker SET Mail_status='Triaged', triage_decision='flag', "
+                      "triage_reason='too small' WHERE appid=420")
+            c.execute("UPDATE scrape_tracker SET Mail_status='Triaged', triage_decision='pass' "
+                      "WHERE appid=422")
+            c.commit()
         self.assertEqual(pipeline.triage_pending_appids(), [421])
-        self.assertEqual(pipeline.triage_kept_appids(), [420])
-        self.assertEqual(pipeline.mail_status_appids("Pending"), [420, 421])
+        self.assertFalse(pipeline.mark_triage_kept(421), "an untriaged lead cannot be kept")
+        self.assertFalse(pipeline.mark_triage_kept(422), "a passed lead is not flagged")
+        self.assertTrue(pipeline.mark_triage_kept(420))
+        self.assertFalse(pipeline.mark_triage_kept(420))
         with self._raw() as c:
-            row = c.execute("SELECT triage_decision, triage_kept, triaged_at IS NOT NULL "
-                            "FROM scrape_tracker WHERE appid=420").fetchone()
-        self.assertEqual(tuple(row), ("kept", 1, 1))
+            row = c.execute("SELECT Mail_status, triage_decision, triage_reason, "
+                            "triaged_at IS NOT NULL FROM scrape_tracker WHERE appid=420").fetchone()
+        self.assertEqual(tuple(row), ("Triaged", "pass", "Kept by user (AI flagged: too small)", 1))
+        self.assertEqual(pipeline.triage_pending_appids(), [421])
+
+    def test_triaged_leads_stay_triaged_through_scraping_discovery_and_repair(self):
+        with self._raw() as c:
+            for appid in (440, 441, 442):
+                insert_lead(c, appid)
+            c.execute("UPDATE scrape_tracker SET Mail_status='Triaged', triage_decision='pass' "
+                      "WHERE appid IN (440, 442)")
+            c.commit()
+        # Untriaged and triaged leads are both scraped until accepted.
+        self.assertEqual(pipeline.get_pending(), [440, 441, 442])
+        pipeline.write_result(440, scrape_status="scraped", emails="jobs@studio.test")
+        pipeline.write_result(441, scrape_status="scraped", emails="hi@studio.test")
+        with self._raw() as c:
+            rows = dict(c.execute("SELECT appid, Mail_status FROM scrape_tracker "
+                                  "WHERE appid IN (440, 441, 442)"))
+        self.assertEqual(rows, {440: "Triaged", 441: "Pending", 442: "Triaged"})
+        self.assertEqual(pipeline.approval_ready_appids(), [440])
+        # Discovery reconciliation keeps the triage state of an unscraped lead.
+        pipeline.seed_pending()
+        with self._raw() as c:
+            self.assertEqual(c.execute("SELECT Mail_status FROM scrape_tracker WHERE appid=442")
+                             .fetchone()[0], "Triaged")
+        # An accepted lead that loses its email returns to Triaged, not Pending.
+        pipeline.set_mail_status(440, "Accepted")
+        with self._raw() as c:
+            c.execute("UPDATE scrape_tracker SET emails=NULL WHERE appid=440")
+            c.commit()
+        self.assertIn(440, pipeline.repair_invalid_rows())
+        with self._raw() as c:
+            self.assertEqual(c.execute("SELECT scrape_status, Mail_status FROM scrape_tracker "
+                                       "WHERE appid=440").fetchone(), ("pending", "Triaged"))
+        # Accepted leads are no longer scraped.
+        pipeline.write_result(440, scrape_status="scraped", emails="jobs@studio.test")
+        pipeline.set_mail_status(440, "Accepted")
+        with self.assertRaises(ValueError):
+            pipeline.write_result(440, scrape_status="failed")
 
     def test_triage_columns_and_flag_queue(self):
         with self._raw() as c:
             for appid in (430, 431, 432):
                 insert_lead(c, appid)
             c.execute("INSERT INTO triage_criteria(id, text) VALUES (1, 'rubric')")
-            c.execute("UPDATE scrape_tracker SET triage_decision='flag', triage_reason='small', "
-                      "triage_criteria_id=1 WHERE appid IN (430, 432)")
-            c.execute("UPDATE scrape_tracker SET triage_decision='pass' WHERE appid=431")
-            c.execute("UPDATE scrape_tracker SET Mail_status='Writing' WHERE appid=432")
+            c.execute("UPDATE scrape_tracker SET Mail_status='Triaged', triage_decision='flag', "
+                      "triage_reason='small', triage_criteria_id=1 WHERE appid IN (430, 432)")
+            c.execute("UPDATE scrape_tracker SET Mail_status='Triaged', triage_decision='pass' "
+                      "WHERE appid=431")
+            c.execute("UPDATE scrape_tracker SET Mail_status='Accepted' WHERE appid=432")
             c.commit()
-            with self.assertRaises(Exception):
-                c.execute("UPDATE scrape_tracker SET triage_decision='maybe' WHERE appid=430")
+            for bad in ("maybe", "kept"):
+                with self.assertRaises(Exception):
+                    c.execute(f"UPDATE scrape_tracker SET triage_decision='{bad}' WHERE appid=430")
         self.assertEqual(pipeline.triage_flagged_appids(), [430])
         self.assertTrue(pipeline.mark_triage_kept(430))
         self.assertEqual(pipeline.triage_flagged_appids(), [])
@@ -518,7 +567,7 @@ class PipelineTest(unittest.TestCase):
             for appid in (802, 803, 804):
                 insert_lead(c, appid)
             c.execute("UPDATE scrape_tracker SET scrape_status='failed' WHERE appid IN (802,803)")
-            c.execute("UPDATE scrape_tracker SET Mail_status='Writing' WHERE appid=803")
+            c.execute("UPDATE scrape_tracker SET Mail_status='Accepted' WHERE appid=803")
         self.assertEqual(pipeline.get_pending(), [802, 804])
         self.assertEqual(pipeline.get_pending(limit=1), [802])
         pipeline.write_result(802, scrape_status="scraped", emails="ok@example.com")
@@ -529,7 +578,7 @@ class PipelineTest(unittest.TestCase):
         for change in (
             "UPDATE scrape_tracker SET Mail_status='Sending' WHERE appid=805",
             "UPDATE scrape_tracker SET Mail_status='Sent' WHERE appid=805",
-            "UPDATE scrape_tracker SET Mail_status='Writing' WHERE appid=805",
+            "UPDATE scrape_tracker SET Mail_status='Accepted' WHERE appid=805",
             "UPDATE scrape_tracker SET scrape_status='scraped', emails='winner@example.com' WHERE appid=805",
             "DELETE FROM scrape_tracker WHERE appid=805",
         ):
@@ -567,7 +616,7 @@ class PipelineTest(unittest.TestCase):
 
     def test_seeded_scraped_and_advanced_rows_reject_late_scrape_results(self):
         for scrape, mail in (("seeded", "Pending"), ("scraped", "Pending"),
-                             ("pending", "Writing"), ("failed", "Drafted")):
+                             ("pending", "Accepted"), ("failed", "Drafted")):
             with self.subTest(scrape=scrape, mail=mail):
                 with self._raw() as c:
                     c.execute("INSERT OR REPLACE INTO scrape_tracker "
@@ -599,7 +648,18 @@ class PipelineTest(unittest.TestCase):
             pipeline.set_mail_template(950, 1)
         with self.assertRaises(ValueError):
             pipeline.set_mail_status(950, "Scheduled")
-        pipeline.set_mail_status(950, "Writing")
+        with self.assertRaises(ValueError):  # untriaged
+            pipeline.set_mail_status(950, "Accepted")
+        with self._raw() as c:
+            c.execute("UPDATE scrape_tracker SET Mail_status='Triaged', triage_decision='flag' "
+                      "WHERE appid=950")
+            c.commit()
+        with self.assertRaises(ValueError):  # flagged
+            pipeline.set_mail_status(950, "Accepted")
+        with self._raw() as c:
+            c.execute("UPDATE scrape_tracker SET triage_decision='pass' WHERE appid=950")
+            c.commit()
+        pipeline.set_mail_status(950, "Accepted")
         pipeline.set_mail_template(950, 1)
         pipeline.set_mail_status(950, "Drafted")
         pipeline.set_mail_template(950, 2)
@@ -656,7 +716,10 @@ class PipelineTest(unittest.TestCase):
     def test_sending_can_only_be_reset_explicitly(self):
         with self._raw() as c:
             insert_lead(c, 951, support_email="hello@example.com")
-        for status in ("Writing", "Drafted", "Scheduled"):
+            c.execute("UPDATE scrape_tracker SET Mail_status='Triaged', triage_decision='pass' "
+                      "WHERE appid=951")
+            c.commit()
+        for status in ("Accepted", "Drafted", "Scheduled"):
             pipeline.set_mail_status(951, status)
         self.assertTrue(pipeline.claim_mail(951))
         pipeline.reset_sending(951, "Drafted")

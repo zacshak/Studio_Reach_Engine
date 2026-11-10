@@ -12,7 +12,7 @@ from Claude_Lead_Discovery_Engine.pipeline import email_state
 
 BASE = 'https://sre-review.meshakzac.workers.dev'
 MCP = 'https://sre-db-mcp.meshakzac.workers.dev/mcp'
-ACTIVE = {'Pending', 'Writing', 'Drafted', 'Scheduled', 'Sending'}
+ACTIVE = {'Pending', 'Triaged', 'Accepted', 'Drafted', 'Scheduled', 'Sending'}
 
 
 def request(url, data=None, head=False):
@@ -55,7 +55,7 @@ def row_issues(row):
     if row.get('Require_Socials',0) not in (0,1): issues.append('invalid_social_flag')
     if row['Mail_status'] in ACTIVE and row['scrape_status'] in {'seeded','scraped'} and email_state(row['emails']) != 'valid':
         issues.append('email_ready_state_without_valid_email')
-    if row['Mail_status'] in {'Writing','Drafted','Scheduled','Sending'}:
+    if row['Mail_status'] in {'Accepted','Drafted','Scheduled','Sending'}:
         if row['scrape_status'] not in {'seeded','scraped'}: issues.append('outreach_with_ineligible_scrape_status')
         if email_state(row['emails']) != 'valid': issues.append('outreach_without_syntactically_valid_email')
     return issues

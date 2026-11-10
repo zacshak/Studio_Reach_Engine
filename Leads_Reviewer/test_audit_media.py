@@ -5,7 +5,7 @@ import audit_media
 
 
 class AuditMediaTest(unittest.TestCase):
-    def row(self, status='Writing'):
+    def row(self, status='Accepted'):
         return {'appid':1, 'Mail_status':status, 'scrape_status':'seeded', 'emails':'studio@example.com'}
 
     def test_missing_index_and_incomplete_manifest_are_reported(self):

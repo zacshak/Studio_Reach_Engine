@@ -12,7 +12,7 @@ export async function migrateCleanup(env, run = sql) {
   const [columns] = await run(env, [["PRAGMA table_info(media_cleanup_jobs)"]]);
   if (!columns.some(row => row[1] === 'lease_token'))
     await run(env, [['ALTER TABLE media_cleanup_jobs ADD COLUMN lease_token TEXT']]);
-  const [overlap] = await run(env, [["SELECT j.appid FROM media_cleanup_jobs j JOIN scrape_tracker s ON s.appid=j.appid WHERE s.Mail_status IN ('Pending','Writing','Drafted','Scheduled','Sending')"]]);
+  const [overlap] = await run(env, [["SELECT j.appid FROM media_cleanup_jobs j JOIN scrape_tracker s ON s.appid=j.appid WHERE s.Mail_status IN ('Pending','Triaged','Accepted','Drafted','Scheduled','Sending')"]]);
   if (overlap.length) throw new Error('Existing cleanup jobs overlap active games. Resolve those jobs before installing cleanup guards.');
   await run(env, CLEANUP_GUARDS.map(query => [query]), true);
   await assertCleanupReady(env, run);

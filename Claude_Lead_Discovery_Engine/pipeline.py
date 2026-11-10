@@ -62,14 +62,20 @@ STATUSES = ("pending", "seeded", "scraped", "no_email", "invalid", "failed")
 # from the outreach state machine and hidden from user-facing queues.
 # Visible outreach states, in dashboard order. 'Sending' is an internal atomic
 # claim state and is intentionally not exposed as a user-facing status.
-MAIL_STATUSES = ("Pending", "Invalid", "Writing", "Drafted", "Scheduled", "Sent", "Replied")
+# Pending = not triaged yet; Triaged = triage decided pass or flag (triage_decision
+# says which); Accepted = approved for outreach, waiting for a draft.
+MAIL_STATUSES = ("Pending", "Triaged", "Invalid", "Accepted", "Drafted", "Scheduled", "Sent", "Replied")
 INTERNAL_MAIL_STATUSES = ("Sending",)
 MAIL_TRANSITIONS = {
-    "Writing": "Pending",
-    "Drafted": "Writing",
+    "Accepted": "Triaged",
+    "Drafted": "Accepted",
     "Scheduled": "Drafted",
     "Replied": "Sent",
 }
+# Pre-acceptance states, and the one a pre-acceptance row returns to (it keeps its
+# triage decision, so it is Triaged again if it was ever triaged).
+UNACCEPTED_STATUSES = ("Pending", "Triaged")
+UNACCEPTED_SQL = "CASE WHEN triage_decision IS NULL THEN 'Pending' ELSE 'Triaged' END"
 
 # Canonical scrape_tracker schema — ONE definition, used both for fresh DBs and
 # for the rebuild migration below (SQLite's ALTER can only append a column, so
@@ -90,12 +96,11 @@ _SCHEMA = """(
     genres         TEXT,
     added_at       TEXT,
     sent_at        TEXT,
-    triage_kept    INTEGER NOT NULL DEFAULT 0,
     Require_Socials INTEGER NOT NULL DEFAULT 0,
     Socials_Data   TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(Socials_Data)),
     Socials_Request_ID TEXT,
     release_date   TEXT,
-    triage_decision TEXT CHECK (triage_decision IN ('pass','flag','kept')),
+    triage_decision TEXT CHECK (triage_decision IN ('pass','flag')),
     triage_reason  TEXT,
     triage_criteria_id INTEGER,
     triaged_at     TEXT
@@ -111,10 +116,9 @@ _TRIAGE_CRITERIA_SCHEMA = """(
     text        TEXT NOT NULL UNIQUE,
     created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 )"""
-# Additive triage columns. 'kept' is the human Keep; triage_kept is retained only so
-# older code that reads it keeps working after a rollback.
+# Additive triage columns. A human Keep turns a flag into pass (reason records it).
 TRIAGE_COLUMNS = (
-    ("triage_decision", "TEXT CHECK (triage_decision IN ('pass','flag','kept'))"),
+    ("triage_decision", "TEXT CHECK (triage_decision IN ('pass','flag'))"),
     ("triage_reason", "TEXT"),
     ("triage_criteria_id", "INTEGER"),
     ("triaged_at", "TEXT"),
@@ -394,9 +398,6 @@ def init_tracker():
             conn.execute("ALTER TABLE scrape_tracker ADD COLUMN mail_template INTEGER")
         if "sent_at" not in cols:
             conn.execute("ALTER TABLE scrape_tracker ADD COLUMN sent_at TEXT")
-        if "triage_kept" not in cols:
-            conn.execute("ALTER TABLE scrape_tracker ADD COLUMN triage_kept "
-                         "INTEGER NOT NULL DEFAULT 0")
         if "Require_Socials" not in cols:
             conn.execute("ALTER TABLE scrape_tracker ADD COLUMN Require_Socials "
                          "INTEGER NOT NULL DEFAULT 0")
@@ -573,13 +574,13 @@ def seed_pending():
             stored_email = email or None
             if appid in have:
                 current_scrape, current_mail = have[appid]
-                if (current_mail in ("Pending", "Invalid")
+                if (current_mail in ("Pending", "Triaged", "Invalid")
                         and current_scrape in ("pending", "seeded", "invalid")):
+                    mail = "'Invalid'" if status == "invalid" else UNACCEPTED_SQL
                     conn.execute(
-                        "UPDATE scrape_tracker SET scrape_status=?, emails=?, Mail_status=? "
-                        "WHERE appid=?",
-                        (status, stored_email,
-                         "Invalid" if status == "invalid" else "Pending", appid))
+                        "UPDATE scrape_tracker SET scrape_status=?, emails=?, "
+                        f"Mail_status={mail} WHERE appid=?",
+                        (status, stored_email, appid))
                 continue
             conn.execute(
                 f"INSERT INTO scrape_tracker ({','.join(SEED_COLS)}, emails, scrape_status, "
@@ -597,13 +598,13 @@ def seed_pending():
 
 
 def get_pending(limit=None):
-    """Unresolved and failed Pending leads eligible for scraping."""
+    """Unresolved and failed leads not yet accepted, eligible for scraping."""
     if limit is not None and (not isinstance(limit, int) or limit < 1):
         raise ValueError("limit must be a positive integer")
     _ensure()
     with closing(_ro()) as conn:
         q = ("SELECT appid FROM scrape_tracker WHERE scrape_status IN ('pending','failed') "
-             "AND Mail_status='Pending' ORDER BY appid")
+             "AND Mail_status IN ('Pending','Triaged') ORDER BY appid")
         if limit:
             rows = conn.execute(q + " LIMIT ?", (limit,)).fetchall()
         else:
@@ -665,7 +666,7 @@ def write_result(appid, *, scrape_status, emails=None, website=None):
             (int(appid),)).fetchone()
         if current is None:
             raise ValueError(f"lead {appid} no longer exists; discovery must seed it")
-        if current[1] != "Pending" or current[2] not in ("pending", "failed", "no_email"):
+        if current[1] not in UNACCEPTED_STATUSES or current[2] not in ("pending", "failed", "no_email"):
             raise ValueError(f"stale scrape result for appid {appid}")
         candidate = emails if emails is not None else (current[0] if current else None)
         if scrape_status in ("scraped", "invalid"):
@@ -679,7 +680,7 @@ def write_result(appid, *, scrape_status, emails=None, website=None):
             if scrape_status == "invalid":
                 sets.append("Mail_status='Invalid'")
             elif current and current[1] == "Invalid":
-                sets.append("Mail_status='Pending'")
+                sets.append(f"Mail_status={UNACCEPTED_SQL}")
         for col, val in (("emails", emails), ("website", website)):
             if val is not None:
                 sets.append(f"{col}=?")
@@ -687,7 +688,7 @@ def write_result(appid, *, scrape_status, emails=None, website=None):
         vals.append(appid)
         row = conn.execute(
             f"UPDATE scrape_tracker SET {','.join(sets)} WHERE appid=? "
-            "AND Mail_status='Pending' AND scrape_status IN ('pending','failed','no_email') "
+            "AND Mail_status IN ('Pending','Triaged') AND scrape_status IN ('pending','failed','no_email') "
             "RETURNING appid",
             vals).fetchone()
         if row is None:
@@ -719,63 +720,55 @@ def mail_status_emails(status):
 
 
 def triage_pending_appids():
-    """Pending leads the AI may triage; human-kept leads never re-enter."""
+    """Untriaged leads (Pending) the AI may triage."""
     _ensure()
     with closing(_ro()) as conn:
         return [r[0] for r in conn.execute(
-            "SELECT appid FROM scrape_tracker WHERE Mail_status='Pending' "
-            "AND coalesce(triage_decision,'')<>'kept' ORDER BY appid")]
-
-
-def triage_kept_appids():
-    """Human-kept appids, used to hide stale/racing R2 triage flags."""
-    _ensure()
-    with closing(_ro()) as conn:
-        return [r[0] for r in conn.execute(
-            "SELECT appid FROM scrape_tracker WHERE triage_decision='kept' ORDER BY appid")]
+            "SELECT appid FROM scrape_tracker WHERE Mail_status='Pending' ORDER BY appid")]
 
 
 def triage_flagged_appids():
-    """Pending leads whose current AI triage recommendation is 'flag'."""
+    """Triaged leads flagged by triage, awaiting a human Keep or Reject."""
     _ensure()
     with closing(_ro()) as conn:
         return [r[0] for r in conn.execute(
-            "SELECT appid FROM scrape_tracker WHERE Mail_status='Pending' "
+            "SELECT appid FROM scrape_tracker WHERE Mail_status='Triaged' "
             "AND triage_decision='flag' ORDER BY appid")]
 
 
+KEEP_SQL = ("UPDATE scrape_tracker SET triage_decision='pass', "
+            "triage_reason='Kept by user (AI flagged: ' || coalesce(triage_reason,'') || ')', "
+            "triaged_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+            "WHERE appid=? AND Mail_status='Triaged' AND triage_decision='flag' RETURNING appid")
+
+
 def mark_triage_kept(appid):
-    """Persist a human Keep decision without advancing the outreach state."""
+    """Human Keep: overrides a flag to pass, recording the override in the reason."""
     _ensure()
     with closing(_rw()) as conn:
-        row = conn.execute(
-            "UPDATE scrape_tracker SET triage_decision='kept', triage_kept=1, "
-            "triaged_at=CURRENT_TIMESTAMP "
-            "WHERE appid=? AND Mail_status='Pending' RETURNING appid",
-            (int(appid),)).fetchone()
+        row = conn.execute(KEEP_SQL, (int(appid),)).fetchone()
         conn.commit()
     return row is not None
 
 
 def approval_ready_appids():
-    """Appids ready for Game Approval: Mail_status still 'Pending' AND scrape_status
-    has an actual email ('seeded' or 'scraped'). A bare Mail_status='Pending' check
-    also matched 'no_email'/'failed'/still-'pending' leads (they never move Mail_status
-    on their own), which leaked them into Approval alongside No-Mail."""
+    """Appids ready for Game Approval: Triaged as pass AND scrape_status has an
+    actual email ('seeded' or 'scraped')."""
     _ensure()
     with closing(_ro()) as conn:
         return [r[0] for r in conn.execute(
-            "SELECT appid FROM scrape_tracker WHERE Mail_status='Pending' "
-            "AND scrape_status IN ('seeded','scraped') ORDER BY appid")]
+            "SELECT appid FROM scrape_tracker WHERE Mail_status='Triaged' "
+            "AND triage_decision='pass' AND scrape_status IN ('seeded','scraped') ORDER BY appid")]
 
 
 def nomail_ready_appids():
-    """Appids awaiting scraping or settled without a usable email."""
+    """Triaged-as-pass appids awaiting scraping or settled without a usable email."""
     _ensure()
     with closing(_ro()) as conn:
         return [r[0] for r in conn.execute(
-            "SELECT appid FROM scrape_tracker WHERE Mail_status='Pending' "
-            "AND scrape_status IN ('pending','no_email','failed') ORDER BY appid")]
+            "SELECT appid FROM scrape_tracker WHERE Mail_status='Triaged' "
+            "AND triage_decision='pass' AND scrape_status IN ('pending','no_email','failed') "
+            "ORDER BY appid")]
 
 
 def set_mail_status(appid, status):
@@ -789,11 +782,13 @@ def set_mail_status(appid, status):
                 "AND Mail_status NOT IN ('Sent','Replied') RETURNING appid",
                 (int(appid),)).fetchone()
         elif status in MAIL_TRANSITIONS:
-            previous = (("Writing", "Scheduled") if status == "Drafted"
+            previous = (("Accepted", "Scheduled") if status == "Drafted"
                         else (MAIL_TRANSITIONS[status],))
             placeholders = ",".join("?" * len(previous))
             email_guard = (" AND scrape_status IN ('seeded','scraped')"
-                           if status in ("Writing", "Drafted", "Scheduled") else "")
+                           if status in ("Accepted", "Drafted", "Scheduled") else "")
+            if status == "Accepted":  # only games triaged as pass can be accepted
+                email_guard += " AND triage_decision='pass'"
             row = conn.execute(
                 f"UPDATE scrape_tracker SET Mail_status=? WHERE appid=? "
                 f"AND Mail_status IN ({placeholders}){email_guard} RETURNING appid",
@@ -821,7 +816,7 @@ def complete_saved_draft(appid, template, submission=None):
     with closing(_rw()) as conn:
         row = conn.execute(
             "UPDATE scrape_tracker SET Mail_status='Drafted',mail_template=? "
-            "WHERE appid=? AND Mail_status='Writing' AND scrape_status IN ('seeded','scraped')"
+            "WHERE appid=? AND Mail_status='Accepted' AND scrape_status IN ('seeded','scraped')"
             + guard + " RETURNING appid", args).fetchone()
         if row is None:
             current = conn.execute(
@@ -843,7 +838,7 @@ def complete_mcp_draft(appid, template, expected_email, expected_scrape, selecte
     with closing(_rw()) as conn:
         row = conn.execute(
             "UPDATE scrape_tracker SET Mail_status='Drafted',mail_template=? "
-            "WHERE appid=? AND Mail_status='Writing' AND emails=? AND scrape_status=? "
+            "WHERE appid=? AND Mail_status='Accepted' AND emails=? AND scrape_status=? "
             "AND COALESCE(CAST(mail_template AS TEXT),'')=? RETURNING appid",
             (template, int(appid), expected_email, expected_scrape, selected_template)).fetchone()
         conn.commit()
@@ -866,7 +861,7 @@ def set_mail_template(appid, template):
     with closing(_rw()) as conn:
         row = conn.execute(
             "UPDATE scrape_tracker SET mail_template=? "
-            "WHERE appid=? AND Mail_status IN ('Writing','Drafted') RETURNING appid",
+            "WHERE appid=? AND Mail_status IN ('Accepted','Drafted') RETURNING appid",
             (int(template), int(appid)),
         ).fetchone()
         conn.commit()
@@ -939,7 +934,7 @@ def requeue_missing_draft(appid):
     _ensure()
     with closing(_rw()) as conn:
         row = conn.execute(
-            "UPDATE scrape_tracker SET Mail_status='Writing' WHERE appid=? "
+            "UPDATE scrape_tracker SET Mail_status='Accepted' WHERE appid=? "
             "AND Mail_status='Scheduled' AND scrape_status IN ('seeded','scraped') "
             "RETURNING appid", (int(appid),)).fetchone()
         conn.commit()
@@ -952,11 +947,12 @@ def repair_invalid_rows():
     changed = []
     with closing(_rw()) as conn:
         rows = conn.execute(
-            "SELECT appid, scrape_status, emails, Mail_status FROM scrape_tracker"
+            "SELECT appid, scrape_status, emails, Mail_status, triage_decision FROM scrape_tracker"
         ).fetchall()
-        for appid, scrape_status, emails, mail_status in rows:
+        for appid, scrape_status, emails, mail_status, decision in rows:
             state = email_state(emails)
-            outreach_state = mail_status in ("Writing", "Drafted", "Scheduled", "Sending")
+            unaccepted = "Triaged" if decision else "Pending"
+            outreach_state = mail_status in ("Accepted", "Drafted", "Scheduled", "Sending")
             source_state = scrape_status in ("seeded", "scraped")
             if mail_status in ("Sending", "Sent", "Replied"):
                 continue
@@ -964,10 +960,10 @@ def repair_invalid_rows():
                 target = ("invalid", "Invalid")
             elif state == "missing" and (outreach_state or source_state
                                          or scrape_status == "invalid"):
-                target = ("pending", "Pending")
+                target = ("pending", unaccepted)
             elif state == "valid" and (scrape_status == "invalid"
                                        or mail_status == "Invalid"):
-                target = ("scraped", "Pending")
+                target = ("scraped", unaccepted)
             else:
                 continue
             if target == (scrape_status, mail_status):
@@ -987,12 +983,12 @@ def quarantine_unusable(appid):
     _ensure()
     with closing(_rw()) as conn:
         row = conn.execute(
-            "SELECT emails, Mail_status FROM scrape_tracker WHERE appid=?", (int(appid),)
-        ).fetchone()
+            "SELECT emails, Mail_status, triage_decision FROM scrape_tracker WHERE appid=?",
+            (int(appid),)).fetchone()
         if row and row[1] not in ("Sending", "Sent", "Replied"):
             state = email_state(row[0])
             if state != "valid":
-                target = ("pending", "Pending") if state == "missing" else (
+                target = ("pending", "Triaged" if row[2] else "Pending") if state == "missing" else (
                     "invalid", "Invalid")
                 conn.execute(
                     "UPDATE scrape_tracker SET scrape_status=?, Mail_status=? WHERE appid=? "

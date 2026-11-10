@@ -24,8 +24,8 @@ media download checks passed after activation. Both dashboard origins also passe
 read checks. The exemption does not apply to the legacy `workers.dev` endpoints.
 
 Agents can GET `https://sre-review.zacgamedev.com/api/state` with default Python
-headers. Its `triageReviews` map contains the stored recommendations for currently
-eligible Pending rows, including both pass and flag decisions. For the complete
+headers. Its `triageReviews` map contains the stored decisions for every `Triaged` row
+(not yet accepted), including both pass and flag, and `untriaged` counts Pending rows. For the complete
 record, including advanced rows, query `scrape_tracker.triage_decision` instead. Fetch current state
 before reviewing new candidates, and preserve existing recommendations unless the
 user explicitly requests a re-review. This is a live snapshot, not a write lock.
@@ -49,7 +49,7 @@ All 24 tools are public. `get_game_media(appid)` returns the existing four-panel
 
 `submit_triage({criteria, results: [{appid, decision: "flag" | "pass", reason}]})` saves recommendations on each game's `scrape_tracker` row (`triage_decision`, `triage_reason`, `triage_criteria_id` → `triage_criteria.text`, `triaged_at`). The MCP forwards the batch to the review Worker's `/api/triage/save` through the `REVIEW` service binding, so its own Turso token stays read-only. Submit up to 100 games per call, repeating for additional games. Criteria come from the user's current request, not a fixed genre rubric. No server-side LLM is called. The calling agent must inspect the game and apply the user's criteria.
 
-`flag` goes to Triage for the human's Keep/Reject decision. `pass` clears an AI flag and leaves the game in Approval or No-Mail, according to its existing database state. Both views show the recommendation reason and criteria. Database rows and mail statuses are never changed by MCP triage. Games already human-kept (`triage_decision='kept'`), deleted, lacking indexed media, or no longer Pending are skipped and listed in `skipped`. Eligibility is checked inside the same guarded `UPDATE`, so a racing submission cannot overwrite a human Keep. Each batch is one database transaction. Subsequent submissions replace an earlier recommendation for the same eligible game; an identical resubmission keeps its original timestamp. Recommendations are deleted together with their game, and remain on the row (queryable, and in `--snap-db` snapshots) after the game leaves Pending, though the dashboard only shows them for Pending games.
+Each saved game moves `Pending` → `Triaged`. `flag` goes to Triage for the human's Keep/Reject decision; `pass` puts the game in Approval (has an email) or No-Mail. Both views show the reason and criteria. Only `Pending` (untriaged) games can be triaged: games already `Triaged`, accepted, deleted or lacking indexed media are skipped and listed in `skipped`, so a human Keep can never be overwritten. Eligibility is checked inside the same guarded `UPDATE`. Each batch is one database transaction. An identical resubmission after an uncertain response is reported as saved and keeps its original timestamp. Decisions are deleted together with their game, and remain on the row (queryable, and in `--snap-db` snapshots) after the game is accepted. Keep (dashboard or `keep_games`) turns `flag` into `pass` and rewrites the reason to `Kept by user (AI flagged: …)`.
 
 The former GitHub Actions triage (`triage.yml`, `irrelevant.json`) has been retired. Database credentials remain read-only. The Worker's R2 binding is used to read game media. To check whether a game was triaged, query `scrape_tracker.triage_decision` (NULL means not yet).
 
@@ -68,7 +68,7 @@ Response budgets are about 1 MiB, upstream responses are bounded at 8 MiB, reque
 
 ## Agent-driven mail drafting
 
-1. Query `scrape_tracker` for `Mail_status='Writing'`.
+1. Query `scrape_tracker` for `Mail_status='Accepted'`.
 2. Call `get_draft_context({appid})`. It returns game data, the actual sprite image,
    template, observation keys and a revision. Additional images remain available
    through `get_game_image`. An existing template selection is honored. Otherwise
@@ -77,7 +77,7 @@ Response budgets are about 1 MiB, upstream responses are bounded at 8 MiB, reque
 4. Call `save_draft({appid, revision, placeholder_values})`.
 
 The review backend renders fixed template text itself, saves to R2 conditionally,
-and atomically changes only the matching eligible Writing row to Drafted.
+and atomically changes only the matching eligible Accepted row to Drafted.
 It never sends email or dispatches a workflow. It does not auto-trigger socials.
 Stale context and competing saved drafts are rejected. Retry the identical payload
 after an uncertain response. A context request after a partial save returns the
@@ -125,16 +125,16 @@ row can only move from the state the dashboard would accept. All are public.
 
 | Step | Tool | Effect |
 |---|---|---|
-| Overview | `get_queues` | appid lists and counts for approval, nomail, triage, untriaged, writing, mail_approval (Drafted), scheduled, sending |
+| Overview | `get_queues` | appid lists and counts for untriaged (Pending), approval / nomail (Triaged as pass, with / without email), triage (Triaged as flag), accepted, mail_approval (Drafted), scheduled, sending |
 | Triage detail | `get_triage(appids≤100)` | decision, reason, full criteria text, timestamp, mail status |
-| Triage Keep | `keep_games(appids≤100)` | `triage_decision='kept'`; never re-flagged |
-| Accept | `accept_games(appids≤100)` | Pending → Writing; needs an email and the sprite sheet, refuses flagged games |
+| Triage Keep | `keep_games(appids≤100)` | flagged Triaged games: `flag` → `pass`, reason records the override |
+| Accept | `accept_games(appids≤100)` | Triaged → Accepted; only `pass` games with an email and the sprite sheet (refuses untriaged, flagged and no-email games) |
 | Reject | `reject_games(appids≤1000, confirm="DELETE")` | deletes rows and queues R2 cleanup; Sending rows are protected |
-| Find email | `save_email_result(appid, status, emails?, website?)` | records `scraped` (1–5 published addresses, best first), `no_email` or `failed` for Pending rows still awaiting an email |
+| Find email | `save_email_result(appid, status, emails?, website?)` | records `scraped` (1–5 published addresses, best first), `no_email` or `failed` for Pending or Triaged rows still awaiting an email |
 | Draft | `get_draft_context` / `save_draft` | see below |
 | Read draft | `get_draft(appid)` | subject, body, recipient, template, mail status |
 | Approve | `approve_mails(appids≤100)` | Drafted → Scheduled |
-| Redraft | `return_to_writing(appids≤100)` | clears the saved draft, then Drafted → Writing |
+| Redraft | `return_to_accepted(appids≤100)` | clears the saved draft, then Drafted → Accepted |
 | Jobs | `run_workflow(discover\|hermes\|kimchi\|draft\|epic)` | dispatches on `master`; not retried automatically |
 | Job status | `get_workflow_runs(workflow, limit)` | recent runs with status and conclusion (also `send`) |
 | Send | `send_scheduled_mails(confirm="SEND_REAL_EMAILS")` | starts `send.yml`: **sends real email** to every Scheduled row and queues their social research |

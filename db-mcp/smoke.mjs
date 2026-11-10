@@ -22,7 +22,7 @@ try {
   const denied = await client.callTool({ name: 'query', arguments: { sql: 'SELECT * FROM email_verification_cache LIMIT 0' } });
   assert.equal(denied.isError, true);
   const candidates = await client.callTool({ name: 'query', arguments: {
-    sql: "SELECT appid FROM scrape_tracker WHERE Mail_status='Pending' AND triage_kept=0 ORDER BY appid DESC LIMIT 10"
+    sql: "SELECT appid FROM scrape_tracker WHERE Mail_status='Pending' ORDER BY appid DESC LIMIT 10"
   } });
   assert.ok(!candidates.isError);
   let imageChecked = false;
