@@ -261,7 +261,7 @@ No redeploy needed — the next draft run reads the new templates.
 | Command | Does |
 |---|---|
 | `--discover` | discovery → stage to Turso + R2 (the nightly job's first step) |
-| `--draft-mails` | AI-draft cold mails for `Accepted` leads → R2 manifests (`draft.yml`) |
+| `--draft-mails` | AI-draft cold mails for `Accepted` leads → R2 manifests (`draft.yml`; `DRAFT_LIMIT` env / the `limit` input drafts only the first N) |
 | `--verify-accepted` | check email + media of `Verifying` games → `Accepted` or back to no-email (`verify.yml`) |
 | `--send-mails` | send `Scheduled` mails (`send.yml`); `--dry-run`, `--limit N` locally |
 | `--review-mails` | handle new bounces, then check `Sent` leads for replies → `Replied` (`review-mails.yml`) |
