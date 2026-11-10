@@ -49,7 +49,7 @@ test('keep turns only flagged Triaged games into pass and moves them to Approval
   db.exec("UPDATE scrape_tracker SET triage_reason='small' WHERE appid=3");
   assert.deepEqual(await keepMany({}, { appids: [3, 4, 1, 9] }, sql), { kept: [3], not_flagged: [4, 1, 9] });
   assert.deepEqual({ ...db.prepare('SELECT Mail_status s, triage_decision d, triage_reason r FROM scrape_tracker WHERE appid=3').get() },
-    { s: 'Triaged', d: 'pass', r: 'Kept by user (AI flagged: small)' });
+    { s: 'Triaged', d: 'pass', r: 'Passed by user (AI flagged: small)' });
   assert.deepEqual((await queues({}, sql)).approval, [1, 3]);
 });
 
@@ -61,8 +61,12 @@ test('accept needs Triaged as pass, an email and a sprite sheet', async () => {
   const result = await acceptMany(env, { appids: [1, 2, 3, 4, 9, 99] }, sql, getJSON(env));
   assert.deepEqual(result.accepted, [1]);
   assert.deepEqual(result.failed.map(f => f.appid), [2, 3, 4, 9, 99]);
-  assert.match(result.failed.find(f => f.appid === 99).error, /screenshot/);
-  assert.match(result.failed.find(f => f.appid === 9).error, /not Triaged as pass/);
+  const error = id => result.failed.find(f => f.appid === id).error;
+  assert.equal(error(99), 'game no longer exists');
+  assert.equal(error(9), 'not triaged yet');
+  assert.equal(error(2), 'has no email');
+  assert.equal(error(3), 'flagged in triage; Pass it first');
+  assert.equal(error(4), 'already Accepted');
   assert.equal(status(db, 1), 'Accepted'); assert.equal(status(db, 2), 'Triaged'); assert.equal(status(db, 3), 'Triaged');
   assert.equal(status(db, 9), 'Pending');
 });
@@ -71,6 +75,15 @@ test('approve moves only Drafted rows', async () => {
   const { db, sql } = await fixture();
   assert.deepEqual(await approveMany({}, { appids: [5, 4] }, sql), { approved: [5], not_drafted: [4] });
   assert.equal(status(db, 5), 'Scheduled');
+});
+
+test('accept refuses a passed game whose sprite sheet is missing', async () => {
+  const { db, sql } = await fixture();
+  const env = { MEDIA: media({ 'index.json': { 1: 'G_1' }, 'G_1/manifest.json': { images: ['SpriteSheet_Screenshots.png'] } }) };
+  const result = await acceptMany(env, { appids: [1] }, sql, getJSON(env));
+  assert.deepEqual(result.accepted, []);
+  assert.match(result.failed[0].error, /sprite sheet is missing/);
+  assert.equal(status(db, 1), 'Triaged');
 });
 
 test('return to accepted clears the saved draft first and only for Drafted rows', async () => {

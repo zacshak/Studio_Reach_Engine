@@ -2,7 +2,8 @@
 <!-- SRE review app — the whole frontend. Vanilla JS, no build step.
      Cards advance only after confirmed writes. Queue refresh runs without
      clearing already-loaded media; explicit Refresh reloads all manifests.
-     Keyboard: ←/→ navigate · A = accept/approve/keep · R = reject. -->
+     Views: Home (counts) · Pending · Passed · Flagged · Mail.
+     Keyboard: ←/→ navigate · A = accept/pass/approve · F = flag · R = reject/delete. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -67,18 +68,32 @@
                  background: #161b26; color: #9aa4b2; cursor: pointer; }
   .bulk button.armed { background: #7f1d1d; color: #fecaca; border-color: #ef4444; }
   .bulk.top { margin: 0 0 .8rem; }
-  #untriaged { font-size: .85rem; opacity: .75; white-space: nowrap; }
+  .home { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: .6rem; }
+  .tile { background: #161b26; border: 1px solid #262b36; border-radius: 10px; padding: .8rem;
+          color: #e6e6e6; text-align: left; font: inherit; }
+  button.tile { cursor: pointer; }
+  button.tile:hover { border-color: #3b82f6; }
+  .tile b { display: block; font-size: 1.6rem; color: #fff; }
+  .tile span { color: #9aa4b2; font-size: .85rem; }
+  .home h2 { grid-column: 1 / -1; font-size: .9rem; color: #9aa4b2; margin: .6rem 0 0; font-weight: 600; }
+  .badge { display: inline-block; background: #3f1d1d; color: #fecaca; border-radius: 999px;
+           padding: .05rem .5rem; font-size: .8rem; margin-left: .3rem; }
+  #toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: 5.5rem; z-index: 4;
+           background: #7f1d1d; color: #fecaca; padding: .6rem 1rem; border-radius: 10px;
+           max-width: min(92vw, 640px); box-shadow: 0 6px 24px #0008; }
+  #toast.info { background: #14532d; color: #bbf7d0; }
+  #toast:empty { display: none; }
   .shotsall img { width: 100%; border-radius: 10px; margin-top: .4rem; display: block; }
 </style>
 </head>
 <body>
 <header>
   <h1>SRE review</h1>
-  <button class="tab" data-tab="triage">🗑 Triage <b></b></button>
-  <button class="tab" data-tab="approval">🎮 Approval <b></b></button>
+  <button class="tab" data-tab="home">🏠 Home</button>
+  <button class="tab" data-tab="pending">⏳ Pending <b></b></button>
+  <button class="tab" data-tab="passed">✅ Passed <b></b></button>
+  <button class="tab" data-tab="flagged">🚩 Flagged <b></b></button>
   <button class="tab" data-tab="mail">📧 Mail <b></b></button>
-  <button class="tab" data-tab="nomail">🚫 No-Mail <b></b></button>
-  <span id="untriaged" title="Pending games not triaged yet; triage them via the MCP" hidden></span>
   <button class="refresh" onclick="load()" aria-label="Refresh dashboard">↻</button>
 </header>
 <main>
@@ -88,6 +103,7 @@
   </div>
   <div id="view"></div>
 </main>
+<div id="toast" role="alert" aria-live="assertive"></div>
 
 <script>
 "use strict";
@@ -139,7 +155,13 @@ async function api(action, extra = {}) {
       body: JSON.stringify({ action, ...extra }),
     });
     const result = await r.json().catch(() => ({}));
-    if (!r.ok || result.ok !== true) throw new Error(result.error || `Server response ${r.status}`);
+    if (r.status === 409 && result.refused) {   // the server refused on purpose: final, not retried
+      failed.splice(failed.indexOf(entry), 1);
+      persistWrites();
+      toast(result.error);
+      return false;
+    }
+    if (!r.ok || result.ok === false) throw new Error(result.error || `Server response ${r.status}`);
     failed.splice(failed.indexOf(entry), 1);
     persistWrites();
     if (result.blocked?.length) actionNotice += `Not deleted because currently Sending: ${result.blocked.join(', ')}. Review their current state before trying again. `;
@@ -155,6 +177,14 @@ async function api(action, extra = {}) {
     render();
   }
 }
+let toastTimer = null;
+function toast(message, kind = 'error') {
+  const el = $("#toast");
+  el.textContent = message || '';
+  el.className = kind === 'info' ? 'info' : '';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.textContent = ''; }, 6000);
+}
 async function retryFailed() {
   if (writeBusy || bulkBusy || pendingCards.size) return;
   for (const [action, extra] of [...failed]) {
@@ -166,8 +196,10 @@ async function retryFailed() {
 
 // ---- state ----
 let S = null;                          // /api/state payload
-let tab = "triage";
-const idx = { triage: 0, approval: 0, mail: 0, nomail: 0 };
+let tab = "home";
+const VIEWS = ["pending", "passed", "flagged", "mail"];
+const idx = { pending: 0, passed: 0, flagged: 0, mail: 0 };
+let noMail = new Set();                // not-yet-accepted games without an email
 const manifests = new Map();           // folder -> manifest (or null while loading)
 const manifestTokens = new Map();
 let mediaGeneration = 0, loadGeneration = 0, imageRetry = 0;
@@ -190,10 +222,10 @@ function queues() {
                          .filter((c) => c.folder && !pendingCards.has(c.appid))
                          .sort((x, y) => x.folder.toLowerCase() < y.folder.toLowerCase() ? -1 : 1);
   return {
-    triage: mk(S.triage),
-    approval: mk(S.approval),
+    pending: mk(S.pending),
+    passed: mk(S.passed),
+    flagged: mk(S.flagged),
     mail: mk(S.mail.map((m) => m.appid)),
-    nomail: mk(S.nomail),
   };
 }
 let Q = null;
@@ -231,8 +263,8 @@ async function load({ background = false } = {}) {
     }
   } else invalidateMedia();
   S = next;
+  noMail = new Set(S.noMail);
   Q = queues();
-  if (!Q[tab].length) tab = ["triage", "approval", "mail", "nomail"].find((t) => Q[t].length) || tab;
   render();
 }
 
@@ -309,18 +341,13 @@ function render() {
   document.querySelectorAll(".tab").forEach((b) => {
     const t = b.dataset.tab;
     b.classList.toggle("on", t === tab);
-    b.querySelector("b").textContent = Q[t].length;
+    const count = b.querySelector("b");
+    if (count) count.textContent = Q[t].length;
   });
-  const untriaged = $("#untriaged");
-  untriaged.hidden = !S.untriaged;
-  untriaged.textContent = S.untriaged ? `⏳ ${S.untriaged} untriaged` : "";
-  const list = Q[tab];
   const view = $("#view");
-  // drafts are pending when accepted leads ('Accepted') have no draft text yet
-  const gha =
-    (tab === "approval" && !list.length && S.pendingDrafts
-      ? ghaBtn("✍️ Draft pending mails", "draft") : "") +
-    (tab === "mail" && S.scheduled ? ghaBtn("📨 Send scheduled mails", "send") : "");
+  if (tab === "home") { renderHome(view); return; }
+  const list = Q[tab];
+  const gha = tab === "mail" && S.scheduled ? ghaBtn("📨 Send scheduled mails", "send") : "";
   if (!list.length) {
     paint(view, (gha ? `<div class="bulk top">${gha}</div>` : "") +
                      `<div class="empty">${pendingCards.size ? 'Review actions are still saving…' : 'Nothing to review 🎉'}</div>`);
@@ -356,17 +383,26 @@ function render() {
     ? `<div class="mail"><div class="to">To: ${escapeHtml(emailsOf(card.appid) || "(no recipient!)")}</div>${
         (m && m.mail) ? escapeHtml(m.mail) : "<i>(not drafted yet)</i>"}</div>` : "";
 
-  const A = { triage: ["✅ Keep", "keep"], approval: ["✅ Accept", "accept"],
-              mail: ["✅ Approve", "approve"], nomail: [null, null] }[tab];
-  const R = tab === "triage" ? "reject_irrelevant" : "reject";
-  // two-tap Reject-all with an explicit Cancel — triage (irrelevant) + no-mail (dead-end leads)
-  const bulkTriage = bulkBusy ? `<button disabled>Deleting confirmed batches… ${bulkDone} / ${bulkTotal}</button>` : (tab !== "triage" && tab !== "nomail") ? "" : armed === "bulkR"
-    ? `<button class="armed" onclick="bulkReject()">⚠️ Tap again to purge all ${list.length} — can't be undone</button>
-       <button onclick="armed=null;render()">Cancel</button>`
-    : `<button onclick="bulkReject()">🗑 Reject all (${list.length})</button>`;
-  const bulk = bulkTriage +
-    (tab === "mail" ? `<button onclick="approveAll()">✅ Approve all (${list.length})</button>` : "") +
-    gha;
+  // [label, action, class] per view: left = secondary, right = primary
+  const B = {
+    pending: [["❌ Reject", "reject", "bad"], ["✅ Accept", "triage_pass", "ok"]],
+    passed: [["🚩 Flag", "flag", "bad"], ["✅ Accept", "accept", "ok"]],
+    flagged: [["🗑 Delete", "reject", "bad"], ["✅ Pass", "pass", "ok"]],
+    mail: [["❌ Reject", "reject", "bad"], ["✅ Approve", "approve", "ok"]],
+  }[tab];
+  const withEmail = Q.passed.filter(c => !noMail.has(c.appid)).length;
+  const bulkBar = bulkBusy ? `<button disabled>${escapeHtml(bulkLabel)}… ${bulkDone} / ${bulkTotal}</button>`
+    : tab === "flagged" ? (armed === "deleteAll"
+      ? `<button class="armed" onclick="deleteAll()">⚠️ Tap again to delete all ${list.length} — can't be undone</button>
+         <button onclick="armed=null;render()">Cancel</button>`
+      : `<button onclick="deleteAll()">🗑 Delete all (${list.length})</button>`)
+    : tab === "passed" ? (armed === "acceptAll"
+      ? `<button class="armed" onclick="acceptAll()">Tap again to accept ${withEmail} game(s) with an email</button>
+         <button onclick="armed=null;render()">Cancel</button>`
+      : `<button ${withEmail ? '' : 'disabled data-unavailable'} onclick="acceptAll()">✅ Accept all (${withEmail} with email)</button>`)
+    : tab === "mail" ? `<button onclick="approveAll()">✅ Approve all (${list.length})</button>` : "";
+  const bulk = bulkBar + gha;
+  const review = S.triageReviews?.[card.appid];
 
   // bulk/GHA controls render ABOVE the card — that's where the Streamlit app kept them
   paint(view, `
@@ -374,18 +410,18 @@ function render() {
     <div class="card">
       <h2>${escapeHtml(String(name))}</h2>
       <div class="meta">${escapeHtml((m && m.meta) || "")} · appid ${card.appid} ·
-        <a href="https://store.steampowered.com/app/${card.appid}/" target="_blank" rel="noopener">Steam page 🔗</a></div>
+        <a href="https://store.steampowered.com/app/${card.appid}/" target="_blank" rel="noopener">Steam page 🔗</a>${
+        noMail.has(card.appid) ? '<span class="badge">📭 No email</span>' : ''}</div>
       ${img}${thumbs}${shotsCtl}${allShots}
-      ${tab === 'approval' && m && (!Array.isArray(m.images) || !m.images.includes('SpriteSheet_Screenshots.png')) ? '<p>Drafting unavailable: this game’s screenshot export needs repair.</p>' : ''}
-      ${S.triageReviews?.[card.appid] ? `<details><summary>AI recommendation: ${escapeHtml(S.triageReviews[card.appid].decision)}</summary><p>${escapeHtml(S.triageReviews[card.appid].reason || "")}</p><p>Criteria: ${escapeHtml(S.triageReviews[card.appid].criteria || "")}</p></details>` : ""}
+      ${tab === 'passed' && m && (!Array.isArray(m.images) || !m.images.includes('SpriteSheet_Screenshots.png')) ? '<p>Drafting unavailable: this game’s screenshot export needs repair.</p>' : ''}
+      ${review ? `<details><summary>Triage: ${escapeHtml(review.decision)}</summary><p>${escapeHtml(review.reason || "")}</p>${review.criteria ? `<p>Criteria: ${escapeHtml(review.criteria)}</p>` : ''}</details>` : ""}
       <div class="desc">${m ? escapeHtml(m.desc || "") : "Loading…"}</div>
       ${mail}
       <div class="nav">
         <button aria-label="Previous game" onclick="move(-1)">←</button><span>${i + 1} / ${list.length}</span><button aria-label="Next game" onclick="move(1)">→</button>
       </div>
       <div class="actions">
-        ${A[0] ? `<button class="ok" ${tab === 'approval' && (!m || !Array.isArray(m.images) || !m.images.includes('SpriteSheet_Screenshots.png')) ? 'disabled data-unavailable' : ''} onclick="doAct('${A[1]}')">${A[0]}</button>` : ""}
-        <button class="bad" onclick="doAct('${R}')">❌ Reject</button>
+        ${B.map(([label, action, cls]) => `<button class="${cls}" onclick="doAct('${action}')">${label}</button>`).join("")}
       </div>
     </div>`);
   view.querySelectorAll('button').forEach(button => {
@@ -396,6 +432,30 @@ function render() {
       (cardAction && ((writeBusy && !pendingCards.size) || failed.some(item => item[1].appid === card.appid)));
   });
 }
+
+// Home: a control panel of counts. Tiles for the review views open that view.
+const TILES = [
+  ["Review", [["pending", "Pending", "pending"], ["triaged", "Triaged"], ["passed", "Passed", "passed"],
+              ["flagged", "Flagged", "flagged"], ["no_mail", "No email (not accepted)"]]],
+  ["Outreach", [["accepted", "Accepted"], ["drafted", "Drafted", "mail"], ["scheduled", "Scheduled", "mail"],
+                ["sending", "Sending"], ["sent", "Sent"], ["replied", "Replied"]]],
+  ["Quarantine", [["invalid", "Invalid"]]],
+];
+function renderHome(view) {
+  const c = S.counts || {};
+  const tiles = TILES.map(([group, items]) => `<h2>${group}</h2>` + items
+    .filter(([key]) => key !== "sending" || c.sending)
+    .map(([key, label, target]) => target
+      ? `<button class="tile" onclick="openTab('${target}')"><b>${c[key] ?? 0}</b><span>${label}</span></button>`
+      : `<div class="tile"><b>${c[key] ?? 0}</b><span>${label}</span></div>`).join("")).join("");
+  const controls = (S.pendingDrafts ? ghaBtn("✍️ Draft accepted mails", "draft") : "") +
+    (S.scheduled ? ghaBtn("📨 Send scheduled mails", "send") : "");
+  paint(view, `${controls ? `<div class="bulk top">${controls}</div>` : ""}<div class="home">${tiles}</div>`);
+  view.querySelectorAll('.bulk.top button').forEach(button => {
+    button.disabled = bulkBusy || button.hasAttribute('data-unavailable') || writeBusy || pendingCards.size > 0 || failed.length > 0;
+  });
+}
+function openTab(t) { tab = t; shot = 0; armed = null; showAll = false; render(); }
 
 function imageURL(folder, name, thumbnail = false) {
   const preview = manifests.get(folder)?.previews?.[name];
@@ -418,7 +478,7 @@ function imageFailed(image) {
   render();
 }
 function retryMedia() {
-  const card = Q[tab][idx[tab]];
+  const card = Q[tab]?.[idx[tab]];
   if (card) { imageRetry++; invalidateMedia(); render(); }
 }
 
@@ -427,7 +487,8 @@ function escapeHtml(s) {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 function move(d) {
-  const n = Q[tab].length;
+  const n = Q[tab]?.length;
+  if (!n) return;
   idx[tab] = (idx[tab] + d + n) % n;
   shot = 0; armed = null; showAll = false;
   render();
@@ -436,8 +497,12 @@ function move(d) {
 // Persist intent before advancing. Serialize writes, not user navigation.
 async function doAct(action) {
   if (bulkBusy || (writeBusy && !pendingCards.size)) return;
-  const card = Q[tab][idx[tab]];
+  const card = Q[tab]?.[idx[tab]];
   if (!card || pendingCards.has(card.appid) || failed.some(item => item[1].appid === card.appid)) return;
+  if (action === 'accept' && noMail.has(card.appid)) {   // refused before any request
+    toast(`Can't accept ${manifests.get(card.folder)?.name || card.appid}: it has no email.`);
+    return;
+  }
   const entry = [action, { appid: card.appid }, 'Queued for saving'];
   failed.push(entry);
   try { persistWrites(); }
@@ -455,8 +520,10 @@ async function doAct(action) {
     try {
       const result = await api(action, { appid: card.appid });
       if (result && !result.blocked?.includes(card.appid)) {
-        for (const key of ['triage', 'approval', 'nomail']) S[key] = S[key].filter(id => id !== card.appid);
+        for (const key of ['pending', 'passed', 'flagged']) S[key] = S[key].filter(id => id !== card.appid);
         S.mail = S.mail.filter(row => row.appid !== card.appid);
+        if (action === 'triage_pass' || action === 'pass') S.passed.push(card.appid);
+        if (action === 'flag') S.flagged.push(card.appid);
         if (action === 'accept') S.pendingDrafts = true;
         if (action === 'approve') S.scheduled = true;
       }
@@ -477,18 +544,18 @@ async function approveAll() {
   const ids = Q.mail.map((c) => c.appid);
   if (await api("approve_all", { appids: ids })) await load();
 }
-let bulkBusy = false, bulkDone = 0, bulkTotal = 0;
-async function bulkReject() {           // Only remove cards after server confirmation.
+let bulkBusy = false, bulkDone = 0, bulkTotal = 0, bulkLabel = '';
+// Flagged: two-tap Delete all. Cards leave only after server confirmation.
+async function deleteAll() {
   if (bulkBusy || writeBusy || pendingCards.size || failed.length) return;
-  if (armed !== "bulkR") { armed = "bulkR"; render(); return; }
-  const ids = Q[tab].map((c) => c.appid);
-  const action = tab === "triage" ? "reject_all_irrelevant" : "reject_all";
-  bulkBusy = true; bulkDone = 0; bulkTotal = ids.length; armed = null;
+  if (armed !== "deleteAll") { armed = "deleteAll"; render(); return; }
+  const ids = Q.flagged.map((c) => c.appid);
+  bulkBusy = true; bulkDone = 0; bulkTotal = ids.length; bulkLabel = 'Deleting'; armed = null;
   try {
     for (let i = 0; i < ids.length; i += 10000) {
       const batch = ids.slice(i, i + 10000);
       render();
-      const result = await api(action, { appids: batch });
+      const result = await api("reject_all", { appids: batch });
       if (!result) break;
       const removed = new Set(result.deleted ?? batch);
       for (const key of Object.keys(Q)) Q[key] = Q[key].filter(c => !removed.has(c.appid));
@@ -499,6 +566,36 @@ async function bulkReject() {           // Only remove cards after server confir
     await load({ background: true });
   }
 }
+// Passed: two-tap Accept all. Games without an email are skipped; each batch reports
+// which games were accepted and why the others were refused.
+const ACCEPT_BATCH = 10;
+async function acceptAll() {
+  if (bulkBusy || writeBusy || pendingCards.size || failed.length) return;
+  if (armed !== "acceptAll") { armed = "acceptAll"; render(); return; }
+  const ids = Q.passed.filter(c => !noMail.has(c.appid)).map(c => c.appid);
+  const skipped = Q.passed.length - ids.length;
+  bulkBusy = true; bulkDone = 0; bulkTotal = ids.length; bulkLabel = 'Accepting'; armed = null;
+  let accepted = 0; const refused = [];
+  try {
+    for (let i = 0; i < ids.length; i += ACCEPT_BATCH) {
+      const batch = ids.slice(i, i + ACCEPT_BATCH);
+      render();
+      const result = await api("accept_many", { appids: batch });
+      if (!result) break;
+      accepted += result.accepted.length;
+      refused.push(...result.failed);
+      const moved = new Set(result.accepted);
+      Q.passed = Q.passed.filter(c => !moved.has(c.appid));
+      bulkDone += batch.length;
+    }
+  } finally {
+    bulkBusy = false;
+    const reasons = [...new Set(refused.map(f => f.error))].slice(0, 3).join('; ');
+    toast(`Accepted ${accepted}.` + (skipped ? ` Skipped ${skipped} without an email.` : '') +
+      (refused.length ? ` ${refused.length} refused: ${reasons}.` : ''), refused.length ? 'error' : 'info');
+    await load({ background: true });
+  }
+}
 
 // ---- touch swipe (phone navigation, like the Streamlit app) ----
 let tx = null, ty = null;
@@ -506,7 +603,7 @@ document.addEventListener("touchstart", (e) => {
   tx = e.changedTouches[0].clientX; ty = e.changedTouches[0].clientY;
 }, { passive: true });
 document.addEventListener("touchend", (e) => {
-  if (tx === null || !Q || !Q[tab].length) return;
+  if (tx === null || !Q || !Q[tab]?.length) return;
   const dx = e.changedTouches[0].clientX - tx;
   const dy = e.changedTouches[0].clientY - ty;
   tx = null;
@@ -519,12 +616,13 @@ document.addEventListener("touchend", (e) => {
 document.querySelectorAll(".tab").forEach((b) =>
   b.addEventListener("click", () => { tab = b.dataset.tab; shot = 0; armed = null; showAll = false; render(); }));
 document.addEventListener("keydown", (e) => {
-  if (!Q || !Q[tab].length) return;
+  if (!Q || !Q[tab]?.length) return;
+  const key = e.key.toLowerCase();
   if (e.key === "ArrowLeft") move(-1);
   else if (e.key === "ArrowRight") move(1);
-  else if (e.key.toLowerCase() === "a" && ["triage", "approval", "mail"].includes(tab))
-    doAct({ triage: "keep", approval: "accept", mail: "approve" }[tab]);
-  else if (e.key.toLowerCase() === "r") doAct(tab === "triage" ? "reject_irrelevant" : "reject");
+  else if (key === "a") doAct({ pending: "triage_pass", passed: "accept", flagged: "pass", mail: "approve" }[tab]);
+  else if (key === "f" && tab === "passed") doAct("flag");
+  else if (key === "r" && tab !== "passed") doAct("reject");
 });
 
 load();

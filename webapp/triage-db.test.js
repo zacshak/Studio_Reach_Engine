@@ -3,8 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { migrateStates } from './migrate-states.mjs';
-import { saveTriage, triageSnapshot, TRIAGE_SQL } from './triage.js';
-import { keepStmt } from './worker.js';
+import { saveTriage, triageSnapshot, setDecision, overrideReason, TRIAGE_SQL, TRIAGE_PASS_SQL } from './triage.js';
 import { CLEANUP_SCHEMA, CLEANUP_GUARDS } from './deletion.js';
 
 function sqlFor(db) {
@@ -121,7 +120,7 @@ test('triage save moves only Pending rows to Triaged and is idempotent on retry'
   db.close();
 });
 
-test('dashboard query and Keep: Keep turns a flag into pass with the override recorded', async () => {
+test('dashboard query and Pass/Flag: decisions flip with the override recorded and reversible', async () => {
   const { db, sql } = freshFixture();
   await migrateStates({}, sql);
   await saveTriage({}, { criteria: 'Rubric', results: [
@@ -131,13 +130,43 @@ test('dashboard query and Keep: Keep turns a flag into pass with the override re
   assert.deepEqual(snap.triage, [1]);
   assert.deepEqual(Object.keys(snap.triageReviews), ['1', '2']);
   assert.equal(snap.triageReviews[1].criteria, 'Rubric');
-  const [kept] = await sql({}, [keepStmt(1)]);
-  assert.deepEqual(kept.map(r => Number(r[0])), [1]);
-  assert.deepEqual([row(db, 1).s, row(db, 1).d, row(db, 1).r], ['Triaged', 'pass', 'Kept by user (AI flagged: too small)']);
+  assert.deepEqual(await setDecision({}, [1, 2, 3], 'pass', sql), { changed: [1], unchanged: [2, 3] });
+  assert.deepEqual([row(db, 1).s, row(db, 1).d, row(db, 1).r], ['Triaged', 'pass', 'Passed by user (AI flagged: too small)']);
   [rows] = await sql({}, [[TRIAGE_SQL]]);
   assert.deepEqual(triageSnapshot(rows).triage, []);
-  // Keep only applies to flagged Triaged games.
-  for (const id of [1, 2, 3]) assert.deepEqual((await sql({}, [keepStmt(id)]))[0], []);
+  // Flag a passed game, then flag the human-passed one back: the AI's own reason returns.
+  assert.deepEqual(await setDecision({}, [2, 1], 'flag', sql), { changed: [2, 1], unchanged: [] });
+  assert.deepEqual([row(db, 2).d, row(db, 2).r], ['flag', 'Flagged by user (AI passed: fits)']);
+  assert.deepEqual([row(db, 1).d, row(db, 1).r], ['flag', 'too small']);
+  // Untriaged (Pending) games are never changed by Pass/Flag.
+  assert.deepEqual(await setDecision({}, [3], 'flag', sql), { changed: [], unchanged: [3] });
   assert.deepEqual([row(db, 3).s, row(db, 3).d], ['Pending', null]);
   db.close();
+});
+
+test('Pending view Accept triages a Pending game as pass, only once', async () => {
+  const { db, sql } = freshFixture();
+  await migrateStates({}, sql);
+  assert.deepEqual((await sql({}, [[TRIAGE_PASS_SQL, 3]]))[0].map(r => Number(r[0])), [3]);
+  const r3 = row(db, 3);
+  assert.deepEqual([r3.s, r3.d, r3.r], ['Triaged', 'pass', 'Passed by user']);
+  assert.match(r3.t, /Z$/);
+  assert.deepEqual((await sql({}, [[TRIAGE_PASS_SQL, 3]]))[0], []);
+  assert.deepEqual((await sql({}, [[TRIAGE_PASS_SQL, 4]]))[0], [], 'an Accepted game is not Pending');
+  // A user-passed game flagged and passed again keeps plain user reasons.
+  await setDecision({}, [3], 'flag', sql);
+  assert.equal(row(db, 3).r, 'Flagged by user');
+  await setDecision({}, [3], 'pass', sql);
+  assert.equal(row(db, 3).r, 'Passed by user');
+  db.close();
+});
+
+test('override reasons keep the AI decision and never nest', () => {
+  assert.equal(overrideReason('pass', 'flag', 'small'), 'Passed by user (AI flagged: small)');
+  assert.equal(overrideReason('flag', 'pass', 'Passed by user (AI flagged: small)'), 'small');
+  assert.equal(overrideReason('pass', 'flag', 'Kept by user (AI flagged: old keep)'), 'Passed by user (AI flagged: old keep)');
+  assert.equal(overrideReason('flag', 'pass', 'Kept by user (AI flagged: old keep)'), 'old keep');
+  assert.equal(overrideReason('flag', 'pass', 'fits (multi)\nline'), 'Flagged by user (AI passed: fits (multi)\nline)');
+  assert.equal(overrideReason('flag', 'pass', 'Passed by user'), 'Flagged by user');
+  assert.equal(overrideReason('flag', 'pass', ''), 'Flagged by user (AI passed: )');
 });

@@ -1,7 +1,7 @@
 // Triage recommendations live in scrape_tracker (triage_decision / triage_reason /
 // triage_criteria_id / triaged_at) plus the shared triage_criteria table.
 // Mail_status: Pending = not triaged yet; Triaged = has a pass/flag decision.
-// A human Keep turns flag into pass and records the override in triage_reason.
+// A human Pass/Flag changes the decision and records the override in triage_reason.
 
 // Rows still eligible for human review, with their current recommendation.
 export const TRIAGE_SQL = `SELECT s.appid, s.triage_decision, s.triage_reason, c.text, s.triaged_at
@@ -9,11 +9,41 @@ export const TRIAGE_SQL = `SELECT s.appid, s.triage_decision, s.triage_reason, c
   WHERE s.Mail_status='Triaged' AND s.triage_decision IN ('pass','flag')
   ORDER BY s.appid`;
 
-// Human Keep: a flag becomes pass; the original AI reason is kept in the new reason.
-export const KEEP_SQL = `UPDATE scrape_tracker SET triage_decision='pass',
-  triage_reason='Kept by user (AI flagged: ' || coalesce(triage_reason,'') || ')',
-  triaged_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-  WHERE Mail_status='Triaged' AND triage_decision='flag'`;
+const NOW_SQL = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
+
+// Manual triage from the dashboard Pending view: Pending -> Triaged as pass.
+export const USER_PASS_REASON = 'Passed by user';
+export const TRIAGE_PASS_SQL = `UPDATE scrape_tracker SET Mail_status='Triaged', triage_decision='pass',
+  triage_reason='${USER_PASS_REASON}', triage_criteria_id=NULL, triaged_at=${NOW_SQL}
+  WHERE appid=? AND Mail_status='Pending' RETURNING appid`;
+
+// The reason after a human changes a decision. The AI's original decision and reason
+// are kept inside it; switching back to the AI's own decision restores its reason.
+export function overrideReason(target, current, reason) {
+  const word = target === 'pass' ? 'Passed' : 'Flagged';
+  const text = reason || '';
+  const wrapped = /^(?:Passed|Flagged|Kept) by user \(AI (passed|flagged): ([\s\S]*)\)$/.exec(text);
+  const ai = wrapped ? { decision: wrapped[1] === 'passed' ? 'pass' : 'flag', reason: wrapped[2] }
+    : /^(?:Passed|Flagged) by user$/.test(text) ? null : { decision: current, reason: text };
+  if (!ai) return `${word} by user`;
+  if (ai.decision === target) return ai.reason;
+  return `${word} by user (AI ${ai.decision === 'pass' ? 'passed' : 'flagged'}: ${ai.reason})`;
+}
+
+// Human Pass (flag -> pass) or Flag (pass -> flag) for Triaged games. Each update is
+// guarded on the decision and reason it was computed from, so a racing change wins.
+export async function setDecision(env, appids, target, sql) {
+  if (!['pass', 'flag'].includes(target)) throw new Error('decision must be pass or flag');
+  const from = target === 'pass' ? 'flag' : 'pass';
+  const [rows] = await sql(env, [[`SELECT appid, triage_reason FROM scrape_tracker
+    WHERE Mail_status='Triaged' AND triage_decision=? AND appid IN (SELECT value FROM json_each(?))`, from, JSON.stringify(appids)]]);
+  const statements = rows.map(([appid, reason]) => [`UPDATE scrape_tracker SET triage_decision=?, triage_reason=?,
+    triaged_at=${NOW_SQL} WHERE appid=? AND Mail_status='Triaged' AND triage_decision=? AND coalesce(triage_reason,'')=?
+    RETURNING appid`, target, overrideReason(target, from, reason ?? ''), Number(appid), from, reason ?? '']);
+  const out = statements.length ? await sql(env, statements, true) : [];
+  const changed = new Set(out.flat().map(row => Number(row[0])));
+  return { changed: appids.filter(a => changed.has(a)), unchanged: appids.filter(a => !changed.has(a)) };
+}
 
 export function triageSnapshot(rows) {
   const triage = [], triageReviews = {};

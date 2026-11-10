@@ -29,6 +29,16 @@ test('workflow dispatch is not replayed after an uncertain response', async () =
   await vm.runInContext('retryFailed()',ctx);
   assert.equal(requests,1);
 });
+test('a 409 refusal is final: no retry is kept and the reason is shown', async () => {
+  const storage = {};
+  const ctx = context(storage, async () => ({ ok: false, status: 409, json: async () => ({ error: 'Cannot accept 7: has no email.', refused: true }) }));
+  const shown = { textContent: '' };
+  ctx.$ = key => key === '#toast' ? shown : { hidden: true, textContent: '' };
+  vm.runInContext(script, ctx);
+  assert.equal(await vm.runInContext("api('accept', {appid:7})", ctx), false);
+  assert.equal(storage.sre_pending_writes, '[]');
+  assert.match(shown.textContent, /has no email/);
+});
 test('the inline dashboard script parses completely', () => {
   new vm.Script(html.slice(html.indexOf('<script>')+8,html.indexOf('</script>')));
 });

@@ -75,7 +75,7 @@ export function registerWorkflowTools(server, env, run) {
     {}, READ, () => review(env, '/api/queues'));
   tool('get_triage', 'Stored triage for up to 100 games: decision (pass/flag or null when untriaged), reason, full criteria text, timestamp and mail status.',
     { appids: appids(100) }, READ, ({ appids }) => review(env, '/api/triage/get', { appids }));
-  tool('keep_games', 'Triage Keep for up to 100 flagged games: overrides the flag to pass (the reason records the override), moving them to Approval or No-Mail. Returns kept and not_flagged.',
+  tool('keep_games', 'Triage Keep for up to 100 flagged games: overrides the flag to pass (the reason records the override), moving them to the dashboard Passed view. Returns kept and not_flagged.',
     { appids: appids(100) }, WRITE, ({ appids }) => review(env, '/api/act', { action: 'keep_many', appids }));
   tool('accept_games', 'Accept up to 100 games for outreach (Triaged -> Accepted). Only games triaged as pass that have an email and a stored sprite sheet; untriaged, flagged and no-email games are refused. Returns accepted and failed with reasons.',
     { appids: appids(100) }, WRITE, ({ appids }) => review(env, '/api/act', { action: 'accept_many', appids }));

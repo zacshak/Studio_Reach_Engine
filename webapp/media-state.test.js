@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 
 const html = readFileSync(new URL('./public/index.html', import.meta.url), 'utf8');
 const source = html.slice(html.indexOf('<script>') + 8, html.lastIndexOf('load();'));
-const emptyState = { index: {}, triage: [], approval: [], mail: [], nomail: [] };
+const emptyState = { index: {}, counts: {}, pending: [], passed: [], flagged: [], noMail: [], mail: [], triageReviews: {} };
 const response = value => ({ ok: true, json: async () => value });
 function deferred() {
   let resolve, reject;
@@ -14,7 +14,7 @@ function deferred() {
 }
 function fixture(fetch) {
   const elements = new Map();
-  const ctx = vm.createContext({ fetch, AbortSignal, URL, console,
+  const ctx = vm.createContext({ fetch, AbortSignal, URL, console, setTimeout, clearTimeout,
     localStorage: { getItem: () => null, setItem() {} },
     Image: class {},
     document: {
@@ -29,22 +29,66 @@ function fixture(fetch) {
   return { ctx, run: code => vm.runInContext(code, ctx), elements };
 }
 
-test('only the four remaining views render without socials state or controls', async () => {
-  const views = ['triage', 'approval', 'mail', 'nomail'];
-  assert.deepEqual([...html.matchAll(/data-tab="([^"]+)"/g)].map(match => match[1]), views);
+test('Home plus the four review views render without socials state or controls', async () => {
+  const views = ['pending', 'passed', 'flagged', 'mail'];
+  assert.deepEqual([...html.matchAll(/data-tab="([^"]+)"/g)].map(match => match[1]), ['home', ...views]);
   assert.doesNotMatch(html, /renderSocials|toggleSocials|reqsocial|social-links|social-empty|Fetch requested socials|social research/);
+  const buttons = { pending: ['reject', 'triage_pass'], passed: ['flag', 'accept'], flagged: ['reject', 'pass'], mail: ['reject', 'approve'] };
   for (const view of views) {
     const state = { ...emptyState, index: { 1: 'Game_1' }, [view]: view === 'mail' ? [{ appid: 1 }] : [1] };
     const { run, elements } = fixture(async url => response(url === '/api/state' ? state
       : { name: 'Game', desc: 'Description', images: ['SpriteSheet_Screenshots.png'], mail: 'Draft' }));
     await run('load()');
+    assert.equal(run('tab'), 'home', 'the dashboard opens on Home');
+    run(`openTab('${view}')`);
     await new Promise(resolve => setImmediate(resolve));
     assert.deepEqual(Array.from(run('Object.keys(Q)')), views);
-    assert.equal(run('tab'), view);
     assert.match(elements.get('#view').innerHTML, /Description/);
-    assert.match(elements.get('#view').innerHTML, /doAct\('/);
+    assert.deepEqual([...elements.get('#view').innerHTML.matchAll(/doAct\('([a-z_]+)'\)/g)].map(m => m[1]), buttons[view]);
     assert.doesNotMatch(elements.get('#view').innerHTML, /social/i);
   }
+});
+
+test('Home lists every count and links the review views', async () => {
+  const counts = { pending: 230, triaged: 1190, passed: 1185, flagged: 5, no_mail: 24, accepted: 3, drafted: 2,
+    scheduled: 2, sending: 0, sent: 2341, replied: 224, invalid: 1 };
+  const { run, elements } = fixture(async () => response({ ...emptyState, counts, scheduled: true, pendingDrafts: true }));
+  await run('load()');
+  const page = elements.get('#view').innerHTML;
+  for (const [label, n] of [['Pending', 230], ['Triaged', 1190], ['Passed', 1185], ['Flagged', 5], ['No email (not accepted)', 24],
+    ['Accepted', 3], ['Drafted', 2], ['Scheduled', 2], ['Sent', 2341], ['Replied', 224], ['Invalid', 1]])
+    assert.match(page, new RegExp(`<b>${n}</b><span>${label.replace(/[()]/g, '\\$&')}</span>`), label);
+  assert.doesNotMatch(page, /Sending/, 'Sending only shows while non-zero');
+  for (const view of ['pending', 'passed', 'flagged', 'mail']) assert.match(page, new RegExp(`openTab\\('${view}'\\)`));
+  assert.match(page, /Draft accepted mails/);
+  assert.match(page, /Send scheduled mails/);
+});
+
+test('Passed Accept on a game without email shows an error without any request', async () => {
+  let writes = 0;
+  const state = { ...emptyState, index: { 1: 'A_1' }, passed: [1], noMail: [1] };
+  const { run, elements } = fixture(async url => { if (url === '/api/act') writes++; return response(url === '/api/state' ? state : { name: 'Alpha', images: [] }); });
+  await run('load()');
+  run("openTab('passed')");
+  await new Promise(resolve => setImmediate(resolve));
+  await run("doAct('accept')");
+  assert.equal(writes, 0);
+  assert.match(elements.get('#toast').textContent, /Can't accept Alpha: it has no email/);
+  assert.equal(run('Q.passed.length'), 1);
+  assert.match(elements.get('#view').innerHTML, /No email/);
+});
+
+test('a refused card action is final: the card returns and nothing is kept for retry', async () => {
+  const state = { ...emptyState, index: { 1: 'A_1' }, passed: [1] };
+  const { run, elements } = fixture(async url => url === '/api/act'
+    ? { ok: false, status: 409, json: async () => ({ error: 'Cannot accept 1: has no email.', refused: true }) }
+    : response(url === '/api/state' ? state : { images: [] }));
+  await run('load()');
+  run("openTab('passed')");
+  await run("doAct('accept')");
+  assert.equal(run('failed.length'), 0);
+  assert.equal(run('Q.passed.length'), 1);
+  assert.match(elements.get('#toast').textContent, /has no email/);
 });
 
 test('refresh refetches cached drafts and ignores an earlier manifest completion', async () => {
@@ -97,7 +141,7 @@ test('hero, thumbnails and expanded images expose failure and cache-bypassing re
   const media = { images: ['SpriteSheet_Screenshots.png', 'shot.png'], mail: 'draft' };
   const state = { ...emptyState, index: { 1: 'Game_1' }, mail: [{ appid: 1 }] };
   const { ctx, run, elements } = fixture(async url => response(url === '/api/state' ? state : media));
-  await run('load()');
+  run("tab='mail'"); await run('load()');
   // Flush the manifest fetch started by render().
   await new Promise(resolve => setImmediate(resolve));
   run('showAll=true;render()');
@@ -125,7 +169,7 @@ test('manifest failure retains the existing explicit retry path', async () => {
   const { run, elements } = fixture(async url => url === '/api/state'
     ? response({ ...emptyState, index: { 1: 'Game_1' }, mail: [{ appid: 1 }] })
     : { ok: false, status: 503 });
-  await run('load()');
+  run("tab='mail'"); await run('load()');
   await new Promise(resolve => setImmediate(resolve));
   assert.match(elements.get('#view').innerHTML, /Media request failed \(503\)/);
   assert.match(elements.get('#view').innerHTML, /Retry images/);
@@ -134,8 +178,8 @@ test('manifest failure retains the existing explicit retry path', async () => {
 test('background refresh preserves loaded media but revalidates newly drafted rows', async () => {
   const next={...emptyState,index:{1:'Game_1'},mail:[{appid:1}]};
   const {run}=fixture(async url=>response(url==='/api/state'?next:{mail:'fresh draft',images:[]}));
-  run("S={index:{},mail:[]}; Q={triage:[],approval:[],mail:[],nomail:[]}; manifests.set('Game_1',{mail:null}); manifests.set('Other_2',{name:'cached'})");
-  await run('load({background:true})');
+  run("S={index:{},mail:[]}; Q={pending:[],passed:[],flagged:[],mail:[]}; manifests.set('Game_1',{mail:null}); manifests.set('Other_2',{name:'cached'})");
+  run("tab='mail'"); await run('load({background:true})');
   await new Promise(resolve=>setImmediate(resolve));
   assert.equal(run("manifests.get('Game_1').mail"),'fresh draft');
   assert.equal(run("manifests.get('Other_2').name"),'cached');
@@ -146,7 +190,7 @@ test('neighbor prefetch does not repaint the current card or fetch neighboring i
   const {ctx,run}=fixture(async()=>response({images:['SpriteSheet_Screenshots.png']}));
   ctx.Image=class { constructor(){images++;} };
   ctx.countPaint=()=>paints++;
-  run("Q={triage:[{folder:'Current_1'},{folder:'Neighbor_2'}]};render=countPaint");
+  run("tab='flagged';Q={flagged:[{folder:'Current_1'},{folder:'Neighbor_2'}]};render=countPaint");
   await run("manifest('Neighbor_2')");
   assert.equal(paints,0);
   assert.equal(images,0);
@@ -156,16 +200,16 @@ test('neighbor prefetch downloads bounded lookahead hero previews once and uses 
   const images=[];
   const {ctx,run}=fixture(async()=>response({images:['shot.jpg','SpriteSheet_Screenshots.png'],previews:{'SpriteSheet_Screenshots.png':{src:'preview.webp'}}}));
   ctx.Image=class {set src(value){this.url=value;images.push(this);}};
-  run("Q={triage:[{folder:'Far_0'},{folder:'Previous_1'},{folder:'Current_2'},{folder:'Next_3'},{folder:'Far_4'}]};idx.triage=2;render=()=>{};prefetch(Q.triage,2)");
+  run("Q={flagged:[{folder:'Far_0'},{folder:'Previous_1'},{folder:'Current_2'},{folder:'Next_3'},{folder:'Far_4'}]};tab='flagged';idx.flagged=2;render=()=>{};prefetch(Q.flagged,2)");
   await new Promise(resolve=>setImmediate(resolve));
   assert.deepEqual(images.map(x=>x.url).sort(),['/media/Far_4/preview.webp','/media/Next_3/preview.webp','/media/Previous_1/preview.webp']);
   assert(images.every(x=>x.fetchPriority==='low'));
   assert.match(run("imageTag('Next_3','SpriteSheet_Screenshots.png','class=\"hero\"')"),/src="\/media\/Next_3\/preview.webp"/);
-  run('prefetch(Q.triage,2)');
+  run('prefetch(Q.flagged,2)');
   await new Promise(resolve=>setImmediate(resolve));
   assert.equal(images.length,3);
   images[0].onerror();
-  run('prefetch(Q.triage,2)');
+  run('prefetch(Q.flagged,2)');
   await new Promise(resolve=>setImmediate(resolve));
   assert.equal(images.length,4);
 });
@@ -173,7 +217,7 @@ test('neighbor prefetch downloads bounded lookahead hero previews once and uses 
 test('normal background refresh preserves in-flight media and its generation', async () => {
   const pending=deferred();let requests=0;
   const {run}=fixture(async url=>url==='/api/state'?response(emptyState):(requests++,pending.promise));
-  run('S={mail:[]};Q={triage:[],approval:[],mail:[],nomail:[]}');
+  run('S={mail:[]};Q={pending:[],passed:[],flagged:[],mail:[]}');
   const loading=run("manifest('Next_2')");
   const generation=run('mediaGeneration');
   await run('load({background:true})');
@@ -189,9 +233,9 @@ test('newly drafted row invalidates only its own in-flight manifest', async () =
   const {run}=fixture(async url=>url==='/api/state'
     ?response({...emptyState,index:{1:'Game_1'},mail:[{appid:1}]})
     :++calls===1?old.promise:response({mail:'fresh',images:[]}));
-  run("S={mail:[]};Q={triage:[],approval:[],mail:[],nomail:[]}");
+  run("S={mail:[]};Q={pending:[],passed:[],flagged:[],mail:[]}");
   const loading=run("manifest('Game_1')");
-  await run('load({background:true})');
+  run("tab='mail'"); await run('load({background:true})');
   await new Promise(r=>setImmediate(r));
   old.resolve(response({mail:'stale',images:[]}));
   await loading;
@@ -202,7 +246,7 @@ test('outdated neighboring metadata cannot start a preload after navigating away
   const delayed=deferred();let images=0;
   const {ctx,run}=fixture(async()=>delayed.promise);
   ctx.Image=class {constructor(){images++;}};
-  run("Q={triage:[{folder:'Current_1'},{folder:'Next_2'},{folder:'Other_3'},{folder:'Last_4'}]};render=()=>{};prefetch(Q.triage,0);Q={triage:[{folder:'Unrelated_9'}]};idx.triage=0");
+  run("Q={flagged:[{folder:'Current_1'},{folder:'Next_2'},{folder:'Other_3'},{folder:'Last_4'}]};tab='flagged';render=()=>{};prefetch(Q.flagged,0);Q={flagged:[{folder:'Unrelated_9'}]};idx.flagged=0");
   delayed.resolve(response({images:['SpriteSheet_Screenshots.png']}));
   await new Promise(resolve=>setImmediate(resolve));
   assert.equal(images,0);
@@ -218,7 +262,7 @@ test('preview assets and lazy thumbnails replace full PNG downloads only for dis
 
 test('background refresh failure keeps the current card visible', async () => {
   const {run,elements}=fixture(async()=>{throw new Error('offline');});
-  run("S={mail:[]};Q={triage:[],approval:[],mail:[],nomail:[]};document.querySelector('#view').innerHTML='Current card'");
+  run("S={mail:[]};Q={pending:[],passed:[],flagged:[],mail:[]};document.querySelector('#view').innerHTML='Current card'");
   await run('load({background:true})');
   assert.equal(elements.get('#view').innerHTML,'Current card');
   assert.match(run('actionNotice'),/offline/);
@@ -226,43 +270,45 @@ test('background refresh failure keeps the current card visible', async () => {
 
 test('card actions advance before confirmation, serialize writes, and hide pending cards on refresh', async () => {
   const first = deferred(), second = deferred();
-  const state = { ...emptyState, index: {1:'A_1',2:'B_2',3:'C_3'}, approval:[1,2,3] };
+  const state = { ...emptyState, index: {1:'A_1',2:'B_2',3:'C_3'}, passed:[1,2,3] };
   let writes = 0;
   const {run} = fixture(async url => url === '/api/act'
     ? (++writes === 1 ? first.promise : second.promise)
     : response(url === '/api/state' ? structuredClone(state) : {images:['SpriteSheet_Screenshots.png']}));
   await run('load()');
+  run("tab='passed'");
   const saving1 = run("doAct('accept')");
-  assert.deepEqual(Array.from(run('Q.approval.map(c=>c.appid)')), [2,3]);
+  assert.deepEqual(Array.from(run('Q.passed.map(c=>c.appid)')), [2,3]);
   const saving2 = run("doAct('reject')");
-  assert.deepEqual(Array.from(run('Q.approval.map(c=>c.appid)')), [3]);
+  assert.deepEqual(Array.from(run('Q.passed.map(c=>c.appid)')), [3]);
   await new Promise(resolve=>setImmediate(resolve));
   assert.equal(writes,1);
   await run('load({background:true})');
-  assert.deepEqual(Array.from(run('Q.approval.map(c=>c.appid)')), [3]);
-  state.approval=[2,3]; first.resolve(response({ok:true}));
+  assert.deepEqual(Array.from(run('Q.passed.map(c=>c.appid)')), [3]);
+  state.passed=[2,3]; first.resolve(response({ok:true}));
   await saving1;
   await new Promise(resolve=>setImmediate(resolve));
   assert.equal(writes,2);
-  state.approval=[3]; second.resolve(response({ok:true,deleted:[2]}));
+  state.passed=[3]; second.resolve(response({ok:true,deleted:[2]}));
   await saving2;
   assert.equal(run('pendingCards.size'),0);
   assert.equal(run('failed.length'),0);
-  assert.deepEqual(Array.from(run('Q.approval.map(c=>c.appid)')), [3]);
+  assert.deepEqual(Array.from(run('Q.passed.map(c=>c.appid)')), [3]);
 });
 
 test('failed card is restored and cannot receive a conflicting action before retry', async () => {
   const write = deferred();
-  const state = {...emptyState,index:{1:'A_1',2:'B_2'},approval:[1,2]};
+  const state = {...emptyState,index:{1:'A_1',2:'B_2'},passed:[1,2]};
   let writes=0;
   const {run,elements}=fixture(async url=>url==='/api/act' ? (writes++,write.promise)
     : response(url==='/api/state'?state:{images:['SpriteSheet_Screenshots.png']}));
   await run('load()');
+  run("tab='passed'");
   const saving=run("doAct('accept')");
-  assert.deepEqual(Array.from(run('Q.approval.map(c=>c.appid)')), [2]);
+  assert.deepEqual(Array.from(run('Q.passed.map(c=>c.appid)')), [2]);
   write.resolve({ok:false,status:503,json:async()=>({error:'offline'})});
   await saving;
-  assert.deepEqual(Array.from(run('Q.approval.map(c=>c.appid)')), [1,2]);
+  assert.deepEqual(Array.from(run('Q.passed.map(c=>c.appid)')), [1,2]);
   assert.equal(run('failed.length'),1);
   assert.match(elements.get('#bannerText').textContent,/offline/);
   await run("doAct('reject')");
@@ -270,14 +316,15 @@ test('failed card is restored and cannot receive a conflicting action before ret
 });
 
 test('storage failure prevents optimistic advance and network write', async () => {
-  const state={...emptyState,index:{1:'A_1'},approval:[1]};
+  const state={...emptyState,index:{1:'A_1'},passed:[1]};
   let writes=0;
   const {ctx,run}=fixture(async url=>{if(url==='/api/act') writes++; return response(url==='/api/state'?state:{});});
   await run('load()');
+  run("tab='passed'");
   ctx.localStorage.setItem=()=>{throw new Error('quota');};
   await run("doAct('accept')");
   assert.equal(writes,0);
-  assert.equal(run('Q.approval.length'),1);
+  assert.equal(run('Q.passed.length'),1);
   assert.equal(run('failed.length'),0);
 });
 
@@ -287,7 +334,8 @@ test('workflow and bulk actions do not overtake queued card writes', async () =>
   run('pendingCards.add(1)');
   await run("fireGha('send')");
   await run('approveAll()');
-  await run('bulkReject()');
+  await run('deleteAll()');
+  await run('acceptAll()');
   await run('retryFailed()');
   assert.equal(writes,0);
 });

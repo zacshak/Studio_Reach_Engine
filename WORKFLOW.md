@@ -16,12 +16,12 @@ All local/manual commands still exist through the one launcher: `python SRE.py <
                                         │
                      Web app (Cloudflare Worker) — review on your phone
                                         │
-   Triage tab (flag) ── Keep (flag → pass) ──► Game Approval / No-Mail  (Reject anywhere = delete)
-                              │ Accept (Triaged + pass + email only)
+   Pending view ── Accept (→ Triaged pass) ──► Passed view ◄── Pass / Flag ──► Flagged view
+                              │ Accept (Triaged + pass + email only)   (Reject / Delete = delete)
                               ▼
                           Accepted ──(✍️ Draft button or MCP save_draft)──► Drafted
                                                                              │
-                                          Mail Approval tab: Approve ◄───────┘
+                                          Mail view: Approve ◄───────────────┘
                                                                              │
                           Scheduled ◄────────────────────────────────────────┘
                               │ (📨 Send scheduled mails button → send.yml)
@@ -62,10 +62,11 @@ All local/manual commands still exist through the one launcher: `python SRE.py <
 - **Triage** (in `scrape_tracker`): `triage_decision` is `pass` / `flag` from MCP
   `submit_triage`; `triage_reason` is the reviewer's reason; `triage_criteria_id` points
   at the rubric text in the `triage_criteria` table; `triaged_at` is the UTC timestamp.
-  NULL means not triaged yet (`Pending`). Only `Pending` games can be triaged, so a
-  `Triaged` game never receives another AI recommendation. **Keep** turns `flag` into
-  `pass` and rewrites the reason to `Kept by user (AI flagged: …)`. Deleting a row
-  deletes its triage record with it.
+  NULL means not triaged yet (`Pending`). Only `Pending` games can be triaged by the AI, so
+  a `Triaged` game never receives another AI recommendation. A human can triage a Pending
+  game as pass (dashboard Pending → Accept) and switch Passed ↔ Flagged; the reason then
+  records the override, e.g. `Passed by user (AI flagged: …)`. Deleting a row deletes its
+  triage record with it.
 - **Social enrichment**: `Require_Socials=1` queues MCP research.
   `Socials_Data` stores X, LinkedIn, Instagram, Discord, and Website JSON.
   `Socials_Request_ID` is nullable TEXT reserved for Send click deduplication.
@@ -97,36 +98,46 @@ table in `db-mcp/README.md` (`get_queues`, `accept_games`, `approve_mails`,
 `send_scheduled_mails`, …). The MCP uses the same guarded backend as the dashboard.
 
 ## 2. Review — the web app
-One card at a time, swipe to page. Four tabs; the app opens the first non-empty one in the
-order Triage → Game Approval → Mail Approval → No-Mail.
+`https://sre-review.zacgamedev.com` (public). It opens on **Home**; the other four views
+show one card at a time (swipe or ←/→ to page). Games without an email are mixed into
+Pending, Passed and Flagged and carry a **📭 No email** badge. Every triaged card shows
+its decision, reason and criteria.
 
-### Triage (`Mail_status = Triaged`, `triage_decision = flag`)
-A `pass` puts the lead in Game Approval / No-Mail instead. Every card with a
-recommendation shows its decision, reason and criteria.
-- **Keep** — turns the flag into `pass` (reason records the override); the lead moves to
-  Game Approval or No-Mail.
-- **Reject** / **Reject all** — delete the lead everywhere (Turso rows + queued R2 cleanup).
+### 🏠 Home — control panel
+Counts of Pending, Triaged, Passed, Flagged, No email (not yet accepted: Pending or
+Triaged without an email), Accepted, Drafted, Scheduled, Sent, Replied and Invalid
+(Sending only while non-zero). The Pending, Passed, Flagged, Drafted and Scheduled tiles
+open their view. **✍️ Draft accepted mails** (fires `draft.yml`) shows while `Accepted`
+rows exist; **📨 Send scheduled mails** shows while `Scheduled` rows exist.
 
-### Game Approval (`Mail_status = Triaged`, `triage_decision = pass`, `scrape_status` `seeded` or `scraped`)
-- **Accept** → `Mail_status = Accepted`. Refused unless the game is `Triaged` as `pass`
-  with an email, and if the sprite sheet is missing in R2.
+### ⏳ Pending (`Mail_status = Pending`, not triaged yet)
+- **Accept** → triages the game as `pass` by hand (`Triaged`, reason `Passed by user`);
+  it moves to Passed.
 - **Reject** → deleted (rows + queued R2 cleanup).
-- **✍️ Draft pending mails** button — shown here once the Approval queue is empty and
-  `Accepted` rows exist. Fires `draft.yml`, which drafts a cold mail for each `Accepted`
-  lead, writes it into the R2 manifest and moves the row to `Drafted`. Idempotent.
-  Agents can draft the same leads through MCP `get_draft_context` / `save_draft`.
 
-### No-Mail (`Mail_status = Triaged`, `triage_decision = pass`, `scrape_status` `pending`, `no_email` or `failed`)
-Leads not eligible for outreach yet: awaiting scraping, no email found, or a scraper
-failure. Invalid records are quarantined and hidden.
-- **Reject** / **Reject all** → deleted. There is no Accept here.
-- To find emails, run `hermes.yml` (Playwright + LLM) or `kimchi.yml` from GitHub Actions.
-  A hit flips the lead to `scraped` and it moves to Game Approval. No hit → `no_email`.
+### ✅ Passed (`Mail_status = Triaged`, `triage_decision = pass`)
+- **Accept** → `Mail_status = Accepted`. A game without an email is refused with a pop-up
+  error (also refused if its sprite sheet is missing in R2).
+- **Flag** → `triage_decision = flag` (reason records the override); it moves to Flagged.
+- **Accept all** (two taps) → accepts every passed game with an email, 10 per request;
+  games without an email are skipped and the result pop-up lists any refusals.
 
-### Mail Approval (`Mail_status = Drafted`)
+### 🚩 Flagged (`Mail_status = Triaged`, `triage_decision = flag`)
+- **Pass** → `triage_decision = pass` (reason records the override); it moves to Passed.
+- **Delete** / **Delete all** (two taps) → deleted (rows + queued R2 cleanup).
+
+Override reasons keep the AI's view: passing an AI flag gives
+`Passed by user (AI flagged: <reason>)`, and switching back to the AI's decision restores
+its original reason. A refused action (wrong state, no email) answers HTTP 409 and is
+not kept for retry.
+
+### 📧 Mail (`Mail_status = Drafted`)
 - **Approve** / **Approve all** → `Mail_status = Scheduled`.
 - **Reject** → deleted.
 - **📨 Send scheduled mails** button — shown here while any `Scheduled` rows exist.
+
+To find emails, run `hermes.yml` (Playwright + LLM) or `kimchi.yml` from GitHub Actions,
+or record one with MCP `save_email_result`. A hit removes the No email badge.
 
 ### Social research through MCP
 The Send button queues the click's `Scheduled` snapshot once per lead.
@@ -144,7 +155,7 @@ leave the additive column and saved social state in place. Do not restart the re
 Hermes socials writer alongside MCP ownership.
 
 ## 3. Send — on demand (`send.yml`)
-**📨 Send scheduled mails** button (Mail Approval) → fires `send.yml`. `Scheduled` only
+**📨 Send scheduled mails** button (Home or Mail view) → fires `send.yml`. `Scheduled` only
 means *waiting*; nothing is sent until this button (or a manual `--send-mails`) runs.
 The run works through the `Scheduled` rows **one at a time**, paced 2–4 min apart. For
 each row it reads the draft from the R2 manifest, verifies the address with QEV, then

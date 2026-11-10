@@ -413,7 +413,7 @@ class PipelineTest(unittest.TestCase):
         with self._raw() as c:
             row = c.execute("SELECT Mail_status, triage_decision, triage_reason, "
                             "triaged_at IS NOT NULL FROM scrape_tracker WHERE appid=420").fetchone()
-        self.assertEqual(tuple(row), ("Triaged", "pass", "Kept by user (AI flagged: too small)", 1))
+        self.assertEqual(tuple(row), ("Triaged", "pass", "Passed by user (AI flagged: too small)", 1))
         self.assertEqual(pipeline.triage_pending_appids(), [421])
 
     def test_triaged_leads_stay_triaged_through_scraping_discovery_and_repair(self):

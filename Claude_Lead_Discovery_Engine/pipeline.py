@@ -737,7 +737,7 @@ def triage_flagged_appids():
 
 
 KEEP_SQL = ("UPDATE scrape_tracker SET triage_decision='pass', "
-            "triage_reason='Kept by user (AI flagged: ' || coalesce(triage_reason,'') || ')', "
+            "triage_reason='Passed by user (AI flagged: ' || coalesce(triage_reason,'') || ')', "
             "triaged_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') "
             "WHERE appid=? AND Mail_status='Triaged' AND triage_decision='flag' RETURNING appid")
 
