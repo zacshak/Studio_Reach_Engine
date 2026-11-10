@@ -98,6 +98,11 @@ class ClassifyTest(unittest.TestCase):
             (550, "No such user here", "invalid"),
             (550, "Requested action not taken: mailbox unavailable", "invalid"),
             (552, "5.2.2 Mailbox full", "unknown"),
+            (550, "5.4.1 Recipient address rejected: Access denied. AS(201806281)", "invalid"),
+            (550, "5.4.1 Relay Access Denied", "unknown"),
+            (554, "RCPT (letsgo@x.com) dosn't exist", "invalid"),
+            (554, "5.7.1 <a@b.com>: Relay access denied", "unknown"),
+            (550, "5.7.25 Forward-confirmed reverse DNS failed", "unknown"),
             (550, "5.7.1 Service unavailable, client host blocked using Spamhaus", "unknown"),
             (550, "5.7.606 Access denied, banned sending IP", "unknown"),
             (554, "5.7.1 Recipient address rejected: Access denied", "unknown"),
@@ -138,6 +143,10 @@ class SMTPVerifierTest(unittest.TestCase):
         server = Server(rcpt=lambda a: (250, b"ok") if a.startswith("hello@") else (451, b"later"))
         result = verifier(server).verify("hello@studio.dev")
         self.assertEqual(result["result"], "unknown")
+
+    def test_server_refusing_random_address_with_bare_5xx_still_proves_ours(self):
+        server = Server(rcpt=lambda a: (250, b"ok") if a.startswith("hello@") else (550, b"nope"))
+        self.assertEqual(verifier(server).verify("hello@studio.dev")["result"], "valid")
 
     def test_policy_block_and_greylisting_are_unknown(self):
         for reply in [(550, b"5.7.1 client host blocked using Spamhaus"), (450, b"4.2.0 greylisted")]:

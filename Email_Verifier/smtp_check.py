@@ -36,7 +36,8 @@ _NO_MAILBOX_TEXT = re.compile(
     r"(user|mailbox|recipient|address|account)\s*(name\s*)?(is\s*)?"
     r"(unknown|not\s*found|does\s*not\s*exist|doesn'?t\s*exist|unavailable|invalid|disabled|"
     r"not\s*exist|no\s*longer)|no\s*such\s*(user|mailbox|recipient|address)|"
-    r"unknown\s*(user|recipient|mailbox)|invalid\s*recipient|user\s*not\s*local",
+    r"unknown\s*(user|recipient|mailbox)|invalid\s*recipient|user\s*not\s*local|"
+    r"\b(does\s*not|doesn'?t|dosn'?t)\s*exist",
     re.I)
 _POLICY_TEXT = re.compile(r"block|spam|policy|reputation|blacklist|denylist|rbl|spf|dmarc|"
                           r"not\s*permitted|access\s*denied|rate|too\s*many|try\s*again|"
@@ -70,9 +71,12 @@ def classify_rcpt(code: int | None, message: str) -> str:
         status = ".".join(enhanced.groups())
         if status in _NO_MAILBOX_CODES:
             return "invalid"
+        # Microsoft 365 Directory-Based Edge Blocking: the recipient is not in the tenant.
+        if status == "5.4.1" and re.search(r"recipient address rejected: access denied", message, re.I):
+            return "invalid"
         if status.startswith("5.7.") or status.startswith("5.4.") or status.startswith("5.3."):
             return "unknown"
-    if code in (550, 551, 553) and _NO_MAILBOX_TEXT.search(message or "") \
+    if code in (550, 551, 553, 554) and _NO_MAILBOX_TEXT.search(message or "") \
             and not _POLICY_TEXT.search(message or ""):
         return "invalid"
     return "unknown"
@@ -188,6 +192,10 @@ class SMTPVerifier:
                 # The server accepted a random address too: it accepts everything, so a
                 # 250 for ours proves nothing.
                 return _result(email, "unknown", "accept_all", accept_all=True, mx=host)
+            if canary_outcome == "unknown" and canary.code is not None and canary.code >= 500:
+                # The server permanently refused a random address but took ours: it does
+                # tell mailboxes apart, whatever wording it used.
+                return _result(email, "valid", "mailbox_exists", mx=host)
             if canary_outcome == "unknown":
                 return _result(email, "unknown", f"catch_all_check_inconclusive ({canary.code})",
                                mx=host)
