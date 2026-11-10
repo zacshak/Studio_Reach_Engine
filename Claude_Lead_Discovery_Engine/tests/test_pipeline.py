@@ -985,6 +985,7 @@ class VerificationAndBounceTest(unittest.TestCase):
         self.assertTrue(pipeline.return_unverified(7, expected_email="hello@studio.test",
                                                    reason="media rebuild failed"))
         self.assertEqual(self._row(7)[:3], ("Triaged", "seeded", "hello@studio.test"))
+        self.assertTrue(json.loads(self._row(7)[3])["kept"])
 
     def test_known_invalid_address_is_not_saved_again(self):
         self._lead(8, email="", scrape="no_email")

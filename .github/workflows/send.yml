@@ -24,14 +24,12 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install deps
-        run: pip install --quiet libsql==0.1.11 boto3==1.43.22 dnspython==2.7.0
+        run: pip install --quiet libsql==0.1.11 boto3==1.43.22
       - name: Send scheduled mails
         env:
           SEND_TIME_BUDGET_SECONDS: "19800" # stop between mails before the 350-minute runner ceiling
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-          QEV_API_KEY: ${{ secrets.QEV_API_KEY }}
-          ABSTRACT_API_KEY: ${{ secrets.ABSTRACT_API_KEY }}
           TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
           R2_PUBLIC_BASE: ${{ secrets.R2_PUBLIC_BASE }}

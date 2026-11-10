@@ -50,7 +50,7 @@ All local/manual commands still exist through the one launcher: `python SRE.py <
   | `Pending` | new lead, not triaged yet | discovery |
   | `Triaged` | triaged; `triage_decision` says `pass` or `flag` | MCP `submit_triage` |
   | `Verifying` | accepted; `verify.yml` is checking the email and the media | dashboard **Accept** or MCP `accept_games` |
-  | `Accepted` | email verified (or inconclusive) and media ready; needs a draft. Only `Triaged` + `pass` + an email can be accepted | `verify.yml` |
+  | `Accepted` | email verified and media ready; needs a draft. Only `Triaged` + `pass` + an email can be accepted | `verify.yml` |
   | `Drafted` | draft saved; awaiting your approval | `draft.yml` or MCP `save_draft` |
   | `Scheduled` | approved; **waiting**. Nothing sends it until the Send button (or a manual `--send-mails`) runs | dashboard **Approve** |
   | `Sending` | hidden claim held only while one mail is being submitted | `send.yml`, per row |
@@ -61,8 +61,8 @@ All local/manual commands still exist through the one launcher: `python SRE.py <
   Backward moves: a temporary SMTP failure returns `Sending` → `Scheduled`; a permanent
   rejection returns the row to `Drafted`; a missing draft returns it to `Accepted`;
   a recipient that turns out to be missing returns an unsent row to `Triaged` (or
-  `Pending` if it was never triaged);
-  an inconclusive verification (`unknown`) leaves it `Scheduled`. Reject deletes the row; it is not a status.
+  `Pending` if it was never triaged); an inconclusive check at Accept returns
+  `Verifying` → `Triaged` with the email kept. Reject deletes the row; it is not a status.
 
   **Dead addresses** (see *Email verification* and *Bounces* below) clear the email:
   `emails=''`, `scrape_status='no_email'`, back to `Triaged` (or `Pending`), with
@@ -130,7 +130,10 @@ rows exist; **📨 Send scheduled mails** shows while `Scheduled` rows exist.
 ### ✅ Passed (`Mail_status = Triaged`, `triage_decision = pass`)
 - **Accept** → `Mail_status = Verifying` and starts `verify.yml` (about a minute). The
   page polls it: verified → `Accepted`; a dead address → pop-up error, the email is cleared
-  and the game stays in Passed with a "No email" badge, ready for a new address. A game
+  and the game stays in Passed with a "No email" badge, ready for a new address; an
+  address nobody could check either way (blocked, timed out, QEV and Abstract out) is
+  **not accepted**: it stays in Passed with its email and a "couldn't verify" badge, to
+  retry later. A game
   without an email is refused at once with a pop-up. Missing media (e.g. purged after an
   earlier send) is rebuilt from Steam by the verify run.
 - **Flag** → `triage_decision = flag` (reason records the override); it moves to Flagged.
@@ -173,9 +176,9 @@ Hermes socials writer alongside MCP ownership.
 **📨 Send scheduled mails** button (Home or Mail view) → fires `send.yml`. `Scheduled` only
 means *waiting*; nothing is sent until this button (or a manual `--send-mails`) runs.
 The run works through the `Scheduled` rows **one at a time**, paced 2–4 min apart. For
-each row it reads the draft from the R2 manifest, verifies the address (see *Email
-verification* below), then
-claims that single row `Scheduled → Sending` just before SMTP submission and flips it
+each row it reads the draft from the R2 manifest (the address was verified at Accept; there
+is no second check here, and a dead address found later is caught by the nightly bounce
+scan), then claims that single row `Scheduled → Sending` just before SMTP submission and flips it
 `Sending → Sent` after. Rows not yet reached stay `Scheduled`, so at most one row is
 `Sending` at a time. It preserves `Require_Socials` and `Socials_Data` and purges the
 sent lead's R2 media. Clicking Send also queues social research for the `Scheduled` rows.
@@ -194,16 +197,13 @@ Scheduled rows. For legacy rows or unmatched messages, check Gmail Sent and reso
 `python SRE.py --send-mails --resolve-sending APPID sent|retry`. Never choose `retry`
 solely because an uncertain message is absent from search results.
 
-The Actions summary reports sent, deferred, unknown, invalid, uncertain, and unprocessed
+The Actions summary reports sent, deferred, invalid, uncertain, and unprocessed
 counts. There is no daily email-count cap. The job stops between mails after 330 minutes
 to avoid the runner's 350-minute hard timeout. Unprocessed rows stay `Scheduled`.
-An `unknown` verification or a verifier failure never permits sending. Repeated addresses
-reuse verification within the batch, and only definitive valid/invalid results are persisted
-(`email_verification_cache`).
-
-**Email verification** (`Email_Verifier/`) runs twice: when a game is accepted
-(`verify.yml`, `Mail_Sender/verify_accepted.py`) and per row just before SMTP submission.
-Results are cached, so the send-time check is usually free:
+**Email verification** (`Email_Verifier/`) runs once, when a game is accepted
+(`verify.yml`, `Mail_Sender/verify_accepted.py`): `valid` → Accepted, `invalid` → email
+cleared (no-email), `unknown` → not accepted (email kept, retry later). Each check is capped
+at 60 s; definitive results are cached in `email_verification_cache`:
 1. Own SMTP check (`smtp_check.py`, free): syntax → DNS MX (lowest preference first;
    A-record fallback; no domain / null MX → `invalid`) → connect to the MX on port 25,
    `MAIL FROM` our sender, `RCPT TO` the address, then `RCPT TO` a random address at the
@@ -218,8 +218,8 @@ Results are cached, so the send-time check is usually free:
    (`ABSTRACT_API_KEY`, 100 free requests a **month**, 1/s) answers this and every later
    inconclusive address in the run. Only a clear `undeliverable` (no mailbox, no domain,
    bad format) counts as `invalid`; catch-all is `valid`; anything else stays `unknown`.
-   If Abstract is not set or also fails (401 bad key, 422/403 quota), the row stays
-   `Scheduled` and the run moves on to the next row. A fallback error is never `valid`.
+   If Abstract is not set or also fails (401 bad key, 422/403 quota), the result is
+   `unknown` and the game is not accepted. A fallback error is never `valid`.
 Port 25 must be reachable: it is on GitHub-hosted runners, usually not on home networks.
 `python Email_Verifier/verify_single.py ADDRESS [--smtp-only | --qev]` checks one address;
 `python Email_Verifier/verify_bulk.py FILE.csv [--smtp-only | --qev]` checks a CSV (`email` column)

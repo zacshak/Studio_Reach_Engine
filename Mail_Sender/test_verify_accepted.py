@@ -27,14 +27,17 @@ class VerifyAcceptedTest(unittest.TestCase):
             code = va.main()
         return code, calls, verifier
 
-    def test_valid_and_unknown_are_accepted_invalid_goes_to_no_mail(self):
+    def test_valid_is_accepted_unknown_is_not_and_invalid_goes_to_no_mail(self):
         rows = [(1, "good@x.test", "seeded"), (2, "maybe@x.test", "seeded"),
                 (3, "dead@x.test", "scraped")]
         results = {"good@x.test": {"result": "valid"}, "maybe@x.test": {"result": "unknown"},
                    "dead@x.test": {"result": "invalid", "reason": "mailbox_does_not_exist"}}
         code, calls, _ = self.run_main(rows, results)
         self.assertEqual(code, 0)
-        self.assertEqual(calls["finish"], [1, 2])
+        self.assertEqual(calls["finish"], [1])
+        # Unknown: not accepted, back to Triaged with the email kept.
+        self.assertEqual([a for a, _ in calls["returned"]], [2])
+        self.assertIn("could not verify", calls["returned"][0][1])
         [(appid, kw)] = calls["reject"]
         self.assertEqual(appid, 3)
         # Accept-time: always back to "no email", even for a researched address.
@@ -68,7 +71,7 @@ class VerifyAcceptedTest(unittest.TestCase):
 
 
 class DeadlineTest(unittest.TestCase):
-    def test_hanging_check_is_cut_off_as_unknown_and_the_game_still_accepted(self):
+    def test_hanging_check_is_cut_off_as_unknown_and_not_accepted(self):
         import time as _time
         verifier = Mock()
         verifier.verify.side_effect = lambda e: _time.sleep(5)
@@ -77,8 +80,9 @@ class DeadlineTest(unittest.TestCase):
                 patch.object(va.pipeline, "verifying_rows", return_value=[(1, "slow@x.test", "seeded")]), \
                 patch.object(va.pipeline, "get_email_verification", return_value=None), \
                 patch.object(va.pipeline, "cache_email_verification") as cache, \
-                patch.object(va.pipeline, "finish_verification",
-                             side_effect=lambda a, **kw: calls.append(a) or True), \
+                patch.object(va.pipeline, "finish_verification") as finish, \
+                patch.object(va.pipeline, "return_unverified",
+                             side_effect=lambda a, **kw: calls.append((a, kw["reason"])) or True), \
                 patch.object(va.EmailVerifier, "from_env", return_value=verifier), \
                 patch.object(va.media_store, "write_enabled", return_value=True), \
                 patch.object(va.media_store, "_client", return_value=object()), \
@@ -86,7 +90,9 @@ class DeadlineTest(unittest.TestCase):
             started = _time.monotonic()
             self.assertEqual(va.main(), 0)
             self.assertLess(_time.monotonic() - started, 4)
-        self.assertEqual(calls, [1])
+        finish.assert_not_called()
+        self.assertEqual(calls[0][0], 1)
+        self.assertIn("longer than 1s", calls[0][1])
         cache.assert_not_called()  # an inconclusive timeout is never cached
 
 
