@@ -1,22 +1,20 @@
 #Cold Mail - 1
 
-Subject : <game> - one thing I noticed
+Subject: <game name>: <suggested new mechanic that builds on the noticed mechanic, 3 to 5 words>?
 
 hey <developer/studio name>,
 
-<specific constructive observation: something that already works + one area that could be improved. ideally 1–2 sentences>
+<one specific, unique mechanic visible in the game's screenshots and why it stands out, 1 sentence, appreciative, no criticism>.
 
-I understand you'd be busy building ur game so I'll convey what I like to offer in 3 points :
+what if <one concrete new mechanic that builds on that mechanic>? <what it would add for the player, more fun or more engaging, 1 sentence>.
 
-	-I'd like to help you with all your game programming needs end to end, freeing you up to focus on design.
+I'd love to build that for you, and if it helps, I can also take <a specific existing system visible in the screenshots> off your plate so you can focus more on the game design.
 
-	-I've more than 4 years of experitise and built multiple games across various titles and genres.
+I'm a game programmer with 4+ years of experience: 30+ freelance projects for indie studios and 1.5 years on an Xbox funded AAA title, mostly gameplay systems in Unreal and C++, plus Unity and C#.
 
-	-worked on 20+ projects for indies and small studios
+happy to share my portfolio, or hop on a quick call to talk through the idea, whichever's easier for you.
 
-if you're currently looking for an extra set of hands to hit your next milestone, I'd love to connect. Open to a quick intro call this week ?
-
-Best regards,
+thanks,
 Meshak A
 
 -----------------------------------------------------------------------------------------------------------------------------------------------------
