@@ -1,0 +1,25 @@
+name: port25 probe (temporary)
+on:
+  push:
+    branches: [claude/gifted-planck-qayhpu]
+    paths: [.github/workflows/port25-probe.yml]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: |
+          for h in gmail-smtp-in.l.google.com mx1.zoho.com aspmx.l.google.com; do
+            timeout 10 bash -c "</dev/tcp/$h/25" && echo "$h:25 OPEN" || echo "$h:25 BLOCKED"
+            timeout 10 bash -c "</dev/tcp/$h/587" 2>/dev/null && echo "$h:587 OPEN" || echo "$h:587 closed"
+          done
+          python3 - <<'PY'
+          import smtplib, socket
+          try:
+              s = smtplib.SMTP("gmail-smtp-in.l.google.com", 25, timeout=15)
+              print("banner ok", s.ehlo()[0]); s.quit()
+          except Exception as e:
+              print("smtp fail", type(e).__name__, e)
+          PY
