@@ -193,6 +193,20 @@ scan), then claims that single row `Scheduled → Sending` just before SMTP subm
 sent lead's R2 media. Clicking Send also queues social research for the `Scheduled` rows.
 No schedule: a human presses the button, so outbound always has a gate.
 
+**Multiple sending accounts.** The accounts are rows in `sender_accounts` (email,
+provider, `daily_cap`). Each mail goes from the account with the most room left in its
+cap over the last 24 hours (ties: the one that sent least), so mail spreads across them.
+When every account is full, the run stops and the rest stay `Scheduled` for a later Send.
+The account used is stored with the send (`mail_send_attempt.sender`, `mail_send_log`), so
+the Sent-folder check and the nightly reply and bounce check read that account's mailbox.
+App passwords come from the `SENDER_ACCOUNTS` secret, a JSON object
+`{"you@domain.com": "app password", ...}`; `GMAIL_USER` / `GMAIL_APP_PASSWORD` still work and
+its inbox is still checked for replies to older mails. An account whose login fails is
+dropped for that run and the others continue. Only Google accounts can send for now:
+Microsoft accounts need OAuth (not built yet). Home shows each account's sent / cap for
+the last 24 hours and why it is not sending (cap 0, no password, Microsoft, login error).
+Change a cap with SQL: `UPDATE sender_accounts SET daily_cap=10 WHERE email='...'`.
+
 Temporary SMTP rejections (4xx) return the row to `Scheduled` and retry after 5 and
 15 minutes. If both retries fail, it stays `Scheduled` for a later run. A permanent
 message/recipient rejection returns it to `Drafted` for review. Authentication or
@@ -292,7 +306,8 @@ No redeploy needed — the next draft run reads the new templates.
 `TRIAGE_API_KEY` (Hermes; also a local drafting fallback), `MAIL_WRITER_BASE_URL`, `MAIL_WRITER_MODEL`,
 `MAIL_WRITER_API_KEY` (drafting), `QEV_API_KEY` (optional fallback for addresses the SMTP check cannot settle),
 `ABSTRACT_API_KEY` (optional second fallback once QEV is out of credits),
-`GMAIL_USER`, `GMAIL_APP_PASSWORD`, `KIMCHI_API_KEY`, and for Epic
+`GMAIL_USER`, `GMAIL_APP_PASSWORD`, `SENDER_ACCOUNTS` (JSON of email to app password for the
+rotating senders), `KIMCHI_API_KEY`, and for Epic
 `EPIC_TURSO_DATABASE_URL`, `EPIC_TURSO_AUTH_TOKEN`.
 
 **Cloudflare review Worker secrets**: `TURSO_URL`, `TURSO_TOKEN`, `GH_REPO`

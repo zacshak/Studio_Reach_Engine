@@ -155,6 +155,25 @@ _MAIL_SEND_ATTEMPT_SCHEMA = """(
     started_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 )"""
 
+# Sending accounts (multi-account rotation). Passwords never live here: they come from
+# the SENDER_ACCOUNTS secret. daily_cap is mails per rolling 24 hours; 0 = not used.
+_SENDER_ACCOUNTS_SCHEMA = """(
+    email            TEXT PRIMARY KEY,
+    provider         TEXT NOT NULL CHECK (provider IN ('google','microsoft')),
+    daily_cap        INTEGER NOT NULL DEFAULT 0 CHECK (daily_cap >= 0),
+    display_name     TEXT,
+    last_status      TEXT,
+    last_checked_at  TEXT,
+    added_at         TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+)"""
+# One row per mail SMTP accepted, by sending account; counts against daily_cap.
+_MAIL_SEND_LOG_SCHEMA = """(
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    appid    INTEGER NOT NULL,
+    sender   TEXT NOT NULL,
+    sent_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+)"""
+
 # tracker columns seeded from newly_added (the rest are filled by the scraper)
 SEED_COLS = ("appid", "game_name", "short_descript", "steam_url",
              "website", "support_info", "developers", "publishers", "genres")
@@ -438,6 +457,12 @@ def init_tracker():
                      f"{_EMAIL_VERIFICATION_CACHE_SCHEMA}")
         conn.execute("CREATE TABLE IF NOT EXISTS mail_send_attempt "
                      f"{_MAIL_SEND_ATTEMPT_SCHEMA}")
+        if "sender" not in {c[1] for c in conn.execute("PRAGMA table_info(mail_send_attempt)")}:
+            conn.execute("ALTER TABLE mail_send_attempt ADD COLUMN sender TEXT")
+        conn.execute(f"CREATE TABLE IF NOT EXISTS sender_accounts {_SENDER_ACCOUNTS_SCHEMA}")
+        conn.execute(f"CREATE TABLE IF NOT EXISTS mail_send_log {_MAIL_SEND_LOG_SCHEMA}")
+        conn.execute("CREATE INDEX IF NOT EXISTS mail_send_log_sender_time "
+                     "ON mail_send_log(sender, sent_at)")
         # Column order is not a contract. Preserve additive columns, indexes and triggers.
         # guarantee the columns the trigger reads exist on newly_added, so an insert
         # can never abort with "no such column: NEW.x" (see _TRIGGER_NEEDS)
@@ -927,7 +952,7 @@ def delete_newly_added(appid):
         conn.commit()
 
 
-def claim_mail(appid, *, token=None, message_id=None, expected_email=None):
+def claim_mail(appid, *, token=None, message_id=None, expected_email=None, sender=None):
     """Atomically reserve one Scheduled mail. False means another run/state owns it."""
     _ensure()
     token = token or uuid.uuid4().hex
@@ -940,10 +965,11 @@ def claim_mail(appid, *, token=None, message_id=None, expected_email=None):
             (int(appid), expected_email) if email_guard else (int(appid),)).fetchone()
         if row is not None:
             conn.execute(
-                "INSERT INTO mail_send_attempt (appid,token,message_id) VALUES (?,?,?) "
+                "INSERT INTO mail_send_attempt (appid,token,message_id,sender) VALUES (?,?,?,?) "
                 "ON CONFLICT(appid) DO UPDATE SET token=excluded.token, "
-                "message_id=excluded.message_id, started_at=CURRENT_TIMESTAMP",
-                (int(appid), token, message_id))
+                "message_id=excluded.message_id, sender=excluded.sender, "
+                "started_at=CURRENT_TIMESTAMP",
+                (int(appid), token, message_id, sender))
         conn.commit()
     return row is not None
 
@@ -957,6 +983,48 @@ def get_send_attempt(appid):
                            "WHERE a.appid=? AND s.Mail_status='Sending'",
                            (int(appid),)).fetchone()
     return row
+
+
+def attempt_senders(appids=None):
+    """{appid: sending account} for stored attempts (None = sent before rotation)."""
+    _ensure()
+    with closing(_ro()) as conn:
+        rows = conn.execute("SELECT appid, sender FROM mail_send_attempt").fetchall()
+    wanted = None if appids is None else {int(a) for a in appids}
+    return {r[0]: r[1] for r in rows if wanted is None or r[0] in wanted}
+
+
+def sender_accounts():
+    """Configured sending accounts, as dicts, in a stable order."""
+    _ensure()
+    with closing(_ro()) as conn:
+        rows = conn.execute("SELECT email, provider, daily_cap, display_name FROM "
+                            "sender_accounts ORDER BY email").fetchall()
+    return [dict(email=r[0], provider=r[1], daily_cap=int(r[2] or 0), display_name=r[3])
+            for r in rows]
+
+
+def sent_last_24h():
+    """{sender: mails sent in the last 24 hours, plus mails it is sending right now}."""
+    _ensure()
+    with closing(_ro()) as conn:
+        rows = conn.execute(
+            "SELECT sender, count(*) FROM ("
+            " SELECT sender FROM mail_send_log WHERE sent_at >= datetime('now','-1 day')"
+            " UNION ALL SELECT a.sender FROM mail_send_attempt a JOIN scrape_tracker s"
+            " ON s.appid=a.appid WHERE s.Mail_status='Sending' AND a.sender IS NOT NULL"
+            ") GROUP BY sender").fetchall()
+    return {r[0]: int(r[1]) for r in rows}
+
+
+def set_sender_status(email, status):
+    """Record the last login/send outcome for the dashboard (never a password)."""
+    _ensure()
+    with closing(_rw()) as conn:
+        conn.execute("UPDATE sender_accounts SET last_status=?, last_checked_at="
+                     "strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE email=?",
+                     (str(status)[:200], email))
+        conn.commit()
 
 
 def reply_evidence():
@@ -1204,6 +1272,10 @@ def mark_sent(appid, *, token=None):
                                    (int(appid),)).fetchone()
             if not current or current[0] != "Sent":
                 raise RuntimeError(f"cannot mark {appid} Sent from {current[0] if current else 'missing'}")
+        else:
+            conn.execute("INSERT INTO mail_send_log (appid, sender) SELECT appid, sender "
+                         "FROM mail_send_attempt WHERE appid=? AND sender IS NOT NULL",
+                         (int(appid),))
         conn.execute("DELETE FROM newly_added WHERE appid=?", (int(appid),))
         # Retain Message-ID and attempt time for thread-specific reply attribution.
         conn.commit()
