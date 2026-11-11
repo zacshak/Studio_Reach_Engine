@@ -313,8 +313,8 @@ export default {
       try {
         if (req.method === 'POST' && path === '/api/socials/save')
           response = json(await saveSocials(env, await readSocialRequestBody(req), sql));
-        if (req.method === 'POST' && ['/api/draft/context','/api/draft/save'].includes(path))
-          response = json(await draftRequest(req, env, sql, path.endsWith('/context') ? 'context' : 'save'));
+        if (req.method === 'POST' && ['/api/draft/context','/api/draft/save','/api/draft/list'].includes(path))
+          response = json(await draftRequest(req, env, sql, path.split('/').pop()));
         if (req.method === 'POST' && path === '/api/triage/save')
           response = json(await saveTriage(env, await req.json(), sql, getJSON));
         if (req.method === 'POST' && path === '/api/triage/get')
