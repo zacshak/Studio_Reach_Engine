@@ -25,3 +25,27 @@ test('public MCP drafting forwards only scoped payloads and returns image conten
     assert.equal(calls.length,2);
   } finally {await client.close();}
 });
+
+test('list_draftable_games forwards count and draft_mails prompt carries the procedure',async()=>{
+  const calls=[];
+  const env={PUBLIC_ACCESS:'true',TURSO_URL:'https://test.invalid',TURSO_READ_TOKEN:'synthetic',REVIEW:{fetch:async request=>{
+    calls.push([new URL(request.url).pathname,await request.json()]);
+    return Response.json({games:[{appid:1,name:'Game'}],not_ready:[],accepted_total:1});
+  }}};
+  const client=new Client({name:'draft-list-test',version:'1'});
+  await client.connect(new StreamableHTTPClientTransport(new URL('https://mcp.test/mcp'),{
+    fetch:(input,init)=>worker.fetch(new Request(input,init),env)}));
+  try {
+    const listed=await client.callTool({name:'list_draftable_games',arguments:{count:20}});
+    assert.equal(JSON.parse(listed.content[0].text).games[0].appid,1);
+    assert.deepEqual(calls,[['/api/draft/list',{count:20}]]);
+    assert.equal((await client.callTool({name:'list_draftable_games',arguments:{count:26}})).isError,true);
+    const {prompts}=await client.listPrompts();
+    assert.deepEqual(prompts.map(p=>p.name),['draft_mails']);
+    const prompt=await client.getPrompt({name:'draft_mails',arguments:{count:'20'}});
+    const text=prompt.messages[0].content.text;
+    assert.match(text,/Draft cold mails for 20 Accepted games/);
+    assert.match(text,/list_draftable_games with count 20/);
+    assert.match(text,/Do not approve or send anything/);
+  } finally {await client.close();}
+});

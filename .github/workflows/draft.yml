@@ -11,6 +11,10 @@ on:
         description: Optional JSON array of route IDs to audit with synthetic images (check_only only)
         type: string
         default: ""
+      limit:
+        description: Draft at most this many Accepted games (empty = all)
+        type: string
+        default: ""
       preview_appid:
         description: Optional game ID for a real-image/template test without saving (check_only only)
         type: string
@@ -39,6 +43,7 @@ jobs:
           CHECK_ONLY: ${{ inputs.check_only }}
           CHECK_MODELS: ${{ inputs.check_models }}
           PREVIEW_APPID: ${{ inputs.preview_appid }}
+          DRAFT_LIMIT: ${{ inputs.limit }}
           TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
           MAIL_WRITER_BASE_URL: ${{ secrets.MAIL_WRITER_BASE_URL }}

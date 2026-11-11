@@ -147,6 +147,42 @@ export async function saveDraft(env, {appid,revision,placeholder_values}, sql) {
   return {ok:true,appid,mail_status:'Drafted',template_id:saved.template};
 }
 
+// Next Accepted games an agent can draft now: eligible row, indexed media, a manifest
+// that lists the sprite sheet and holds no saved draft. Games whose media is not ready
+// are reported separately so they do not come up first on every run.
+export const DRAFT_LIST_MAX=25;
+export async function listDraftable(env, count, sql) {
+  if (!Number.isSafeInteger(count) || count<1 || count>DRAFT_LIST_MAX)
+    throw new Error(`count must be 1-${DRAFT_LIST_MAX}; call again for more.`);
+  const scanLimit=Math.min(2*count+10, 60); // bounds R2 reads per request
+  const [[total], rows]=await sql(env, [
+    ["SELECT count(*) FROM scrape_tracker WHERE Mail_status='Accepted'"],
+    [`SELECT appid, game_name FROM scrape_tracker WHERE Mail_status='Accepted'
+      AND scrape_status IN ('seeded','scraped') AND COALESCE(emails,'')<>''
+      ORDER BY appid LIMIT ?`, scanLimit*4]]);
+  const {value:index}=await objectJSON(env,'index.json');
+  const games=[], not_ready=[];
+  let reads=0;
+  for (const [rawId, name] of rows) {
+    if (games.length>=count || reads>=scanLimit) break;
+    const appid=Number(rawId), folder=index[String(appid)];
+    if (typeof folder!=='string' || !folder || /[\\/]/.test(folder)) {
+      not_ready.push({appid,name,reason:'no indexed media'}); continue;
+    }
+    reads++;
+    let manifest;
+    try { manifest=(await objectJSON(env,`${folder}/manifest.json`)).value; }
+    catch (error) { not_ready.push({appid,name,reason:error.message}); continue; }
+    if (manifest.mail?.trim()) { not_ready.push({appid,name,reason:'a draft is already saved; get_draft_context returns the recovery payload'}); continue; }
+    if (!manifest.images?.includes('SpriteSheet_Screenshots.png')) {
+      not_ready.push({appid,name,reason:'sprite sheet not listed'}); continue;
+    }
+    games.push({appid,name});
+  }
+  return {games, not_ready, accepted_total:Number(total?.[0]||0),
+    instructions:'For each game: get_draft_context, look at the sprite image, fill only the observation keys from what is visible, then save_draft with the same revision. If the images do not show enough to fill a slot honestly, skip the game. On an error, refetch context and retry once, then skip. Stop the run if templates are unavailable. Skipped games stay Accepted. Report drafted and skipped (appid, name, reason).'};
+}
+
 export async function draftRequest(req,env,sql,kind) {
   const reader=req.body?.getReader();
   if (!reader) throw new Error('JSON body required.');
@@ -157,6 +193,7 @@ export async function draftRequest(req,env,sql,kind) {
   const bytes=new Uint8Array(size); let offset=0;
   for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.length;}
   const body=JSON.parse(new TextDecoder().decode(bytes));
+  if(kind==='list') return listDraftable(env,body.count,sql);
   if(!Number.isSafeInteger(body.appid)||body.appid<=0) throw new Error('Invalid appid.');
   return kind==='context' ? getDraftContext(env,body.appid,sql) : saveDraft(env,body,sql);
 }

@@ -68,7 +68,14 @@ Response budgets are about 1 MiB, upstream responses are bounded at 8 MiB, reque
 
 ## Agent-driven mail drafting
 
-1. Query `scrape_tracker` for `Mail_status='Accepted'`.
+Any MCP agent can draft with its own model; no pipeline AI key is needed. The quickest
+way is the **`draft_mails` prompt** with a `count` (e.g. 20): it gives the agent the
+whole procedure below and ends with a report of drafted and skipped games. Skipped
+games stay `Accepted`. Nothing is approved or sent.
+
+1. Call `list_draftable_games({count})` (max 25 per call; call again for more). It
+   returns the next Accepted games whose media is ready and lists the others under
+   `not_ready` with a reason. (Or query `scrape_tracker` for `Mail_status='Accepted'`.)
 2. Call `get_draft_context({appid})`. It returns game data, the actual sprite image,
    template, observation keys and a revision. Additional images remain available
    through `get_game_image`. An existing template selection is honored. Otherwise

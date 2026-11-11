@@ -231,6 +231,17 @@ def main():
     return run_queue(client, model)
 
 
+def draft_limit():
+    """DRAFT_LIMIT env: draft at most this many leads per run (0/empty = all)."""
+    raw = os.environ.get("DRAFT_LIMIT", "").strip()
+    if not raw:
+        return 0
+    value = int(raw)
+    if value < 0:
+        raise ValueError("DRAFT_LIMIT must be 0 or more")
+    return value
+
+
 def run_queue(client, model):
     templates = _load_templates()
     if not templates:
@@ -238,6 +249,10 @@ def run_queue(client, model):
     index = media_store.fetch_index(strict=True)
     queue = pipeline.mail_status_appids("Accepted")
     print(f"{len(queue)} lead(s) in 'Accepted'; {len(templates)} templates")
+    limit = draft_limit()
+    if limit and len(queue) > limit:
+        queue = queue[:limit]
+        print(f"Drafting only the first {limit} this run (DRAFT_LIMIT); the rest stay Accepted.")
 
     drafted = skipped = consecutive_failures = 0
     stopped = False

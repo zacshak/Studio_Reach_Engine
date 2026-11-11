@@ -85,6 +85,24 @@ class DraftRuntimeTest(unittest.TestCase):
             self.assertEqual(draft_cloud.run_queue(None,'test'),1)
             status.assert_called_once_with(2,1,None)
 
+    def test_draft_limit_drafts_only_the_first_n(self):
+        with patch.dict(draft_cloud.os.environ, {'DRAFT_LIMIT': '2'}), \
+             patch.object(draft_cloud, '_load_templates', return_value=[(1,'<observation>')]), \
+             patch.object(draft_cloud.media_store, 'fetch_index', return_value={str(i):str(i) for i in range(1,6)}), \
+             patch.object(draft_cloud.pipeline, 'mail_status_appids', return_value=list(range(1,6))), \
+             patch.object(draft_cloud.media_store, 'fetch_manifest', side_effect=lambda *a, **k: {'name':'G'}), \
+             patch.object(draft_cloud, '_draft', return_value='Subject: hello\n\nBody') as draft, \
+             patch.object(draft_cloud.pipeline, 'set_mail_template'), \
+             patch.object(draft_cloud.pipeline, 'complete_saved_draft'), \
+             patch.object(draft_cloud.media_store, 'write_manifest'):
+            self.assertEqual(draft_cloud.run_queue(None,'test'),0)
+            self.assertEqual(draft.call_count,2)
+
+    def test_draft_limit_parsing(self):
+        for raw, want in (('', 0), ('0', 0), (' 30 ', 30)):
+            with patch.dict(draft_cloud.os.environ, {'DRAFT_LIMIT': raw}):
+                self.assertEqual(draft_cloud.draft_limit(), want)
+
 
 if __name__ == '__main__':
     unittest.main()

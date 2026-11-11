@@ -21,7 +21,7 @@ All local/manual commands still exist through the one launcher: `python SRE.py <
                               ▼
                           Verifying ── verify.yml: email check + media ──► dead email: back to no-email
                               ▼
-                          Accepted ──(✍️ Draft button or MCP save_draft)──► Drafted
+                          Accepted ──(✍️ Draft button, or any agent via MCP draft_mails)──► Drafted
                                                                              │
                                           Mail view: Approve ◄───────────────┘
                                                                              │
@@ -158,6 +158,14 @@ not kept for retry.
 To find emails, run `hermes.yml` (Playwright + LLM) or `kimchi.yml` from GitHub Actions,
 or record one with MCP `save_email_result`. A hit removes the No email badge.
 
+### Drafting with any agent through MCP
+No pipeline AI key needed: the agent writes with its own model. Use the MCP prompt
+`draft_mails` with a count (e.g. 20), or call `list_draftable_games` → `get_draft_context`
+→ `save_draft` yourself. Each saved draft goes `Accepted` → `Drafted` for your review.
+A game is skipped (left `Accepted`) when its media is not ready, the screenshots do not
+show enough to fill the template honestly, or a save keeps failing; the agent reports
+each skipped game with a reason. Details: `db-mcp/README.md`.
+
 ### Social research through MCP
 The Send button queues the click's `Scheduled` snapshot once per lead.
 The calling coding agent researches X, LinkedIn, Instagram, Discord, and Website,
@@ -261,7 +269,7 @@ No redeploy needed — the next draft run reads the new templates.
 | Command | Does |
 |---|---|
 | `--discover` | discovery → stage to Turso + R2 (the nightly job's first step) |
-| `--draft-mails` | AI-draft cold mails for `Accepted` leads → R2 manifests (`draft.yml`) |
+| `--draft-mails` | AI-draft cold mails for `Accepted` leads → R2 manifests (`draft.yml`; `DRAFT_LIMIT` env / the `limit` input drafts only the first N) |
 | `--verify-accepted` | check email + media of `Verifying` games → `Accepted` or back to no-email (`verify.yml`) |
 | `--send-mails` | send `Scheduled` mails (`send.yml`); `--dry-run`, `--limit N` locally |
 | `--review-mails` | handle new bounces, then check `Sent` leads for replies → `Replied` (`review-mails.yml`) |

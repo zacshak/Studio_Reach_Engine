@@ -110,3 +110,19 @@ test('template selection and image changes during publication do not advance the
     assert.equal(f.db.prepare('SELECT Mail_status FROM scrape_tracker').get().Mail_status,'Accepted');
   }
 });
+
+test('listDraftable returns ready Accepted games and reports media that is not ready',async t=>{
+  const {listDraftable}=await import('./drafting.js');
+  const f=fixture(t);
+  f.db.exec("INSERT INTO scrape_tracker VALUES(2,'NoMedia','',  'a@example.com','seeded','Accepted',NULL),(3,'Done','','b@example.com','scraped','Accepted',NULL),(4,'Other','','c@example.com','seeded','Drafted',NULL),(5,'Ready','','d@example.com','seeded','Accepted',NULL)");
+  f.put('index.json',JSON.stringify({'1':'Game_1','3':'Done_3','5':'Ready_5'}));
+  f.put('Done_3/manifest.json',JSON.stringify({images:['SpriteSheet_Screenshots.png'],mail:'Subject: x'}));
+  f.put('Ready_5/manifest.json',JSON.stringify({images:['SpriteSheet_Screenshots.png']}));
+  const result=await listDraftable(f.env,5,f.sql);
+  assert.deepEqual(result.games.map(g=>g.appid),[1,5]);
+  assert.deepEqual(result.not_ready.map(g=>[g.appid,g.reason.split(';')[0]]),[[2,'no indexed media'],[3,'a draft is already saved']]);
+  assert.equal(result.accepted_total,4);
+  assert.deepEqual((await listDraftable(f.env,1,f.sql)).games.map(g=>g.appid),[1]);
+  await assert.rejects(listDraftable(f.env,0,f.sql),/count must be/);
+  await assert.rejects(listDraftable(f.env,26,f.sql),/count must be/);
+});
