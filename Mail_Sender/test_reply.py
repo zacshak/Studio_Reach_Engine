@@ -55,6 +55,7 @@ class ReplyTest(unittest.TestCase):
         with patch.object(mailer, "_load_env"), \
                 patch.dict(os.environ, {"GMAIL_USER": "sender@example.com", "GMAIL_APP_PASSWORD": "fake"}), \
                 patch.object(mailer.pipeline, "reply_evidence", return_value=evidence), \
+                patch.object(mailer.pipeline, "sender_accounts", return_value=[]), \
                 patch.object(mailer.pipeline, "set_mail_status") as status, \
                 patch.object(mailer, "_scan_bounces") as self.bounces, \
                 patch.object(mailer.imaplib, "IMAP4_SSL", return_value=imap) as connect:

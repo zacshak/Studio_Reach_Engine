@@ -61,6 +61,92 @@ MIN_GAP, MAX_GAP = 120, 240        # 2–4 min between sends, randomized
 SMTP_RETRY_DELAYS = (300, 900)     # explicit temporary rejections only, not a send-count cap
 
 
+# Providers we can send from with an app password (Microsoft needs OAuth: not yet).
+PROVIDERS = {"google": dict(smtp=("smtp.gmail.com", 587), imap="imap.gmail.com")}
+
+
+class Account:
+    """One sending mailbox. cap=None means no cap (single legacy GMAIL_USER account)."""
+
+    def __init__(self, email, password, provider="google", cap=None, name=None):
+        self.email, self.password, self.provider = email, password, provider
+        self.cap, self.name = cap, name or SENDER_NAME
+        hosts = PROVIDERS.get(provider) or {}
+        self.smtp, self.imap = hosts.get("smtp"), hosts.get("imap")
+
+    def __repr__(self):  # never print the password
+        return f"Account({self.email}, {self.provider}, cap={self.cap})"
+
+
+def _passwords():
+    """{email(lower): app password} from SENDER_ACCOUNTS (JSON object) + GMAIL_USER."""
+    out = {}
+    raw = os.environ.get("SENDER_ACCOUNTS", "").strip()
+    if raw:
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            sys.exit("SENDER_ACCOUNTS is not valid JSON: expected {\"email\": \"app password\"}")
+        if not isinstance(data, dict):
+            sys.exit("SENDER_ACCOUNTS must be a JSON object: {\"email\": \"app password\"}")
+        out = {str(k).strip().lower(): str(v).replace(" ", "") for k, v in data.items() if v}
+    user, password = os.environ.get("GMAIL_USER", "").strip(), os.environ.get("GMAIL_APP_PASSWORD", "")
+    if user and password:
+        out.setdefault(user.lower(), password)
+    return out
+
+
+def load_accounts(*, record=False):
+    """(senders, mailboxes): accounts that may send now, and every mailbox we can read.
+
+    With no rows in sender_accounts this is the single legacy GMAIL_USER account with no
+    cap. Otherwise each configured account sends up to its daily_cap per rolling 24h if
+    its provider is supported and SENDER_ACCOUNTS has its app password."""
+    passwords = _passwords()
+    legacy = os.environ.get("GMAIL_USER", "").strip()
+    configured = pipeline.sender_accounts()
+    if not configured:
+        if not legacy:
+            return [], []
+        acct = Account(legacy, passwords.get(legacy.lower(), ""))
+        return [acct], [acct] if acct.password else []
+    senders, mailboxes, seen = [], [], set()
+    for row in configured:
+        email = row["email"].strip()
+        acct = Account(email, passwords.get(email.lower(), ""), row["provider"],
+                       row["daily_cap"], row.get("display_name"))
+        seen.add(email.lower())
+        if acct.password and acct.imap:
+            mailboxes.append(acct)
+        problem = ("Microsoft sign-in not set up yet" if acct.smtp is None
+                   else "no app password in SENDER_ACCOUNTS" if not acct.password
+                   else "paused (daily cap 0)" if not acct.cap else "")
+        if problem:
+            if record:
+                pipeline.set_sender_status(email, problem)
+            continue
+        senders.append(acct)
+    # The legacy inbox still receives replies to mails sent before rotation.
+    if legacy and legacy.lower() not in seen and passwords.get(legacy.lower()):
+        mailboxes.append(Account(legacy, passwords[legacy.lower()]))
+    return senders, mailboxes
+
+
+def _pick_sender(senders, counts):
+    """The account with the most room left in its rolling 24h cap (ties: the one that sent
+    least, so mail spreads across accounts), or None when every account is full."""
+    best, best_key = None, None
+    for acct in senders:
+        sent = counts.get(acct.email, 0)
+        room = float("inf") if acct.cap is None else acct.cap - sent
+        if room <= 0:
+            continue
+        key = (room, -sent)
+        if best_key is None or key > best_key:
+            best, best_key = acct, key
+    return best
+
+
 # -- env -------------------------------------------------------------------
 def _load_env():
     """Read KEY=VALUE lines from the repo-root .env into the environment."""
@@ -155,17 +241,18 @@ class MailNotSubmittedError(RuntimeError):
     """A failure before submitting DATA, so retry cannot duplicate a delivery."""
 
 
-def _send(user, password, to, subject, body, *, message_id=None):
+def _send(user, password, to, subject, body, *, message_id=None, smtp=None, name=None):
     s = None
     try:
         msg = EmailMessage()
-        msg["From"] = f"{SENDER_NAME} <{user}>"
+        msg["From"] = f"{name or SENDER_NAME} <{user}>"
         msg["To"] = to
         msg["Subject"] = subject
         msg["Message-ID"] = message_id or make_msgid(domain=user.rsplit("@", 1)[-1])
         msg["Date"] = formatdate(usegmt=True)
         msg.set_content(body)
-        s = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30)
+        host, port = smtp or (SMTP_HOST, SMTP_PORT)
+        s = smtplib.SMTP(host, port, timeout=30)
         s.starttls(context=ssl.create_default_context())
         s.login(user, password)
     except BaseException as exc:
@@ -200,7 +287,10 @@ def _persist_delivery(operation, *args, **kwargs):
             time.sleep(2 ** attempt)
 
 
-def _deliver(appid, to, subject, body, raw_email, user, password, deadline):
+def _deliver(appid, to, subject, body, raw_email, account, deadline):
+    user, password = account.email, account.password
+    extra = {} if (account.smtp in (None, (SMTP_HOST, SMTP_PORT)) and account.name == SENDER_NAME) \
+        else dict(smtp=account.smtp, name=account.name)
     token = uuid.uuid4().hex
     message_id = make_msgid(idstring=f"sre.{appid}", domain=user.rsplit("@", 1)[-1])
     for attempt in range(len(SMTP_RETRY_DELAYS) + 1):
@@ -208,11 +298,11 @@ def _deliver(appid, to, subject, body, raw_email, user, password, deadline):
             print(f"DEFER {appid}: runner time budget reached. Left Scheduled.")
             return "deferred"
         if not pipeline.claim_mail(appid, token=token, message_id=message_id,
-                                   expected_email=raw_email):
+                                   expected_email=raw_email, sender=user):
             print(f"SKIP {appid}: state or recipient changed before the send claim")
             return "skipped"
         try:
-            _send(user, password, to, subject, body, message_id=message_id)
+            _send(user, password, to, subject, body, message_id=message_id, **extra)
         except (MailNotSubmittedError, smtplib.SMTPResponseException,
                 smtplib.SMTPRecipientsRefused, smtplib.SMTPNotSupportedError,
                 ValueError, TypeError, UnicodeError) as exc:
@@ -262,20 +352,43 @@ def _deliver(appid, to, subject, body, raw_email, user, password, deadline):
                 _delete_media(appid)
             except Exception as exc:
                 print(f"WARN {appid}: Sent recorded, but media cleanup failed: {exc}")
-            print(f"  sent {appid} -> {to} | {subject!r}")
+            print(f"  sent {appid} -> {to} from {user} | {subject!r}")
             return "sent"
 
 
-def _reconcile_sending(user, password):
-    """A positive exact Message-ID match in Gmail Sent is proof. Absence is not."""
+def _reconcile_sending(mailboxes, legacy=None):
+    """A positive exact Message-ID match in the sender's Sent folder is proof. Absence is not."""
     pending = pipeline.mail_status_appids("Sending")
     if not pending:
         return 0
-    imap = None
     remaining = set(pending)
+    by_email = {m.email.lower(): m for m in mailboxes}
+    if len(mailboxes) == 1:
+        groups = {mailboxes[0].email.lower(): list(pending)}
+    else:
+        senders = pipeline.attempt_senders(pending)
+        groups = {}
+        for appid in pending:
+            sender = (senders.get(appid) or legacy or "").lower()
+            groups.setdefault(sender, []).append(appid)
+    for sender, appids in groups.items():
+        account = by_email.get(sender)
+        if account is None:
+            print(f"WARN: cannot check Sent for {', '.join(map(str, appids))}: "
+                  f"no password for sending account {sender or '(unknown)'}")
+            continue
+        _reconcile_mailbox(account, appids, remaining)
+    if remaining:
+        print("WARN: unresolved Sending rows require review: " +
+              ", ".join(map(str, sorted(remaining))) + ". Other Scheduled mails can proceed.")
+    return len(remaining)
+
+
+def _reconcile_mailbox(account, pending, remaining):
+    imap = None
     try:
-        imap = imaplib.IMAP4_SSL(IMAP_HOST, timeout=30)
-        imap.login(user, password)
+        imap = imaplib.IMAP4_SSL(account.imap or IMAP_HOST, timeout=30)
+        imap.login(account.email, account.password)
         typ, folders = imap.list()
         if typ != "OK":
             raise RuntimeError("cannot list Gmail mailboxes")
@@ -292,28 +405,24 @@ def _reconcile_sending(user, password):
             stored = pipeline.get_send_attempt(appid)
             if not stored or not stored[1]:
                 continue
-            token, message_id = stored
+            token, message_id = stored[0], stored[1]
             typ, data = imap.search(None, "HEADER", "Message-ID", f'"{message_id}"')
             if typ == "OK" and data and data[0].split():
                 if _persist_delivery(pipeline.mark_sent, appid, token=token):
                     remaining.discard(appid)
-                    print(f"RECOVERED {appid}: found its exact Message-ID in Gmail Sent")
+                    print(f"RECOVERED {appid}: found its exact Message-ID in {account.email} Sent")
                     try:
                         _delete_media(appid)
                     except Exception as exc:
                         print(f"WARN {appid}: recovered Sent, but media cleanup failed: {exc}")
     except Exception as exc:
-        print(f"WARN: Gmail Sent reconciliation failed: {exc}")
+        print(f"WARN: Sent reconciliation failed for {account.email}: {exc}")
     finally:
         if imap is not None:
             try:
                 imap.logout()
             except Exception:
                 pass
-    if remaining:
-        print("WARN: unresolved Sending rows require review: " +
-              ", ".join(map(str, sorted(remaining))) + ". Other Scheduled mails can proceed.")
-    return len(remaining)
 
 
 def _recipient(raw):
@@ -351,20 +460,23 @@ def _scan_bounces(user, password):
 
 def main(dry_run=False, limit=None):
     _load_env()
-    user = os.environ.get("GMAIL_USER", "")
-    password = os.environ.get("GMAIL_APP_PASSWORD", "")
-    if not user:
-        sys.exit("GMAIL_USER not set. Add it to the repo-root .env or GHA secret.")
-    if not dry_run and not password:
+    legacy = os.environ.get("GMAIL_USER", "").strip()
+    senders, mailboxes = load_accounts(record=not dry_run)
+    if not senders:
+        sys.exit("No sending account is ready. Set GMAIL_USER, or add rows to sender_accounts "
+                 "with a daily_cap and their app passwords in SENDER_ACCOUNTS.")
+    if not dry_run and not all(a.password for a in senders):
         sys.exit("GMAIL_APP_PASSWORD not set. Add it to the repo-root .env "
                  "(see this file's header). Or use --dry-run.")
+    print("sending accounts: " + ", ".join(
+        f"{a.email} (cap {'none' if a.cap is None else a.cap}/24h)" for a in senders))
     if limit is not None and (not isinstance(limit, int) or limit < 0):
         raise ValueError("limit must be a nonnegative integer")
     budget = float(os.environ.get("SEND_TIME_BUDGET_SECONDS", "0"))
     if budget < 0 or not math.isfinite(budget):
         raise ValueError("SEND_TIME_BUDGET_SECONDS must be finite and nonnegative")
     deadline = time.monotonic() + budget if budget else float("inf")
-    uncertain = 0 if dry_run else _reconcile_sending(user, password)
+    uncertain = 0 if dry_run else _reconcile_sending(mailboxes, legacy)
 
     scheduled = pipeline.mail_status_emails("Scheduled")
     valid = []
@@ -400,6 +512,7 @@ def main(dry_run=False, limit=None):
         return int(bool(uncertain))
 
     processed, attempted, error = 0, False, ""
+    confirmed = set()
     try:
         for appid, to, raw in valid:
             if room is not None and stats["sent"] + stats["accepted_unrecorded"] >= room:
@@ -428,6 +541,12 @@ def main(dry_run=False, limit=None):
                 continue
             # No mailbox check here: addresses are verified once, when the game is accepted
             # (verify.yml). A dead address found later is caught by the nightly bounce scan.
+            account = _pick_sender(senders, pipeline.sent_last_24h())
+            if account is None:
+                print("All sending accounts reached their 24h caps. "
+                      "Remaining mails stay Scheduled for the next Send.")
+                processed -= 1
+                break
             if attempted:
                 gap = random.randint(MIN_GAP, MAX_GAP)
                 if time.monotonic() + gap + 120 >= deadline:
@@ -436,15 +555,25 @@ def main(dry_run=False, limit=None):
                 print(f"    waiting {gap}s before next…")
                 time.sleep(gap)
             attempted = True
-            outcome = _deliver(appid, to, subject, body, raw, user, password, deadline)
+            outcome = _deliver(appid, to, subject, body, raw, account, deadline)
             if outcome == "interrupted":
                 stats["uncertain"] += 1
                 error = "interrupted during submission. Review its Sending row."
                 break
             if outcome == "halted":
                 stats["deferred"] += 1
-                error = "SMTP account/setup error. Remaining mails stay Scheduled."
-                break
+                with suppress(Exception):
+                    pipeline.set_sender_status(account.email, "login or sender rejected by SMTP")
+                senders = [a for a in senders if a is not account]
+                if not senders:
+                    error = "SMTP account/setup error. Remaining mails stay Scheduled."
+                    break
+                print(f"Dropped {account.email} for this run; continuing with the other accounts.")
+                continue
+            if outcome == "sent" and account.email not in confirmed:
+                confirmed.add(account.email)
+                with suppress(Exception):
+                    pipeline.set_sender_status(account.email, "ok")
             stats[outcome] += 1
     except KeyboardInterrupt:
         error = "interrupted. Review any Sending rows before resolving them."
@@ -494,27 +623,46 @@ def _matches_reply(raw_headers, addr, message_id, started_at):
 
 
 def review():
-    """Nightly inbox scan: first bounce notices (dead addresses leave Sent, see bounces.py),
-    then replies to retained outgoing Message-IDs (read-only)."""
+    """Nightly inbox scan of every sending mailbox: first bounce notices (dead addresses leave
+    Sent, see bounces.py), then replies to retained outgoing Message-IDs (read-only)."""
     _load_env()
-    user = os.environ.get("GMAIL_USER", "")
-    password = os.environ.get("GMAIL_APP_PASSWORD", "")
-    if not user:
-        sys.exit("GMAIL_USER not set. Add it to the repo-root .env or GHA secret.")
-    if not password:
+    legacy = os.environ.get("GMAIL_USER", "").strip()
+    _senders, mailboxes = load_accounts()
+    if not mailboxes:
+        if not legacy:
+            sys.exit("GMAIL_USER not set. Add it to the repo-root .env or GHA secret.")
         sys.exit("GMAIL_APP_PASSWORD not set. Add it to the repo-root .env "
                  "(see this file's header).")
-
-    _scan_bounces(user, password)
+    for account in mailboxes:
+        _scan_bounces(account.email, account.password)
     sent = pipeline.reply_evidence()
     if not sent:
         print("no Sent leads with retained reply evidence to review.")
         return
+    if len(mailboxes) == 1:
+        groups = {mailboxes[0].email.lower(): sent}
+    else:
+        senders = pipeline.attempt_senders([row[0] for row in sent])
+        groups = {}
+        for row in sent:
+            groups.setdefault((senders.get(row[0]) or legacy).lower(), []).append(row)
+    by_email = {m.email.lower(): m for m in mailboxes}
+    replied = 0
+    for sender, rows in groups.items():
+        account = by_email.get(sender)
+        if account is None:
+            print(f"WARN: {len(rows)} sent lead(s) from {sender or '(unknown)'} not checked: "
+                  "no password for that mailbox")
+            continue
+        replied += _review_mailbox(account, rows)
+    print(f"reviewed {len(sent)} sent lead(s): {replied} replied -> marked 'Replied'.")
 
-    imap = imaplib.IMAP4_SSL(IMAP_HOST, timeout=30)
+
+def _review_mailbox(account, sent):
+    imap = imaplib.IMAP4_SSL(account.imap or IMAP_HOST, timeout=30)
     replied = 0
     try:
-        imap.login(user, password)
+        imap.login(account.email, account.password)
         if imap.select("INBOX", readonly=True)[0] != "OK":
             raise RuntimeError("cannot open Gmail inbox")
         for appid, raw_email, message_id, started_at in sent:
@@ -538,14 +686,14 @@ def review():
                            for item in headers or []):
                         pipeline.set_mail_status(appid, "Replied")
                         replied += 1
-                        print(f"  REPLIED {appid} <- {addr}")
+                        print(f"  REPLIED {appid} <- {addr} (to {account.email})")
                         break
             except imaplib.IMAP4.error:
                 continue
     finally:
         with suppress(Exception):
             imap.logout()
-    print(f"reviewed {len(sent)} sent lead(s): {replied} replied -> marked 'Replied'.")
+    return replied
 
 
 def _selftest():

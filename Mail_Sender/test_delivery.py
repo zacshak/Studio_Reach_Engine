@@ -55,7 +55,7 @@ class DeliveryTest(unittest.TestCase):
 
     def deliver(self, appid, email):
         return mailer._deliver(appid, email, "Subject", "Body", email,
-                               "sender@example.com", "secret", float("inf"))
+                               mailer.Account("sender@example.com", "secret"), float("inf"))
 
     def test_temporary_smtp_codes_retry_known_unsent_and_reuse_message_id(self):
         for code in (421, 450, 451, 452):

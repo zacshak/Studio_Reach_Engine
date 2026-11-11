@@ -116,6 +116,10 @@ export const VIEW_SQL = {
   issues: "SELECT appid, email_issue, game_name FROM scrape_tracker WHERE Mail_status IN ('Pending','Triaged') AND email_issue IS NOT NULL ORDER BY appid",
   verifying: "SELECT appid FROM scrape_tracker WHERE Mail_status='Verifying' ORDER BY appid",
   counts: `SELECT Mail_status, coalesce(triage_decision,''), ${HAS_EMAIL}, count(*) FROM scrape_tracker GROUP BY 1, 2, 3`,
+  // sending accounts: daily cap (rolling 24h), mails sent in the last 24h, last status from the mailer
+  senders: `SELECT a.email, a.provider, a.daily_cap, a.last_status, a.last_checked_at,
+    (SELECT count(*) FROM mail_send_log l WHERE l.sender=a.email AND l.sent_at >= datetime('now','-1 day'))
+    FROM sender_accounts a ORDER BY a.daily_cap DESC, a.email`,
 };
 
 export function homeCounts(rows) {
@@ -145,9 +149,10 @@ async function state(env) {
       [TRIAGE_SQL],
       [VIEW_SQL.issues],
       [VIEW_SQL.verifying],
+      [VIEW_SQL.senders],
     ]),
   ]);
-  const [pending, passed, flagged, noMail, drafted, counts, reviews, issues, verifying] = db;
+  const [pending, passed, flagged, noMail, drafted, counts, reviews, issues, verifying, senders] = db;
   const ids = rows => rows.map(r => Number(r[0]));
   const home = homeCounts(counts);
   return {
@@ -163,6 +168,8 @@ async function state(env) {
     triageReviews: triageSnapshot(reviews).triageReviews,
     scheduled: home.scheduled > 0,
     pendingDrafts: home.accepted > 0,
+    senders: senders.map(([email, provider, cap, status, checked, sent]) => ({ email, provider,
+      daily_cap: Number(cap) || 0, sent_24h: Number(sent) || 0, status: status ?? null, checked_at: checked ?? null })),
   };
 }
 

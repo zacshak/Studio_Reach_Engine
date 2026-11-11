@@ -85,6 +85,13 @@
   #toast:empty { display: none; }
   .shotsall img { width: 100%; border-radius: 10px; margin-top: .4rem; display: block; }
   .badge.warn { background: #3b2f0b; color: #fde68a; }
+  table.senders { width: 100%; border-collapse: collapse; margin: .4rem 0 1rem; font-size: .9rem; }
+  table.senders th, table.senders td { text-align: left; padding: .45rem .5rem; border-bottom: 1px solid #263042;
+    overflow-wrap: anywhere; }
+  table.senders th { color: #9aa4b2; font-weight: 600; font-size: .8rem; }
+  table.senders .num { text-align: right; white-space: nowrap; }
+  table.senders tfoot td { color: #9aa4b2; font-weight: 600; }
+  h2.senders-title { font-size: .9rem; color: #9aa4b2; font-weight: 600; margin: 1.2rem 0 0; }
   #verifyDialog { background: #1b2230; color: #e6e9ef; border: 1px solid #7f1d1d; border-radius: 12px;
                   max-width: min(92vw, 560px); padding: 1rem 1.2rem; }
   #verifyDialog::backdrop { background: #0009; }
@@ -470,10 +477,28 @@ function renderHome(view) {
       : `<div class="tile"><b>${c[key] ?? 0}</b><span>${label}</span></div>`).join("")).join("");
   const controls = (S.pendingDrafts ? ghaBtn("✍️ Draft accepted mails", "draft") : "") +
     (S.scheduled ? ghaBtn("📨 Send scheduled mails", "send") : "");
-  paint(view, `${controls ? `<div class="bulk top">${controls}</div>` : ""}<div class="home">${tiles}</div>`);
+  paint(view, `${controls ? `<div class="bulk top">${controls}</div>` : ""}<div class="home">${tiles}</div>${sendersPanel()}`);
   view.querySelectorAll('.bulk.top button').forEach(button => {
     button.disabled = bulkBusy || button.hasAttribute('data-unavailable') || writeBusy || pendingCards.size > 0 || failed.length > 0;
   });
+}
+// Sending accounts: each mailbox's cap per rolling 24 hours and what it sent in that window.
+function sendersPanel() {
+  const rows = S.senders || [];
+  if (!rows.length) return "";
+  const total = rows.reduce((n, r) => n + r.daily_cap, 0);
+  const sent = rows.reduce((n, r) => n + r.sent_24h, 0);
+  const body = rows.map(r => {
+    const full = r.daily_cap > 0 && r.sent_24h >= r.daily_cap;
+    const status = r.daily_cap === 0 ? "paused (cap 0)" : (r.status || "not used yet");
+    const warn = r.daily_cap > 0 && r.status && r.status !== "ok";
+    return `<tr><td>${escapeHtml(r.email)}</td><td>${escapeHtml(r.provider)}</td>
+      <td class="num">${r.sent_24h} / ${r.daily_cap}${full ? ' <span class="badge">full</span>' : ''}</td>
+      <td>${warn ? `<span class="badge warn">${escapeHtml(status)}</span>` : escapeHtml(status)}</td></tr>`;
+  }).join("");
+  return `<h2 class="senders-title">Sending accounts</h2><table class="senders"><thead><tr><th>Account</th><th>Provider</th>
+    <th class="num">Sent (24h) / cap per day</th><th>Status</th></tr></thead><tbody>${body}</tbody>
+    <tfoot><tr><td colspan="2">Total</td><td class="num">${sent} / ${total}</td><td></td></tr></tfoot></table>`;
 }
 function openTab(t) { tab = t; shot = 0; armed = null; showAll = false; render(); }
 
