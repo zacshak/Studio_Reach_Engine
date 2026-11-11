@@ -486,19 +486,23 @@ function renderHome(view) {
 function sendersPanel() {
   const rows = S.senders || [];
   if (!rows.length) return "";
-  const total = rows.reduce((n, r) => n + r.daily_cap, 0);
+  // Only accounts that can send count toward the total: Microsoft needs OAuth (not built
+  // yet), and an account with a missing password or failed login sends nothing.
+  const canSend = r => r.provider !== "microsoft" && (!r.status || r.status.startsWith("ok"));
+  const total = rows.reduce((n, r) => n + (canSend(r) ? r.daily_cap : 0), 0);
   const sent = rows.reduce((n, r) => n + r.sent_24h, 0);
   const body = rows.map(r => {
     const full = r.daily_cap > 0 && r.sent_24h >= r.daily_cap;
-    const status = r.daily_cap === 0 ? "paused (cap 0)" : (r.status || "not used yet");
-    const warn = r.daily_cap > 0 && r.status && !r.status.startsWith("ok");
+    const status = r.provider === "microsoft" ? "Microsoft sign-in not set up yet"
+      : r.daily_cap === 0 ? "paused (cap 0)" : (r.status || "not used yet");
+    const warn = r.daily_cap > 0 && !canSend(r);
     return `<tr><td>${escapeHtml(r.email)}</td><td>${escapeHtml(r.provider)}</td>
       <td class="num">${r.sent_24h} / ${r.daily_cap}${full ? ' <span class="badge">full</span>' : ''}</td>
       <td>${warn ? `<span class="badge warn">${escapeHtml(status)}</span>` : escapeHtml(status)}</td></tr>`;
   }).join("");
   return `<h2 class="senders-title">Sending accounts</h2><table class="senders"><thead><tr><th>Account</th><th>Provider</th>
     <th class="num">Sent (24h) / cap per day</th><th>Status</th></tr></thead><tbody>${body}</tbody>
-    <tfoot><tr><td colspan="2">Total</td><td class="num">${sent} / ${total}</td><td></td></tr></tfoot></table>`;
+    <tfoot><tr><td colspan="2">Total (accounts that can send)</td><td class="num">${sent} / ${total}</td><td></td></tr></tfoot></table>`;
 }
 function openTab(t) { tab = t; shot = 0; armed = null; showAll = false; render(); }
 
