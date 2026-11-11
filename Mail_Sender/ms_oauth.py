@@ -4,8 +4,11 @@ The refresh token is stored encrypted in the database (oauth_tokens) with a key 
 from the MS_TOKEN_KEY secret; it is renewed on every use, so it never ages out while the
 account is used at least every 90 days. No password is ever stored.
 
-Connect a mailbox once (device sign-in; prints a code to enter at microsoft.com/devicelogin):
-    python Mail_Sender/ms_oauth.py --connect you@yourdomain.com
+Connect a mailbox once with a browser sign-in (authorization code):
+    python Mail_Sender/ms_oauth.py --auth-url you@yourdomain.com     # prints the sign-in link
+    # sign in; the browser ends on .../nativeclient?code=...; copy that whole address
+    python Mail_Sender/ms_oauth.py --redeem you@yourdomain.com "<that address>"
+(Device-code sign-in, --connect, also exists but many tenants block it: AADSTS530035.)
 """
 import base64
 import hashlib
@@ -16,6 +19,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from urllib.parse import parse_qs, urlparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -28,6 +32,7 @@ TENANT_ID = os.environ.get("MS_TENANT_ID") or "fd42f542-0db0-4257-b0b3-86217a7aa
 SCOPES = ("https://outlook.office.com/SMTP.Send "
           "https://outlook.office.com/IMAP.AccessAsUser.All offline_access openid")
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0"
+REDIRECT_URI = "https://login.microsoftonline.com/common/oauth2/nativeclient"
 SMTP = ("smtp.office365.com", 587)
 IMAP = "outlook.office365.com"
 
@@ -116,6 +121,55 @@ def _claims(id_token):
         return {}
 
 
+def auth_url(email):
+    """Browser sign-in link for one mailbox (no secrets in it)."""
+    return f"{AUTHORITY}/authorize?" + urllib.parse.urlencode(dict(
+        client_id=CLIENT_ID, response_type="code", redirect_uri=REDIRECT_URI,
+        response_mode="query", scope=SCOPES, login_hint=email, prompt="select_account"))
+
+
+def _code_from(pasted):
+    """The authorization code from the pasted address (or a bare code)."""
+    pasted = (pasted or "").strip()
+    if "?" in pasted or pasted.startswith("http"):
+        query = parse_qs(urlparse(pasted).query)
+        if "error" in query:
+            raise MSAuthError(f"sign-in returned {query['error'][0]}: "
+                              f"{query.get('error_description', [''])[0][:200]}")
+        codes = query.get("code")
+        if not codes:
+            raise MSAuthError("no ?code= in the pasted address; copy the whole address bar")
+        return codes[0]
+    if not pasted:
+        raise MSAuthError("nothing pasted")
+    return pasted
+
+
+def _store_tokens(email, data, *, log=print):
+    who = (_claims(data.get("id_token", "")).get("preferred_username") or "").lower()
+    if who and who != email.lower():
+        raise MSAuthError(f"signed in as {who}, not {email}. Nothing was saved; run it again "
+                          "and sign in with the right mailbox (a private window helps).")
+    if not data.get("refresh_token"):
+        raise MSAuthError("no refresh token returned (is offline_access granted?)")
+    _save(email, data["refresh_token"])
+    _cache[email.lower()] = (data["access_token"], time.time() + int(data.get("expires_in", 3600)))
+    log(f"CONNECTED {email}")
+    return True
+
+
+def redeem(email, pasted, *, log=print):
+    """Exchange the code from a browser sign-in for tokens and store them."""
+    _fernet()
+    code = _code_from(pasted)
+    data = _post(f"{AUTHORITY}/token", dict(client_id=CLIENT_ID, grant_type="authorization_code",
+                                            code=code, redirect_uri=REDIRECT_URI, scope=SCOPES))
+    if "access_token" not in data:
+        raise MSAuthError(f"sign-in could not be completed: {data.get('error')}: "
+                          f"{str(data.get('error_description', ''))[:240]}")
+    return _store_tokens(email, data, log=log)
+
+
 def connect(email, *, log=print, sleep=time.sleep):
     """Device sign-in for one mailbox; stores its encrypted refresh token."""
     _fernet()  # fail before showing a code if the key is missing
@@ -140,25 +194,20 @@ def connect(email, *, log=print, sleep=time.sleep):
             continue
         if error:
             raise MSAuthError(f"sign-in failed: {error}: {str(data.get('error_description', ''))[:200]}")
-        who = (_claims(data.get("id_token", "")).get("preferred_username") or "").lower()
-        if who and who != email.lower():
-            raise MSAuthError(f"signed in as {who}, not {email}. Nothing was saved; run it again "
-                              "and sign in with the right mailbox (a private window helps).")
-        if not data.get("refresh_token"):
-            raise MSAuthError("no refresh token returned (is offline_access granted?)")
-        _save(email, data["refresh_token"])
-        _cache[email.lower()] = (data["access_token"], time.time() + int(data.get("expires_in", 3600)))
-        log(f"CONNECTED {email}")
-        return True
+        return _store_tokens(email, data, log=log)
     raise MSAuthError("the code expired before sign-in finished; run it again")
 
 
 if __name__ == "__main__":
     args = sys.argv[1:]
-    if len(args) == 2 and args[0] == "--connect":
-        try:
+    try:
+        if len(args) == 2 and args[0] == "--connect":
             connect(args[1].strip())
-        except MSAuthError as exc:
-            sys.exit(f"ERROR: {exc}")
-    else:
-        sys.exit("usage: ms_oauth.py --connect EMAIL")
+        elif len(args) == 2 and args[0] == "--auth-url":
+            print(auth_url(args[1].strip()))
+        elif len(args) == 3 and args[0] == "--redeem":
+            redeem(args[1].strip(), args[2])
+        else:
+            sys.exit("usage: ms_oauth.py --auth-url EMAIL | --redeem EMAIL PASTED_ADDRESS | --connect EMAIL")
+    except MSAuthError as exc:
+        sys.exit(f"ERROR: {exc}")

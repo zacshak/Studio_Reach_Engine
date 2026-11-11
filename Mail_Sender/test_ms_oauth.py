@@ -70,6 +70,27 @@ class MSOAuthTest(unittest.TestCase):
             ms_oauth.connect("me@x.test", log=lambda *_: None, sleep=lambda _: None)
         self.assertEqual(self.sql("SELECT count(*) FROM oauth_tokens")[0][0], 0)
 
+    def test_browser_sign_in_redeems_the_pasted_address(self):
+        url = ms_oauth.auth_url("me@x.test")
+        self.assertIn("response_type=code", url)
+        self.assertIn("login_hint=me%40x.test", url)
+        pasted = "https://login.microsoftonline.com/common/oauth2/nativeclient?code=ABC123&session_state=x"
+        with patch.object(ms_oauth, "_post", return_value={
+                "access_token": "at", "refresh_token": "rt", "id_token": id_token("me@x.test")}) as post:
+            self.assertTrue(ms_oauth.redeem("me@x.test", pasted, log=lambda *_: None))
+        fields = post.call_args.args[1]
+        self.assertEqual((fields["grant_type"], fields["code"], fields["redirect_uri"]),
+                         ("authorization_code", "ABC123", ms_oauth.REDIRECT_URI))
+        self.assertEqual(self.sql("SELECT count(*) FROM oauth_tokens")[0][0], 1)
+
+    def test_pasted_error_or_missing_code_is_explained(self):
+        with patch.object(ms_oauth, "_post") as post:
+            with self.assertRaisesRegex(ms_oauth.MSAuthError, "access_denied"):
+                ms_oauth.redeem("me@x.test", "https://x/nativeclient?error=access_denied&error_description=no")
+            with self.assertRaisesRegex(ms_oauth.MSAuthError, "no .code="):
+                ms_oauth.redeem("me@x.test", "https://x/nativeclient?state=1")
+            post.assert_not_called()
+
     def test_missing_key_fails_before_showing_a_code(self):
         with patch.dict(os.environ, {"MS_TOKEN_KEY": ""}), patch.object(ms_oauth, "_post") as post, \
                 self.assertRaises(ms_oauth.MSAuthError):
