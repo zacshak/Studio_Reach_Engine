@@ -696,6 +696,47 @@ def _review_mailbox(account, sent):
     return replied
 
 
+def check_accounts():
+    """Log in to every configured account's SMTP and IMAP without sending anything, and
+    record the result for the dashboard. Returns 1 if any account that should send failed."""
+    _load_env()
+    passwords = _passwords()
+    configured = pipeline.sender_accounts()
+    if not configured:
+        sys.exit("No rows in sender_accounts to check.")
+    failed = 0
+    for row in configured:
+        email = row["email"].strip()
+        acct = Account(email, passwords.get(email.lower(), ""), row["provider"], row["daily_cap"])
+        if acct.smtp is None:
+            status = "Microsoft sign-in not set up yet"
+        elif not acct.password:
+            status = "no app password in SENDER_ACCOUNTS"
+        else:
+            status = "ok (login checked)"
+            try:
+                smtp = smtplib.SMTP(*acct.smtp, timeout=30)
+                try:
+                    smtp.starttls(context=ssl.create_default_context())
+                    smtp.login(acct.email, acct.password)
+                finally:
+                    with suppress(Exception):
+                        smtp.quit()
+                imap = imaplib.IMAP4_SSL(acct.imap, timeout=30)
+                try:
+                    imap.login(acct.email, acct.password)
+                finally:
+                    with suppress(Exception):
+                        imap.logout()
+            except Exception as exc:
+                status = f"login failed: {type(exc).__name__}: {str(exc)[:120]}"
+        if acct.cap and not status.startswith("ok") and acct.smtp is not None:
+            failed += 1
+        pipeline.set_sender_status(email, status)
+        print(f"  {email} (cap {acct.cap}): {status}")
+    return 1 if failed else 0
+
+
 def _selftest():
     s, b = _split_subject("Subject : Hi there\n\nhey,\nbody line")
     assert s == "Hi there" and b == "hey,\nbody line", (s, b)
@@ -733,6 +774,8 @@ if __name__ == "__main__":
         resolve_sending(int(args[i + 1]), args[i + 2].lower())
     elif "--review" in args:
         review()
+    elif "--check-accounts" in args:
+        raise SystemExit(check_accounts())
     elif "--purge-sent" in args:
         purge_sent()
     else:
