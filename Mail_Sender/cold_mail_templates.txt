@@ -10,7 +10,7 @@ what if <one concrete new mechanic that builds on that mechanic>? <what it would
 
 I'd love to build that for you, and if it helps, I can also take <a specific existing system visible in the screenshots> off your plate so you can focus more on the game design.
 
-I'm a game programmer with 4+ years of experience: 30+ freelance projects for indie studios and 1.5 years on an Xbox funded AAA title, mostly gameplay systems in Unreal and C++, plus Unity and C#.
+I'm a game programmer with 4 years of experience: 10+ freelance projects for indie studios and 1.5 years on an Xbox funded AA title, mostly gameplay systems in Unreal and C++, plus Unity and C#.
 
 happy to share my portfolio, or hop on a quick call to talk through the idea, whichever's easier for you.
 
@@ -27,7 +27,7 @@ hey <developer/studio name>,
 
 <one specific thing you noticed about the game in their steam page, a mechanic, the atmosphere, a rough edge>. that's the kind of detail i can't leave alone.
 
-I'm a game programmer, 4+ years in. did 30+ freelance projects for small studios, then spent the last year and a half on an xbox funded AAA doing whole gameplay systems. also built my own directx12 renderer on the side, mostly because i'm that kind of nerd. solid in unreal, unity, C# and lovely C++
+I'm a game programmer, 4 years in. did 10+ freelance projects for small studios, then spent the last year and a half on an xbox funded AA doing whole gameplay systems. also built my own directx12 renderer on the side, mostly because i'm that kind of nerd. solid in unreal, unity, C# and lovely C++
 
 short version, i'm the hire that covers a lot so you don't need three people. figured that might be handy for a small team.
 
@@ -46,9 +46,9 @@ hey <developer/studio name>,
 
 <specific mechanic/detail you noticed>. especially liked <very small technical/design observation>, that's the kind of stuff i enjoy working on.
 
-I'm Meshak, Game Programmer with 4+ years of experience. I've worked across gameplay and graphics programming, building games and systems using Unreal Engine, C++, DirectX 12, OpenGL, Unity, and C#.
+I'm Meshak, Game Programmer with 4 years of experience. I've worked across gameplay and graphics programming, building games and systems using Unreal Engine, C++, DirectX 12, OpenGL, Unity, and C#.
 
-Having work experience on both AAA and indie titles, I deliver industry standard quality and have also helped 30+ clients through freelance projects on Fiverr and LinkedIn.
+Having work experience on both AA and indie titles, I deliver industry standard quality and have also helped 10+ clients through freelance projects on Fiverr and LinkedIn.
 
 Whether you need a gameplay mechanic, prototype, or complete game system, I'm here to deliver high-quality, production ready solutions.
 Just reply with what u r working on and where do u need help.
@@ -70,7 +70,7 @@ Hi,
 
 Wanted to reach out and see if you need another programmer on <game name>.
 
-I've been doing game programming for 4+ years, 30+ indie freelance projects and 1.5 years on an Xbox-funded AAA title. Mostly gameplay/systems work in Unreal + C++, with Unity/C# experience as well.
+I've been doing game programming for 4 years, 10+ indie freelance projects and 1.5 years on an Xbox-funded AA title. Mostly gameplay/systems work in Unreal + C++, with Unity/C# experience as well.
 
 I like owning systems end to end and just getting them shipped.
 
