@@ -74,7 +74,7 @@ class RotationTest(unittest.TestCase):
         mailer.main()
         status = dict(self.sql("SELECT email, last_status FROM sender_accounts"))
         self.assertEqual(status["p@gmail.test"], "paused (daily cap 0)")
-        self.assertEqual(status["m@ms.test"], "Microsoft sign-in not set up yet")
+        self.assertEqual(status["m@ms.test"], "Microsoft not connected yet")
         self.assertEqual(status["nopw@studio.test"], "no app password in SENDER_ACCOUNTS")
         self.assertEqual(status["a@studio.test"], "ok")
 
@@ -129,7 +129,7 @@ class RotationTest(unittest.TestCase):
         status = dict(self.sql("SELECT email, last_status FROM sender_accounts"))
         self.assertEqual(status["a@studio.test"], "ok (login checked)")
         self.assertIn("login failed", status["b@studio.test"])
-        self.assertEqual(status["m@ms.test"], "Microsoft sign-in not set up yet")
+        self.assertEqual(status["m@ms.test"], "Microsoft not connected yet")
         self.assertEqual(status["nopw@studio.test"], "no app password in SENDER_ACCOUNTS")
 
 

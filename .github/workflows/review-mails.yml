@@ -25,12 +25,13 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install deps
-        run: pip install --quiet libsql==0.1.11 dnspython==2.7.0
+        run: pip install --quiet libsql==0.1.11 dnspython==2.7.0 cryptography==50.0.1
       - name: Check bounces, then Sent leads for replies
         env:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           SENDER_ACCOUNTS: ${{ secrets.SENDER_ACCOUNTS }}
+          MS_TOKEN_KEY: ${{ secrets.MS_TOKEN_KEY }}
           TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
         run: python SRE.py --review-mails

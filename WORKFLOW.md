@@ -202,9 +202,15 @@ the Sent-folder check and the nightly reply and bounce check read that account's
 App passwords come from the `SENDER_ACCOUNTS` secret, a JSON object
 `{"you@domain.com": "app password", ...}`; `GMAIL_USER` / `GMAIL_APP_PASSWORD` still work and
 its inbox is still checked for replies to older mails. An account whose login fails is
-dropped for that run and the others continue. Only Google accounts can send for now:
-Microsoft accounts need OAuth (not built yet). Home shows each account's sent / cap for
-the last 24 hours and why it is not sending (cap 0, no password, Microsoft, login error).
+dropped for that run and the others continue. Microsoft 365 accounts sign in with OAuth
+(XOAUTH2 over SMTP/IMAP, `Mail_Sender/ms_oauth.py`, app "SRE Mailer" in the xrevise.cc
+tenant): connect each once with the **Connect Microsoft mailbox** workflow
+(`ms-connect.yml`, input = the mailbox). Its log shows a code for microsoft.com/devicelogin;
+sign in as that mailbox. The refresh token is stored encrypted (key: `MS_TOKEN_KEY` secret)
+in `oauth_tokens` and renewed on every use. The mailbox needs Authenticated SMTP and IMAP
+turned on in the Microsoft 365 admin center. `send.yml` with `check_accounts` logs in to
+every account without sending. Home shows each account's sent / cap for the last 24 hours
+and why it is not sending (cap 0, no password, Microsoft not connected, login error).
 Change a cap with SQL: `UPDATE sender_accounts SET daily_cap=10 WHERE email='...'`.
 
 Temporary SMTP rejections (4xx) return the row to `Scheduled` and retry after 5 and
@@ -307,7 +313,7 @@ No redeploy needed — the next draft run reads the new templates.
 `MAIL_WRITER_API_KEY` (drafting), `QEV_API_KEY` (optional fallback for addresses the SMTP check cannot settle),
 `ABSTRACT_API_KEY` (optional second fallback once QEV is out of credits),
 `GMAIL_USER`, `GMAIL_APP_PASSWORD`, `SENDER_ACCOUNTS` (JSON of email to app password for the
-rotating senders), `KIMCHI_API_KEY`, and for Epic
+rotating senders), `MS_TOKEN_KEY` (encrypts Microsoft sign-in tokens), `KIMCHI_API_KEY`, and for Epic
 `EPIC_TURSO_DATABASE_URL`, `EPIC_TURSO_AUTH_TOKEN`.
 
 **Cloudflare review Worker secrets**: `TURSO_URL`, `TURSO_TOKEN`, `GH_REPO`

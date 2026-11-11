@@ -61,8 +61,9 @@ MIN_GAP, MAX_GAP = 120, 240        # 2–4 min between sends, randomized
 SMTP_RETRY_DELAYS = (300, 900)     # explicit temporary rejections only, not a send-count cap
 
 
-# Providers we can send from with an app password (Microsoft needs OAuth: not yet).
-PROVIDERS = {"google": dict(smtp=("smtp.gmail.com", 587), imap="imap.gmail.com")}
+# Google: app password. Microsoft 365: OAuth (XOAUTH2) via ms_oauth, token stored encrypted.
+PROVIDERS = {"google": dict(smtp=("smtp.gmail.com", 587), imap="imap.gmail.com"),
+             "microsoft": dict(smtp=("smtp.office365.com", 587), imap="outlook.office365.com")}
 
 
 class Account:
@@ -74,8 +75,34 @@ class Account:
         hosts = PROVIDERS.get(provider) or {}
         self.smtp, self.imap = hosts.get("smtp"), hosts.get("imap")
 
+    @property
+    def oauth(self):
+        return self.provider == "microsoft"
+
+    def smtp_login(self, smtp):
+        if self.oauth:
+            import ms_oauth
+            ms_oauth.smtp_login(smtp, self.email)
+        else:
+            smtp.login(self.email, self.password)
+
+    def imap_login(self, imap):
+        if self.oauth:
+            import ms_oauth
+            ms_oauth.imap_login(imap, self.email)
+        else:
+            imap.login(self.email, self.password)
+
     def __repr__(self):  # never print the password
         return f"Account({self.email}, {self.provider}, cap={self.cap})"
+
+
+def _ms_connected(email):
+    try:
+        import ms_oauth
+        return ms_oauth.connected(email)
+    except Exception:
+        return False
 
 
 def _passwords():
@@ -116,9 +143,12 @@ def load_accounts(*, record=False):
         acct = Account(email, passwords.get(email.lower(), ""), row["provider"],
                        row["daily_cap"], row.get("display_name"))
         seen.add(email.lower())
+        if acct.oauth:
+            acct.password = "oauth" if _ms_connected(email) else ""
         if acct.password and acct.imap:
             mailboxes.append(acct)
-        problem = ("Microsoft sign-in not set up yet" if acct.smtp is None
+        problem = ("unknown provider" if acct.smtp is None
+                   else "Microsoft not connected yet" if acct.oauth and not acct.password
                    else "no app password in SENDER_ACCOUNTS" if not acct.password
                    else "paused (daily cap 0)" if not acct.cap else "")
         if problem:
@@ -241,7 +271,7 @@ class MailNotSubmittedError(RuntimeError):
     """A failure before submitting DATA, so retry cannot duplicate a delivery."""
 
 
-def _send(user, password, to, subject, body, *, message_id=None, smtp=None, name=None):
+def _send(user, password, to, subject, body, *, message_id=None, smtp=None, name=None, login=None):
     s = None
     try:
         msg = EmailMessage()
@@ -254,7 +284,10 @@ def _send(user, password, to, subject, body, *, message_id=None, smtp=None, name
         host, port = smtp or (SMTP_HOST, SMTP_PORT)
         s = smtplib.SMTP(host, port, timeout=30)
         s.starttls(context=ssl.create_default_context())
-        s.login(user, password)
+        if login is not None:
+            login(s)
+        else:
+            s.login(user, password)
     except BaseException as exc:
         if s is not None:
             with suppress(Exception):
@@ -291,6 +324,8 @@ def _deliver(appid, to, subject, body, raw_email, account, deadline):
     user, password = account.email, account.password
     extra = {} if (account.smtp in (None, (SMTP_HOST, SMTP_PORT)) and account.name == SENDER_NAME) \
         else dict(smtp=account.smtp, name=account.name)
+    if account.oauth:
+        extra["login"] = account.smtp_login
     token = uuid.uuid4().hex
     message_id = make_msgid(idstring=f"sre.{appid}", domain=user.rsplit("@", 1)[-1])
     for attempt in range(len(SMTP_RETRY_DELAYS) + 1):
@@ -388,7 +423,7 @@ def _reconcile_mailbox(account, pending, remaining):
     imap = None
     try:
         imap = imaplib.IMAP4_SSL(account.imap or IMAP_HOST, timeout=30)
-        imap.login(account.email, account.password)
+        account.imap_login(imap)
         typ, folders = imap.list()
         if typ != "OK":
             raise RuntimeError("cannot list Gmail mailboxes")
@@ -446,11 +481,12 @@ def _summary(stats, unprocessed, error):
             print(f"WARN: could not write the Actions summary: {exc}")
 
 
-def _scan_bounces(user, password):
+def _scan_bounces(user, password, account=None):
     """Act on new bounce notices (nightly reply check); a failure never blocks the reply scan."""
     try:
         import bounces
-        stats = bounces.process(user, password)
+        stats = (bounces.process(user, password) if account is None or not account.oauth
+                 else bounces.process(user, password, account=account))
         print("bounces: " + json.dumps(stats))
     except Exception as exc:
         print(f"WARN: bounce scan failed: {exc}")
@@ -634,7 +670,10 @@ def review():
         sys.exit("GMAIL_APP_PASSWORD not set. Add it to the repo-root .env "
                  "(see this file's header).")
     for account in mailboxes:
-        _scan_bounces(account.email, account.password)
+        if account.oauth:
+            _scan_bounces(account.email, account.password, account)
+        else:
+            _scan_bounces(account.email, account.password)
     sent = pipeline.reply_evidence()
     if not sent:
         print("no Sent leads with retained reply evidence to review.")
@@ -662,7 +701,7 @@ def _review_mailbox(account, sent):
     imap = imaplib.IMAP4_SSL(account.imap or IMAP_HOST, timeout=30)
     replied = 0
     try:
-        imap.login(account.email, account.password)
+        account.imap_login(imap)
         if imap.select("INBOX", readonly=True)[0] != "OK":
             raise RuntimeError("cannot open Gmail inbox")
         for appid, raw_email, message_id, started_at in sent:
@@ -708,8 +747,12 @@ def check_accounts():
     for row in configured:
         email = row["email"].strip()
         acct = Account(email, passwords.get(email.lower(), ""), row["provider"], row["daily_cap"])
+        if acct.oauth:
+            acct.password = "oauth" if _ms_connected(email) else ""
         if acct.smtp is None:
-            status = "Microsoft sign-in not set up yet"
+            status = "unknown provider"
+        elif acct.oauth and not acct.password:
+            status = "Microsoft not connected yet"
         elif not acct.password:
             status = "no app password in SENDER_ACCOUNTS"
         else:
@@ -718,19 +761,19 @@ def check_accounts():
                 smtp = smtplib.SMTP(*acct.smtp, timeout=30)
                 try:
                     smtp.starttls(context=ssl.create_default_context())
-                    smtp.login(acct.email, acct.password)
+                    acct.smtp_login(smtp)
                 finally:
                     with suppress(Exception):
                         smtp.quit()
                 imap = imaplib.IMAP4_SSL(acct.imap, timeout=30)
                 try:
-                    imap.login(acct.email, acct.password)
+                    acct.imap_login(imap)
                 finally:
                     with suppress(Exception):
                         imap.logout()
             except Exception as exc:
                 status = f"login failed: {type(exc).__name__}: {str(exc)[:120]}"
-        if acct.cap and not status.startswith("ok") and acct.smtp is not None:
+        if acct.cap and not status.startswith("ok") and acct.password:
             failed += 1
         pipeline.set_sender_status(email, status)
         print(f"  {email} (cap {acct.cap}): {status}")

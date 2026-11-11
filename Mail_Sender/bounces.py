@@ -116,16 +116,21 @@ def _all_mail(imap):
     return "INBOX"
 
 
-def fetch_bounces(user, password, since):
-    """Yield (key, msg, raw) for bounce notices received at/after `since` (aware datetime)."""
-    imap = imaplib.IMAP4_SSL(IMAP_HOST, timeout=30)
+def fetch_bounces(user, password, since, account=None):
+    """Yield (key, msg, raw) for bounce notices received at/after `since` (aware datetime).
+    `account` (a mailer.Account) selects its host and sign-in (Microsoft: OAuth, INBOX)."""
+    imap = imaplib.IMAP4_SSL(getattr(account, "imap", None) or IMAP_HOST, timeout=30)
     try:
-        imap.login(user, password)
+        if account is not None:
+            account.imap_login(imap)
+        else:
+            imap.login(user, password)
         if imap.select(_all_mail(imap), readonly=True)[0] != "OK":
-            raise RuntimeError("cannot open Gmail All Mail")
+            raise RuntimeError("cannot open the mailbox for bounces")
         day = since.strftime("%d-%b-%Y")
-        typ, data = imap.search(None, "SINCE", day, "OR", "FROM", '"mailer-daemon"',
-                                "FROM", '"postmaster"')
+        # Gmail: mailer-daemon; Exchange Online: postmaster@ or MicrosoftExchange...@
+        typ, data = imap.search(None, "SINCE", day, "OR", "OR", "FROM", '"mailer-daemon"',
+                                "FROM", '"postmaster"', "FROM", '"MicrosoftExchange"')
         if typ != "OK":
             raise RuntimeError("Gmail bounce search failed")
         for number in (data[0] or b"").split():
@@ -150,14 +155,15 @@ def _body(msg):
                              if p.get_content_type() == "text/plain").split())
 
 
-def process(user, password, *, since=None, apply=True, log=print):
+def process(user, password, *, since=None, apply=True, log=print, account=None):
     """Handle new bounces. Returns a dict of counts. Never raises for one bad bounce."""
     if since is None:
         since = datetime.strptime(pipeline.bounce_since(), "%Y-%m-%dT%H:%M:%SZ").replace(
             tzinfo=timezone.utc)
     sent = None
     stats = dict(bounces=0, no_mail=0, invalid=0, ignored=0, unmatched=0, errors=0)
-    for key, msg, _raw in fetch_bounces(user, password, since):
+    for key, msg, _raw in (fetch_bounces(user, password, since) if account is None
+                           else fetch_bounces(user, password, since, account)):
         if apply and pipeline.bounce_seen(key):
             continue
         stats["bounces"] += 1
