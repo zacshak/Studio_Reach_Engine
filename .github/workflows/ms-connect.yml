@@ -1,8 +1,11 @@
 name: Connect Microsoft mailbox
 
-# One-time device sign-in for a Microsoft 365 sending account. The log shows a short code:
-# open microsoft.com/devicelogin, enter it, and sign in AS THAT MAILBOX. The refresh token is
-# stored encrypted (MS_TOKEN_KEY) in the database; nothing secret is printed.
+# One-time browser sign-in for a Microsoft 365 sending account:
+#   1. open the link from `python Mail_Sender/ms_oauth.py --auth-url MAILBOX` (or leave
+#      signed_in_address empty: this run prints the link) and sign in AS THAT MAILBOX;
+#   2. the browser ends on a blank .../nativeclient?code=... page: copy the whole address;
+#   3. run this workflow with that address as signed_in_address within ~10 minutes.
+# The single-use code is masked in the log; the refresh token is stored encrypted (MS_TOKEN_KEY).
 on:
   workflow_dispatch:
     inputs:
@@ -10,6 +13,11 @@ on:
         description: Mailbox to connect (must be a microsoft row in sender_accounts)
         type: string
         required: true
+      signed_in_address:
+        description: The whole address bar after signing in (.../nativeclient?code=...). Empty = print the sign-in link
+        type: string
+        required: false
+        default: ""
 
 concurrency:
   group: ms-connect
@@ -29,14 +37,27 @@ jobs:
           python-version: "3.12"
       - name: Install deps
         run: pip install --quiet libsql==0.1.11 boto3==1.43.22 cryptography==50.0.1
-      - name: Sign in and store the token
+      - name: Sign-in link (when no address was given)
+        if: ${{ inputs.signed_in_address == '' }}
         env:
           EMAIL: ${{ inputs.email }}
+        run: |
+          echo "Open this link in a private window and sign in as $EMAIL:"
+          python -u Mail_Sender/ms_oauth.py --auth-url "$EMAIL"
+          echo "Then run this workflow again with the final address as signed_in_address."
+      - name: Store the token from the signed-in address
+        if: ${{ inputs.signed_in_address != '' }}
+        env:
+          EMAIL: ${{ inputs.email }}
+          SIGNED_IN: ${{ inputs.signed_in_address }}
           MS_TOKEN_KEY: ${{ secrets.MS_TOKEN_KEY }}
           TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
-        run: python -u Mail_Sender/ms_oauth.py --connect "$EMAIL"
+        run: |
+          echo "::add-mask::$SIGNED_IN"
+          python -u Mail_Sender/ms_oauth.py --redeem "$EMAIL" "$SIGNED_IN"
       - name: Check SMTP and IMAP login for every sending account
+        if: ${{ inputs.signed_in_address != '' }}
         env:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}

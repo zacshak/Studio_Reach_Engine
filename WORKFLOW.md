@@ -204,9 +204,12 @@ App passwords come from the `SENDER_ACCOUNTS` secret, a JSON object
 its inbox is still checked for replies to older mails. An account whose login fails is
 dropped for that run and the others continue. Microsoft 365 accounts sign in with OAuth
 (XOAUTH2 over SMTP/IMAP, `Mail_Sender/ms_oauth.py`, app "SRE Mailer" in the xrevise.cc
-tenant): connect each once with the **Connect Microsoft mailbox** workflow
-(`ms-connect.yml`, input = the mailbox). Its log shows a code for microsoft.com/devicelogin;
-sign in as that mailbox. The refresh token is stored encrypted (key: `MS_TOKEN_KEY` secret)
+tenant): connect each once with a browser sign-in. Open the link from
+`python Mail_Sender/ms_oauth.py --auth-url MAILBOX` (or run the **Connect Microsoft mailbox**
+workflow, `ms-connect.yml`, with only the mailbox: it prints the link), sign in as that
+mailbox, copy the final `.../nativeclient?code=...` address and run the workflow again with
+it as `signed_in_address` within about 10 minutes. (Device-code sign-in is blocked in this
+tenant, AADSTS530035.) The refresh token is stored encrypted (key: `MS_TOKEN_KEY` secret)
 in `oauth_tokens` and renewed on every use. The mailbox needs Authenticated SMTP and IMAP
 turned on in the Microsoft 365 admin center. `send.yml` with `check_accounts` logs in to
 every account without sending. Home shows each account's sent / cap for the last 24 hours
