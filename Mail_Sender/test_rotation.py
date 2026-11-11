@@ -114,6 +114,24 @@ class RotationTest(unittest.TestCase):
         self.assertEqual(scanned, ["a@studio.test", "b@studio.test", "old@gmail.test", "p@gmail.test"])
         self.assertEqual(sorted(opened), ["a@studio.test", "b@studio.test"])
 
+    def test_check_accounts_logs_in_without_sending(self):
+        from unittest.mock import Mock
+        smtp, imap = Mock(), Mock()
+        def login(user, pw):
+            if user == "b@studio.test":
+                raise smtplib.SMTPAuthenticationError(535, b"bad")
+        smtp.login.side_effect = login
+        with patch.object(mailer.smtplib, "SMTP", return_value=smtp), \
+                patch.object(mailer.imaplib, "IMAP4_SSL", return_value=imap), \
+                patch.object(mailer.ssl, "create_default_context"):
+            self.assertEqual(mailer.check_accounts(), 1)
+        smtp.send_message.assert_not_called()
+        status = dict(self.sql("SELECT email, last_status FROM sender_accounts"))
+        self.assertEqual(status["a@studio.test"], "ok (login checked)")
+        self.assertIn("login failed", status["b@studio.test"])
+        self.assertEqual(status["m@ms.test"], "Microsoft sign-in not set up yet")
+        self.assertEqual(status["nopw@studio.test"], "no app password in SENDER_ACCOUNTS")
+
 
 if __name__ == "__main__":
     unittest.main()

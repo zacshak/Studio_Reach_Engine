@@ -491,7 +491,7 @@ function sendersPanel() {
   const body = rows.map(r => {
     const full = r.daily_cap > 0 && r.sent_24h >= r.daily_cap;
     const status = r.daily_cap === 0 ? "paused (cap 0)" : (r.status || "not used yet");
-    const warn = r.daily_cap > 0 && r.status && r.status !== "ok";
+    const warn = r.daily_cap > 0 && r.status && !r.status.startsWith("ok");
     return `<tr><td>${escapeHtml(r.email)}</td><td>${escapeHtml(r.provider)}</td>
       <td class="num">${r.sent_24h} / ${r.daily_cap}${full ? ' <span class="badge">full</span>' : ''}</td>
       <td>${warn ? `<span class="badge warn">${escapeHtml(status)}</span>` : escapeHtml(status)}</td></tr>`;
