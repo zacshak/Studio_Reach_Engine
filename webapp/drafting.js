@@ -17,6 +17,14 @@ export function templates(raw) {
   return result.sort((a,b)=>a.id-b.id);
 }
 
+// Deterministic per game (a retry keeps its template) and spread over every template.
+// Not appid % n: Steam appids end in 0, so that only ever hit half of them.
+export function pickTemplate(choices, appid) {
+  let hash = 0x811c9dc5;
+  for (const ch of String(appid)) { hash ^= ch.charCodeAt(0); hash = Math.imul(hash, 0x01000193) >>> 0; }
+  return choices[hash % choices.length];
+}
+
 export function render(template, game, studio, supplied) {
   const slots = [...template.matchAll(SLOT)].filter(m=>!fixed(m[1]));
   const keys = slots.map((_,i)=>`observation_${i+1}`);
@@ -73,7 +81,7 @@ async function context(env, appid, sql) {
   const source = await env.MEDIA.get('cold_mails.txt');
   if (!source || source.size>256*1024) throw new Error('Published mail templates are unavailable.');
   const choices = templates(await source.text());
-  const template = row.mail_template == null ? choices[(appid-1)%choices.length]
+  const template = row.mail_template == null ? pickTemplate(choices, appid)
     : choices.find(t=>t.id===Number(row.mail_template));
   if (!template) throw new Error('The selected template no longer exists.');
   const name='SpriteSheet_Screenshots.png';

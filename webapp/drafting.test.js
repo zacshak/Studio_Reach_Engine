@@ -126,3 +126,17 @@ test('listDraftable returns ready Accepted games and reports media that is not r
   await assert.rejects(listDraftable(f.env,0,f.sql),/count must be/);
   await assert.rejects(listDraftable(f.env,26,f.sql),/count must be/);
 });
+
+test('pickTemplate spreads real-looking appids over every template and is stable',async()=>{
+  const {pickTemplate}=await import('./drafting.js');
+  const choices=[1,2,3,4].map(id=>({id}));
+  const ids=[459920,716570,1017250,1297450,1297910,1478190,1483620,1526940,1527410,1603000,1622500,1732710,
+    1894890,1895830,1897180,1914260,1964900,1975300,2026710,2092020,2184050,2185000,2249680,2268510,2330710];
+  const counts={};
+  for (const appid of ids) counts[pickTemplate(choices,appid).id]=(counts[pickTemplate(choices,appid).id]||0)+1;
+  assert.deepEqual(Object.keys(counts).sort(),['1','2','3','4']);
+  let many={};
+  for (let appid=10;appid<=200000;appid+=10) many[pickTemplate(choices,appid).id]=(many[pickTemplate(choices,appid).id]||0)+1;
+  for (const n of Object.values(many)) assert.ok(n>4000 && n<6000, JSON.stringify(many));
+  assert.equal(pickTemplate(choices,459920).id,pickTemplate(choices,459920).id);
+});
