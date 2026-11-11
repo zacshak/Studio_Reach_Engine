@@ -1,0 +1,47 @@
+name: Connect Microsoft mailbox
+
+# One-time device sign-in for a Microsoft 365 sending account. The log shows a short code:
+# open microsoft.com/devicelogin, enter it, and sign in AS THAT MAILBOX. The refresh token is
+# stored encrypted (MS_TOKEN_KEY) in the database; nothing secret is printed.
+on:
+  workflow_dispatch:
+    inputs:
+      email:
+        description: Mailbox to connect (must be a microsoft row in sender_accounts)
+        type: string
+        required: true
+
+concurrency:
+  group: ms-connect
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  connect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install --quiet libsql==0.1.11 boto3==1.43.22 cryptography==50.0.1
+      - name: Sign in and store the token
+        env:
+          EMAIL: ${{ inputs.email }}
+          MS_TOKEN_KEY: ${{ secrets.MS_TOKEN_KEY }}
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: python -u Mail_Sender/ms_oauth.py --connect "$EMAIL"
+      - name: Check SMTP and IMAP login for every sending account
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          SENDER_ACCOUNTS: ${{ secrets.SENDER_ACCOUNTS }}
+          MS_TOKEN_KEY: ${{ secrets.MS_TOKEN_KEY }}
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: python -u Mail_Sender/mailer.py --check-accounts

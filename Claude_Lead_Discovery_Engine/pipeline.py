@@ -166,6 +166,12 @@ _SENDER_ACCOUNTS_SCHEMA = """(
     last_checked_at  TEXT,
     added_at         TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 )"""
+# Microsoft sign-in tokens for sending accounts, encrypted with MS_TOKEN_KEY (GitHub secret).
+_OAUTH_TOKENS_SCHEMA = """(
+    email       TEXT PRIMARY KEY,
+    token_enc   TEXT NOT NULL,
+    updated_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+)"""
 # One row per mail SMTP accepted, by sending account; counts against daily_cap.
 _MAIL_SEND_LOG_SCHEMA = """(
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -461,6 +467,7 @@ def init_tracker():
             conn.execute("ALTER TABLE mail_send_attempt ADD COLUMN sender TEXT")
         conn.execute(f"CREATE TABLE IF NOT EXISTS sender_accounts {_SENDER_ACCOUNTS_SCHEMA}")
         conn.execute(f"CREATE TABLE IF NOT EXISTS mail_send_log {_MAIL_SEND_LOG_SCHEMA}")
+        conn.execute(f"CREATE TABLE IF NOT EXISTS oauth_tokens {_OAUTH_TOKENS_SCHEMA}")
         conn.execute("CREATE INDEX IF NOT EXISTS mail_send_log_sender_time "
                      "ON mail_send_log(sender, sent_at)")
         # Column order is not a contract. Preserve additive columns, indexes and triggers.
@@ -1024,6 +1031,24 @@ def set_sender_status(email, status):
         conn.execute("UPDATE sender_accounts SET last_status=?, last_checked_at="
                      "strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE email=?",
                      (str(status)[:200], email))
+        conn.commit()
+
+
+def get_oauth_token(email):
+    """The encrypted token blob for a mailbox, or None."""
+    _ensure()
+    with closing(_ro()) as conn:
+        row = conn.execute("SELECT token_enc FROM oauth_tokens WHERE email=?",
+                           (email.lower(),)).fetchone()
+    return row[0] if row else None
+
+
+def set_oauth_token(email, token_enc):
+    _ensure()
+    with closing(_rw()) as conn:
+        conn.execute("INSERT INTO oauth_tokens (email, token_enc) VALUES (?,?) ON CONFLICT(email) "
+                     "DO UPDATE SET token_enc=excluded.token_enc, updated_at=CURRENT_TIMESTAMP",
+                     (email.lower(), token_enc))
         conn.commit()
 
 
