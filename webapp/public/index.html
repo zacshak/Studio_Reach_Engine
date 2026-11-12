@@ -742,6 +742,32 @@ document.addEventListener("keydown", (e) => {
 });
 
 load();
+
+// ---- auto refresh ----
+// Quietly reloads data every 30 s while the tab is visible, and right away when the
+// tab becomes visible again. Skipped while a write is saving, a delete is armed or a
+// dialog is open, so a card never moves under the user's click.
+const AUTO_REFRESH_MS = 30000;
+let autoRefreshing = false, lastLoadAt = Date.now();
+function autoRefreshAllowed() {
+  return !!Q && !autoRefreshing && document.visibilityState === 'visible'
+    && !writeBusy && !bulkBusy && !pendingCards.size && !armed && !$("#verifyDialog")?.open;
+}
+async function autoRefresh() {
+  if (!autoRefreshAllowed()) return;
+  autoRefreshing = true;
+  try { await load({ background: true }); } finally { autoRefreshing = false; lastLoadAt = Date.now(); }
+}
+let autoTimer = null;
+function scheduleAutoRefresh() {
+  clearTimeout(autoTimer);
+  autoTimer = setTimeout(async () => { await autoRefresh(); scheduleAutoRefresh(); }, AUTO_REFRESH_MS);
+}
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState !== 'visible' || Date.now() - lastLoadAt <= 5000) return;
+  await autoRefresh(); scheduleAutoRefresh();
+});
+scheduleAutoRefresh();
 </script>
 </body>
 </html>

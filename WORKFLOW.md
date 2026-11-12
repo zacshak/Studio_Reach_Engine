@@ -116,6 +116,10 @@ Pending, Passed and Flagged and carry a **📭 No email** badge. Every triaged c
 its decision, reason and criteria.
 
 ### 🏠 Home — control panel
+The dashboard refreshes itself every 30 seconds while its tab is visible, and again when you
+return to the tab. It keeps your current card and skips a refresh while an action is saving,
+a delete is armed or a dialog is open. The ↻ button refreshes immediately.
+
 Counts of Pending, Triaged, Passed, Flagged, No email (not yet accepted: Pending or
 Triaged without an email), Verifying email, Accepted, Drafted, Scheduled, Sent, Replied and Invalid
 (Sending only while non-zero). The Pending, Passed, Flagged, Drafted and Scheduled tiles
