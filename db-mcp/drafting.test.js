@@ -41,7 +41,7 @@ test('list_draftable_games forwards count and draft_mails prompt carries the pro
     assert.deepEqual(calls,[['/api/draft/list',{count:20}]]);
     assert.equal((await client.callTool({name:'list_draftable_games',arguments:{count:26}})).isError,true);
     const {prompts}=await client.listPrompts();
-    assert.deepEqual(prompts.map(p=>p.name),['draft_mails']);
+    assert.deepEqual(prompts.map(p=>p.name),['draft_mails','triage_games']);
     const prompt=await client.getPrompt({name:'draft_mails',arguments:{count:'20'}});
     const text=prompt.messages[0].content.text;
     assert.match(text,/Draft cold mails for 20 Accepted games/);

@@ -97,7 +97,8 @@ Epic discovery (`epic-discovery.yml`) runs at the same time into its own separat
   `newly_added`, seed `scrape_tracker` (`seeded` if Steam gave an email, else `pending`)
   with Steam's display `release_date`, and mirror each lead's media to R2. Unfinished
   fetch/upload work is kept in `pending_discovery` and retried on the next run.
-- **Triage: MCP.** A calling agent inspects each Pending game's images and description
+- **Triage: MCP.** Standing rules: [TRIAGE.md](TRIAGE.md), served to agents as the MCP `triage_games` prompt.
+  A calling agent inspects each Pending game's images and description
   and saves `pass`/`flag` decisions with `submit_triage`, which stores them on the
   game's `scrape_tracker` row through the review Worker and moves it `Pending` →
   `Triaged`. See `db-mcp/README.md`. It never deletes games or re-triages a `Triaged`
