@@ -5,7 +5,7 @@ import { setDecision } from './triage.js';
 const BATCH = 100;
 export const WORKFLOWS = {
   send: 'send.yml', draft: 'draft.yml', discover: 'discover.yml', verify: 'verify.yml',
-  hermes: 'hermes.yml', kimchi: 'kimchi.yml', epic: 'epic-discovery.yml',
+  hermes: 'hermes.yml', kimchi: 'kimchi.yml', epic: 'epic-discovery.yml', restore: 'restore.yml',
 };
 
 export function batchIds(body, max = BATCH) {
@@ -217,4 +217,51 @@ export async function workflowRuns(env, body) {
 export async function keepMany(env, body, sql) {
   const { changed, unchanged } = await setDecision(env, batchIds(body), 'pass', sql);
   return { kept: changed, not_flagged: unchanged };
+}
+
+// ---- restore games deleted by mistake (MCP restore_games) ----
+// Queues appids in restore_requests and starts restore.yml, which re-fetches each game from
+// Steam, re-creates its rows (Pending) and media, and optionally saves triage 'pass'.
+// Games still in the tracker are reported, not queued. Nothing else is discovered.
+export const RESTORE_SCHEMA = `CREATE TABLE IF NOT EXISTS restore_requests (
+  appid INTEGER PRIMARY KEY,
+  decision TEXT,
+  status TEXT NOT NULL DEFAULT 'queued',
+  detail TEXT,
+  requested_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  finished_at TEXT
+)`;
+export const RESTORE_MAX = 25;
+
+export async function restoreGames(env, body, sql, fetcher = fetch) {
+  const appids = batchIds(body, RESTORE_MAX);
+  const decision = body?.decision ?? 'pending';
+  if (!['pass', 'pending'].includes(decision)) throw new Refused("decision must be 'pass' or 'pending'");
+  const ids = JSON.stringify(appids);
+  const [, present] = await sql(env, [[RESTORE_SCHEMA],
+    ["SELECT appid, Mail_status FROM scrape_tracker WHERE appid IN (SELECT value FROM json_each(?))", ids]]);
+  const existing = new Map(present.map(([appid, status]) => [Number(appid), status]));
+  const queue = appids.filter(a => !existing.has(a));
+  if (queue.length) {
+    await sql(env, [[`INSERT INTO restore_requests(appid, decision) SELECT value, ? FROM json_each(?) WHERE true
+      ON CONFLICT(appid) DO UPDATE SET decision=excluded.decision, status='queued', detail=NULL,
+      requested_at=CURRENT_TIMESTAMP, finished_at=NULL`, decision === 'pass' ? 'pass' : null, JSON.stringify(queue)]]);
+    await dispatchWorkflow(env, 'restore', fetcher);
+  }
+  return { queued: queue, decision,
+    already_present: [...existing].map(([appid, status]) => ({ appid, mail_status: status })),
+    next: queue.length ? 'restore.yml started; check get_restore_status in a few minutes' : 'nothing to restore' };
+}
+
+export async function restoreStatus(env, body, sql) {
+  const appids = batchIds(body, 100);
+  const [, rows] = await sql(env, [[RESTORE_SCHEMA],
+    [`SELECT r.appid, r.status, r.detail, r.decision, r.requested_at, r.finished_at, s.Mail_status
+      FROM restore_requests r LEFT JOIN scrape_tracker s ON s.appid=r.appid
+      WHERE r.appid IN (SELECT value FROM json_each(?)) ORDER BY r.appid`, JSON.stringify(appids)]]);
+  const found = new Set(rows.map(r => Number(r[0])));
+  return { requests: rows.map(([appid, status, detail, decision, requested_at, finished_at, mail]) => ({
+    appid: Number(appid), status, detail: detail ?? null, decision: decision ?? 'pending',
+    requested_at, finished_at: finished_at ?? null, mail_status: mail ?? null })),
+    not_requested: appids.filter(a => !found.has(a)) };
 }

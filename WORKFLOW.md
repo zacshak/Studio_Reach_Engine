@@ -117,6 +117,11 @@ Pending, Passed and Flagged and carry a **📭 No email** badge. Every triaged c
 its decision, reason and criteria.
 
 ### 🏠 Home — control panel
+**Deleted by mistake?** Ask an agent to run the MCP tool `restore_games` with the appids
+(optionally `decision="pass"`). `restore.yml` re-fetches each game from Steam, re-creates its
+rows and review images, and saves the pass; `get_restore_status` shows the outcome. It never
+runs a discovery pass. Released games and pages without screenshots cannot be restored.
+
 The dashboard refreshes itself every 30 seconds while its tab is visible, and again when you
 return to the tab. It keeps your current card and skips a refresh while an action is saving,
 a delete is armed or a dialog is open. The ↻ button refreshes immediately.

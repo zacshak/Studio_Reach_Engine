@@ -139,6 +139,7 @@ row can only move from the state the dashboard would accept. All are public.
 | Triage Keep | `keep_games(appids≤100)` | flagged Triaged games: `flag` → `pass`, reason records the override |
 | Accept | `accept_games(appids≤100)` | Triaged → Accepted; only `pass` games with an email and the sprite sheet (refuses untriaged, flagged and no-email games) |
 | Reject | `reject_games(appids≤1000, confirm="DELETE")` | deletes rows and queues R2 cleanup; Sending rows are protected |
+| Restore | `restore_games(appids≤25, decision="pass"\|"pending")`, `get_restore_status(appids)` | re-creates games deleted by mistake from Steam (rows + review images) via restore.yml; no discovery run. Released games, non-games and pages without screenshots are refused with a reason |
 | Find email | `save_email_result(appid, status, emails?, website?)` | records `scraped` (1–5 published addresses, best first), `no_email` or `failed` for Pending or Triaged rows still awaiting an email |
 | Draft | `get_draft_context` / `save_draft` | see below |
 | Read draft | `get_draft(appid)` | subject, body, recipient, template, mail status |
