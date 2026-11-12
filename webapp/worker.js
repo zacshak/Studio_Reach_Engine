@@ -23,7 +23,7 @@ import { triageSnapshot, saveTriage, setDecision, TRIAGE_SQL, TRIAGE_PASS_SQL } 
 import { rejectRows, cleanupJobs } from './deletion.js';
 import { draftRequest } from './drafting.js';
 import { queueSocialsStatement, saveSocials, readSocialRequestBody } from './socials.js';
-import { queues, keepMany, acceptOne, acceptMany, startVerification, dispatchWorkflow, verifyStatus, parseIssue, approveMany, returnToAccepted, saveEmail, triageDetails, workflowRuns, Refused } from './agent-actions.js';
+import { queues, keepMany, acceptOne, acceptMany, startVerification, dispatchWorkflow, verifyStatus, parseIssue, approveMany, returnToAccepted, saveEmail, triageDetails, workflowRuns, restoreGames, restoreStatus, Refused } from './agent-actions.js';
 
 // ---- Turso over HTTP (Hrana v2 pipeline; one fetch = N statements, no client lib) ----
 const hranaStmt = ([q, ...args]) => ({
@@ -247,6 +247,8 @@ async function act(env, body) {
     }
     case "keep_many": return keepMany(env, body, sql);
     case "accept_many": return acceptMany(env, body, sql);
+    case "restore": return restoreGames(env, body, sql);
+    case "restore_status": return restoreStatus(env, body, sql);
     case "approve_many": return approveMany(env, body, sql);
     case "return_to_accepted": return returnToAccepted(env, body, sql, getJSON);
     case "approve_all": {

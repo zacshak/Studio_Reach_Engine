@@ -32,6 +32,9 @@ test('workflow tools forward to the guarded review backend', async () => {
     ['keep_games', { appids: [1] }, '/api/act', { action: 'keep_many', appids: [1] }],
     ['accept_games', { appids: [1, 2] }, '/api/act', { action: 'accept_many', appids: [1, 2] }],
     ['reject_games', { appids: [3], confirm: 'DELETE' }, '/api/act', { action: 'reject_all', appids: [3] }],
+    ['restore_games', { appids: [7, 8], decision: 'pass' }, '/api/act', { action: 'restore', appids: [7, 8], decision: 'pass' }],
+    ['restore_games', { appids: [9] }, '/api/act', { action: 'restore', appids: [9], decision: 'pending' }],
+    ['get_restore_status', { appids: [7] }, '/api/act', { action: 'restore_status', appids: [7] }],
     ['save_email_result', { appid: 4, status: 'no_email' }, '/api/email/save', { appid: 4, status: 'no_email' }],
     ['approve_mails', { appids: [5] }, '/api/act', { action: 'approve_many', appids: [5] }],
     ['return_to_accepted', { appids: [5] }, '/api/act', { action: 'return_to_accepted', appids: [5] }],
@@ -53,7 +56,9 @@ test('destructive and outbound tools refuse without their exact confirmation', a
   for (const [name, args] of [
     ['reject_games', { appids: [3] }], ['reject_games', { appids: [3], confirm: 'yes' }],
     ['send_scheduled_mails', {}], ['send_scheduled_mails', { confirm: 'SEND' }],
-    ['run_workflow', { workflow: 'send' }], ['accept_games', { appids: Array.from({ length: 101 }, (_, i) => i + 1) }],
+    ['run_workflow', { workflow: 'send' }], ['run_workflow', { workflow: 'restore' }],
+    ['restore_games', { appids: Array.from({ length: 26 }, (_, i) => i + 1) }], ['restore_games', { appids: [1], decision: 'flag' }],
+    ['accept_games', { appids: Array.from({ length: 101 }, (_, i) => i + 1) }],
   ]) assert.equal((await client.callTool({ name, arguments: args })).isError, true, `${name} ${JSON.stringify(args)}`);
   assert.equal(calls.length, 0);
   await client.close();

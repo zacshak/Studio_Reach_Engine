@@ -97,7 +97,8 @@ Epic discovery (`epic-discovery.yml`) runs at the same time into its own separat
   `newly_added`, seed `scrape_tracker` (`seeded` if Steam gave an email, else `pending`)
   with Steam's display `release_date`, and mirror each lead's media to R2. Unfinished
   fetch/upload work is kept in `pending_discovery` and retried on the next run.
-- **Triage: MCP.** A calling agent inspects each Pending game's images and description
+- **Triage: MCP.** Standing rules: [TRIAGE.md](TRIAGE.md), served to agents as the MCP `triage_games` prompt.
+  A calling agent inspects each Pending game's images and description
   and saves `pass`/`flag` decisions with `submit_triage`, which stores them on the
   game's `scrape_tracker` row through the review Worker and moves it `Pending` →
   `Triaged`. See `db-mcp/README.md`. It never deletes games or re-triages a `Triaged`
@@ -116,6 +117,11 @@ Pending, Passed and Flagged and carry a **📭 No email** badge. Every triaged c
 its decision, reason and criteria.
 
 ### 🏠 Home — control panel
+**Deleted by mistake?** Ask an agent to run the MCP tool `restore_games` with the appids
+(optionally `decision="pass"`). `restore.yml` re-fetches each game from Steam, re-creates its
+rows and review images, and saves the pass; `get_restore_status` shows the outcome. It never
+runs a discovery pass. Released games and pages without screenshots cannot be restored.
+
 The dashboard refreshes itself every 30 seconds while its tab is visible, and again when you
 return to the tab. It keeps your current card and skips a refresh while an action is saving,
 a delete is armed or a dialog is open. The ↻ button refreshes immediately.

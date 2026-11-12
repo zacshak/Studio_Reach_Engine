@@ -85,6 +85,11 @@ export function registerWorkflowTools(server, env, run) {
   tool('save_email_result', 'Record an email search for a Pending or Triaged game still awaiting an email. status=scraped needs 1-5 published addresses, best first (moves it from No-Mail to Approval); no_email or failed record the outcome. Never invent addresses.',
     { appid, status: z.enum(['scraped', 'no_email', 'failed']), emails: z.array(z.string().trim().min(3).max(254)).max(5).optional(),
       website: z.string().url().max(2000).optional() }, WRITE, args => review(env, '/api/email/save', args));
+  tool('restore_games', 'Restore up to 25 games that were deleted by mistake, without a discovery run. Re-fetches each game from Steam, re-creates its rows (Pending, Steam support email pre-filled) and rebuilds its review images; decision="pass" also saves triage pass so it lands in Passed. Runs restore.yml in the background; check get_restore_status after a few minutes. Released games, non-games and pages without screenshots cannot be restored. Games still in the tracker are reported, not touched.',
+    { appids: appids(25), decision: z.enum(['pass', 'pending']).default('pending') }, RUN,
+    args => review(env, '/api/act', { action: 'restore', ...args }));
+  tool('get_restore_status', 'Outcome of restore_games requests: queued, done (with where the game is now) or failed (with the reason).',
+    { appids: appids(100) }, READ, ({ appids }) => review(env, '/api/act', { action: 'restore_status', appids }));
   tool('get_draft', 'Read the saved cold-mail draft for a game: subject, body, recipient, template and mail status.',
     { appid }, READ, ({ appid }) => getDraft(env, appid, run));
   tool('approve_mails', 'Approve up to 100 drafted mails (Drafted -> Scheduled). Approved mails are only sent when send_scheduled_mails or the dashboard Send button runs.',
