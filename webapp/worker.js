@@ -120,6 +120,8 @@ export const VIEW_SQL = {
   senders: `SELECT a.email, a.provider, a.daily_cap, a.last_status, a.last_checked_at,
     (SELECT count(*) FROM mail_send_log l WHERE l.sender=a.email AND l.sent_at >= datetime('now','-1 day'))
     FROM sender_accounts a ORDER BY a.daily_cap DESC, a.email`,
+  // Steam release date shown on each review card, next to the appid
+  releases: "SELECT appid, release_date FROM scrape_tracker WHERE Mail_status IN ('Pending','Triaged','Drafted') AND coalesce(release_date,'')<>'' ORDER BY appid",
 };
 
 export function homeCounts(rows) {
@@ -150,9 +152,10 @@ async function state(env) {
       [VIEW_SQL.issues],
       [VIEW_SQL.verifying],
       [VIEW_SQL.senders],
+      [VIEW_SQL.releases],
     ]),
   ]);
-  const [pending, passed, flagged, noMail, drafted, counts, reviews, issues, verifying, senders] = db;
+  const [pending, passed, flagged, noMail, drafted, counts, reviews, issues, verifying, senders, releases] = db;
   const ids = rows => rows.map(r => Number(r[0]));
   const home = homeCounts(counts);
   return {
@@ -163,6 +166,7 @@ async function state(env) {
     flagged: ids(flagged),
     noMail: ids(noMail),
     verifying: ids(verifying),
+    releases: Object.fromEntries((releases || []).map(([appid, date]) => [Number(appid), String(date)])),
     issues: Object.fromEntries(issues.map(([appid, raw, game]) => [Number(appid), { ...parseIssue(raw), game: game ?? null }])),
     mail: drafted.map((r) => ({ appid: Number(r[0]), emails: r[1] || "" })),
     triageReviews: triageSnapshot(reviews).triageReviews,

@@ -435,7 +435,7 @@ function render() {
     ${bulk ? `<div class="bulk top">${bulk}</div>` : ""}
     <div class="card">
       <h2>${escapeHtml(String(name))}</h2>
-      <div class="meta">${escapeHtml((m && m.meta) || "")} · appid ${card.appid} ·
+      <div class="meta">${escapeHtml((m && m.meta) || "")} · appid ${card.appid} · 📅 ${escapeHtml(S.releases?.[card.appid] || 'No release date')} ·
         <a href="https://store.steampowered.com/app/${card.appid}/" target="_blank" rel="noopener">Steam page 🔗</a>${
         noMail.has(card.appid) ? '<span class="badge">📭 No email</span>' : ''}${
         issue ? `<span class="badge warn" title="${escapeHtml(issue.reason || '')}">⚠️ ${escapeHtml(issueText(issue))}</span>` : ''}</div>
