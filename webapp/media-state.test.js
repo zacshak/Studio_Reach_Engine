@@ -339,3 +339,15 @@ test('workflow and bulk actions do not overtake queued card writes', async () =>
   await run('retryFailed()');
   assert.equal(writes,0);
 });
+
+test('cards show the release date next to the appid, or say there is none', async () => {
+  for (const [releases, expected] of [[{ 1: 'Mar 26, 2027' }, /appid 1 · 📅 Mar 26, 2027 ·/], [{}, /appid 1 · 📅 No release date ·/]]) {
+    const state = { ...emptyState, index: { 1: 'Game_1' }, pending: [1], releases };
+    const { run, elements } = fixture(async url => response(url === '/api/state' ? state
+      : { name: 'Game', desc: 'Description', images: ['SpriteSheet_Screenshots.png'] }));
+    await run('load()');
+    run("openTab('pending')");
+    await new Promise(resolve => setImmediate(resolve));
+    assert.match(elements.get('#view').innerHTML, expected);
+  }
+});

@@ -100,7 +100,8 @@ test('dashboard state returns Home counts and the Pending, Passed, Flagged and M
     [['Pending', '', 0, 1], ['Triaged', 'pass', 1, 1], ['Triaged', 'pass', 0, 1], ['Triaged', 'flag', 1, 1],
      ['Verifying', 'pass', 1, 1], ['Accepted', '', 1, 2], ['Drafted', '', 1, 1], ['Sent', '', 1, 7], ['Invalid', '', 0, 1]],
     [[1, 'pass', 'Fits', 'Custom', '2026-11-09T00:00:00.000Z'], [2, 'flag', 'Does not fit', 'Custom', null]],
-    [[3, JSON.stringify({ email: 'x@y.co', reason: 'bounced 5.1.1', source: 'bounce' }), 'Three']], [[8]]];
+    [[3, JSON.stringify({ email: 'x@y.co', reason: 'bounced 5.1.1', source: 'bounce' }), 'Three']], [[8]],
+    [], [[1, 'Coming soon'], [2, 'Mar 26, 2027']]];
   const cell = value => value === null ? { type: 'null' } : typeof value === 'number'
     ? { type: 'integer', value: String(value) } : { type: 'text', value };
   let statements;
@@ -125,6 +126,8 @@ test('dashboard state returns Home counts and the Pending, Passed, Flagged and M
     assert.deepEqual(state.counts, { pending: 1, triaged: 3, passed: 2, flagged: 1, no_mail: 2, verifying: 1, accepted: 2, drafted: 1,
       scheduled: 0, sending: 0, sent: 7, replied: 0, invalid: 1 });
     assert.deepEqual(state.verifying, [8]);
+    assert.equal(statements[10], VIEW_SQL.releases);
+    assert.deepEqual(state.releases, { 1: 'Coming soon', 2: 'Mar 26, 2027' });
     assert.deepEqual(state.issues, { 3: { email: 'x@y.co', reason: 'bounced 5.1.1', source: 'bounce', game: 'Three' } });
     assert.equal(state.pendingDrafts, true);
     assert.equal(state.scheduled, false);
