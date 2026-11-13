@@ -482,14 +482,17 @@ def _summary(stats, unprocessed, error):
 
 
 def _scan_bounces(user, password, account=None):
-    """Act on new bounce notices (nightly reply check); a failure never blocks the reply scan."""
+    """Act on new bounce notices (nightly reply check); a failure never blocks the reply scan.
+    Returns True when the mailbox was scanned."""
     try:
         import bounces
         stats = (bounces.process(user, password) if account is None or not account.oauth
                  else bounces.process(user, password, account=account))
-        print("bounces: " + json.dumps(stats))
+        print(f"bounces ({user}): " + json.dumps(stats))
+        return True
     except Exception as exc:
-        print(f"WARN: bounce scan failed: {exc}")
+        print(f"WARN: bounce scan failed for {user}: {exc}")
+        return False
         with suppress(Exception):
             pipeline.reconnect()
 
@@ -669,15 +672,16 @@ def review():
             sys.exit("GMAIL_USER not set. Add it to the repo-root .env or GHA secret.")
         sys.exit("GMAIL_APP_PASSWORD not set. Add it to the repo-root .env "
                  "(see this file's header).")
+    failed = []   # (mailbox, what) that could not be checked; the others still are
     for account in mailboxes:
-        if account.oauth:
-            _scan_bounces(account.email, account.password, account)
-        else:
-            _scan_bounces(account.email, account.password)
+        ok = (_scan_bounces(account.email, account.password, account) if account.oauth
+              else _scan_bounces(account.email, account.password))
+        if not ok:
+            failed.append((account.email, "bounce scan"))
     sent = pipeline.reply_evidence()
     if not sent:
         print("no Sent leads with retained reply evidence to review.")
-        return
+        return _review_summary(failed)
     if len(mailboxes) == 1:
         groups = {mailboxes[0].email.lower(): sent}
     else:
@@ -693,12 +697,45 @@ def review():
             print(f"WARN: {len(rows)} sent lead(s) from {sender or '(unknown)'} not checked: "
                   "no password for that mailbox")
             continue
-        replied += _review_mailbox(account, rows)
+        try:
+            replied += _review_mailbox(account, rows)
+        except Exception as exc:  # one unreachable inbox must not stop the others
+            print(f"WARN: reply scan failed for {account.email} ({len(rows)} lead(s) not checked): {exc}")
+            failed.append((account.email, "reply scan"))
     print(f"reviewed {len(sent)} sent lead(s): {replied} replied -> marked 'Replied'.")
+    return _review_summary(failed)
+
+
+def _review_summary(failed):
+    """Report mailboxes that could not be checked. Returns 1 if any, so the run shows red."""
+    if not failed:
+        return 0
+    lines = [f"{email}: {what} failed" for email, what in failed]
+    print("NOT CHECKED: " + "; ".join(lines))
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if path:
+        with suppress(OSError), open(path, "a", encoding="utf-8") as out:
+            out.write("### Mailboxes not checked\n\n" + "".join(f"- {line}\n" for line in lines))
+    return 1
+
+
+IMAP_CONNECT_TRIES = 3
+IMAP_RETRY_SECONDS = (5, 15)
+
+
+def _imap_connect(host):
+    """Open an IMAP SSL connection, retrying brief network failures (reset, TLS timeout)."""
+    for attempt in range(IMAP_CONNECT_TRIES):
+        try:
+            return imaplib.IMAP4_SSL(host, timeout=30)
+        except OSError:  # includes TimeoutError and connection resets
+            if attempt == IMAP_CONNECT_TRIES - 1:
+                raise
+            time.sleep(IMAP_RETRY_SECONDS[min(attempt, len(IMAP_RETRY_SECONDS) - 1)])
 
 
 def _review_mailbox(account, sent):
-    imap = imaplib.IMAP4_SSL(account.imap or IMAP_HOST, timeout=30)
+    imap = _imap_connect(account.imap or IMAP_HOST)
     replied = 0
     try:
         account.imap_login(imap)
@@ -816,7 +853,7 @@ if __name__ == "__main__":
             sys.exit("usage: --resolve-sending APPID sent|retry")
         resolve_sending(int(args[i + 1]), args[i + 2].lower())
     elif "--review" in args:
-        review()
+        raise SystemExit(review())
     elif "--check-accounts" in args:
         raise SystemExit(check_accounts())
     elif "--purge-sent" in args:

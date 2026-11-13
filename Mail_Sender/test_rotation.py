@@ -114,6 +114,104 @@ class RotationTest(unittest.TestCase):
         self.assertEqual(scanned, ["a@studio.test", "b@studio.test", "old@gmail.test", "p@gmail.test"])
         self.assertEqual(sorted(opened), ["a@studio.test", "b@studio.test"])
 
+    def _imap(self, opened, broken=(), flaky=None, replies=()):
+        """Fake IMAP: hosts in `broken` always time out; `flaky` fails once with a reset.
+        Every login records the user; searches return a reply for appids in `replies`."""
+        calls = {"connects": []}
+        class Imap:
+            def __init__(self, host, timeout):
+                calls["connects"].append(host)
+                if host in broken:
+                    raise TimeoutError("_ssl.c:994: The handshake operation timed out")
+                if flaky and host == flaky and calls["connects"].count(host) == 1:
+                    raise ConnectionResetError(104, "Connection reset by peer")
+                self.host = host
+            def login(self, user, pw):
+                opened.append(user)
+            def select(self, *a, **k):
+                return ("OK", [b"0"])
+            def search(self, *a):
+                return ("OK", [b""])
+            def logout(self):
+                pass
+        return Imap, calls
+
+    def _two_inboxes(self):
+        # a@ uses imap.gmail.com, the Microsoft account would use outlook; give b@ its own host
+        self.seed(2)
+        mailer.main()
+        hosts = {"a@studio.test": "imap.a.test", "b@studio.test": "imap.b.test"}
+        real = mailer.load_accounts
+        def load(**kw):
+            senders, boxes = real(**kw)
+            for box in boxes:
+                box.imap = hosts.get(box.email, box.imap)
+            return senders, boxes
+        return load
+
+    def test_one_unreachable_inbox_does_not_stop_the_others(self):
+        load = self._two_inboxes()
+        opened = []
+        Imap, calls = self._imap(opened, broken={"imap.a.test"})
+        with patch.object(mailer, "load_accounts", side_effect=load), \
+                patch.object(mailer.imaplib, "IMAP4_SSL", Imap), \
+                patch.object(mailer, "_scan_bounces", return_value=True):
+            code = mailer.review()
+        self.assertEqual(code, 1)                      # the run still shows the failure
+        self.assertEqual(opened, ["b@studio.test"])    # b's inbox was checked anyway
+        self.assertEqual(calls["connects"].count("imap.a.test"), mailer.IMAP_CONNECT_TRIES)
+        printed = " ".join(str(c.args[0]) for c in print.call_args_list if c.args)
+        self.assertIn("reply scan failed for a@studio.test", printed)
+        self.assertIn("NOT CHECKED: a@studio.test: reply scan failed", printed)
+
+    def test_a_brief_network_drop_is_retried_and_succeeds(self):
+        load = self._two_inboxes()
+        opened = []
+        Imap, calls = self._imap(opened, flaky="imap.a.test")
+        with patch.object(mailer, "load_accounts", side_effect=load), \
+                patch.object(mailer.imaplib, "IMAP4_SSL", Imap), \
+                patch.object(mailer, "_scan_bounces", return_value=True):
+            code = mailer.review()
+        self.assertEqual(code, 0)
+        self.assertEqual(sorted(opened), ["a@studio.test", "b@studio.test"])
+        self.assertEqual(calls["connects"].count("imap.a.test"), 2)
+        mailer.time.sleep.assert_any_call(mailer.IMAP_RETRY_SECONDS[0])
+
+    def test_failed_bounce_scan_is_reported_but_replies_are_still_checked(self):
+        load = self._two_inboxes()
+        opened = []
+        Imap, _ = self._imap(opened)
+        with patch.object(mailer, "load_accounts", side_effect=load), \
+                patch.object(mailer.imaplib, "IMAP4_SSL", Imap), \
+                patch.object(mailer, "_scan_bounces", side_effect=lambda user, *a: user != "old@gmail.test"):
+            code = mailer.review()
+        self.assertEqual(code, 1)
+        self.assertEqual(sorted(opened), ["a@studio.test", "b@studio.test"])
+        printed = " ".join(str(c.args[0]) for c in print.call_args_list if c.args)
+        self.assertIn("old@gmail.test: bounce scan failed", printed)
+
+    def test_scan_bounces_reports_which_mailbox_failed(self):
+        with patch("bounces.process", side_effect=TimeoutError("handshake timed out")):
+            self.assertFalse(mailer._scan_bounces("x@studio.test", "pw"))
+        with patch("bounces.process", return_value={"bounces": 0}):
+            self.assertTrue(mailer._scan_bounces("x@studio.test", "pw"))
+        printed = " ".join(str(c.args[0]) for c in print.call_args_list if c.args)
+        self.assertIn("bounce scan failed for x@studio.test: handshake timed out", printed)
+        self.assertIn("bounces (x@studio.test)", printed)
+
+    def test_bounce_scanner_retries_then_gives_up(self):
+        import bounces
+        attempts = []
+        def connect(host, timeout):
+            attempts.append(host)
+            raise TimeoutError("timed out")
+        with patch.object(bounces.imaplib, "IMAP4_SSL", side_effect=connect), \
+                patch.object(bounces.time, "sleep") as sleep:
+            with self.assertRaises(TimeoutError):
+                bounces._imap_connect("outlook.office365.com")
+        self.assertEqual(len(attempts), bounces.IMAP_CONNECT_TRIES)
+        self.assertEqual([c.args[0] for c in sleep.call_args_list], list(bounces.IMAP_RETRY_SECONDS))
+
     def test_check_accounts_logs_in_without_sending(self):
         from unittest.mock import Mock
         smtp, imap = Mock(), Mock()
