@@ -184,17 +184,13 @@ def main():
         # lead. This is the first point at which source contact data becomes a queue
         # state, so invalid values never reach the outreach review folder.
         pipeline.seed_pending()
-        invalid = 0
+        invalid = 0  # malformed Steam emails are treated as no email (see discovery_status)
         for appid in tracked_appids:
             norm = pipeline.read_lead(appid) or {}
             status = norm.get("support_info")
             state = pipeline.discovery_status(pipeline._support_email(status))
             if state == "seeded":
                 exporter.submit(appid)
-            elif state == "invalid":
-                invalid += 1
-                if durable:
-                    recovery.finish_invalid(conn, appid)
             else:
                 nomail_exporter.submit(appid)
     else:

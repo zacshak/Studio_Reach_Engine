@@ -196,7 +196,9 @@ _TRIGGER_NEEDS = ("name", "short_description", "website", "support_info",
 # would override an inner IGNORE and wipe scrape progress — the NOT EXISTS guard
 # avoids any conflict, so an existing tracker row is left completely untouched.
 # A lead whose support_info already carries a valid email is born 'seeded' with that
-# email pre-filled, so Hermes never has to scrape it. Invalid values are quarantined.
+# email pre-filled, so Hermes never has to scrape it. A missing or malformed Steam email
+# (e.g. a website or "<redacted>" in the email box) is dropped: the lead is born Pending
+# with no email, so it is triaged and researched like any other no-email game.
 _TRIGGER_SQL = """
 CREATE TRIGGER IF NOT EXISTS trg_sync_scrape_tracker
 AFTER INSERT ON newly_added
@@ -209,27 +211,23 @@ BEGIN
     NEW.name,
     NEW.short_description,
     CASE
-      WHEN nullif(trim(json_extract(coalesce(NEW.support_info,'{}'),'$.email')),'') IS NULL
-        THEN 'pending'
-      WHEN instr(trim(json_extract(coalesce(NEW.support_info,'{}'),'$.email')), '@') > 1
+      WHEN nullif(trim(json_extract(coalesce(NEW.support_info,'{}'),'$.email')),'') IS NOT NULL
+       AND instr(trim(json_extract(coalesce(NEW.support_info,'{}'),'$.email')), '@') > 1
        AND instr(substr(trim(json_extract(coalesce(NEW.support_info,'{}'),'$.email')),
                         instr(trim(json_extract(coalesce(NEW.support_info,'{}'),'$.email')), '@') + 1), '.') > 1
        AND trim(json_extract(coalesce(NEW.support_info,'{}'),'$.email')) NOT LIKE '% %'
         THEN 'seeded'
-      ELSE 'invalid'
+      ELSE 'pending'
     END,
-    nullif(json_extract(coalesce(NEW.support_info,'{}'),'$.email'),''),
     CASE
       WHEN nullif(trim(json_extract(coalesce(NEW.support_info,'{}'),'$.email')),'') IS NOT NULL
-       AND NOT (
-         instr(trim(json_extract(coalesce(NEW.support_info,'{}'),'$.email')), '@') > 1
-         AND instr(substr(trim(json_extract(coalesce(NEW.support_info,'{}'),'$.email')),
-                          instr(trim(json_extract(coalesce(NEW.support_info,'{}'),'$.email')), '@') + 1), '.') > 1
-         AND trim(json_extract(coalesce(NEW.support_info,'{}'),'$.email')) NOT LIKE '% %'
-       )
-        THEN 'Invalid'
-      ELSE 'Pending'
+       AND instr(trim(json_extract(coalesce(NEW.support_info,'{}'),'$.email')), '@') > 1
+       AND instr(substr(trim(json_extract(coalesce(NEW.support_info,'{}'),'$.email')),
+                        instr(trim(json_extract(coalesce(NEW.support_info,'{}'),'$.email')), '@') + 1), '.') > 1
+       AND trim(json_extract(coalesce(NEW.support_info,'{}'),'$.email')) NOT LIKE '% %'
+        THEN trim(json_extract(coalesce(NEW.support_info,'{}'),'$.email'))
     END,
+    'Pending',
     'https://store.steampowered.com/app/' || NEW.appid || '/',
     NEW.website,
     NEW.support_info,
@@ -596,8 +594,9 @@ def _without_known_invalid(conn, emails):
 
 
 def discovery_status(raw):
-    """Map a Steam contact value to its initial scrape_tracker state."""
-    return {"missing": "pending", "valid": "seeded", "invalid": "invalid"}[email_state(raw)]
+    """Map a Steam contact value to its initial scrape_tracker state. A malformed value
+    counts as no email ('pending'), so the lead stays reviewable and gets researched."""
+    return "seeded" if email_state(raw) == "valid" else "pending"
 
 
 def _names(v):
@@ -642,15 +641,15 @@ def seed_pending():
         for appid, name, brief, website, support, devs, pubs, genres, fetched_at, release in src:
             email = _support_email(support)
             status = discovery_status(email)
-            stored_email = email or None
+            # A malformed Steam email is dropped, never stored: the lead has no email.
+            stored_email = email if status == "seeded" else None
             if appid in have:
                 current_scrape, current_mail = have[appid]
                 if (current_mail in ("Pending", "Triaged", "Invalid")
                         and current_scrape in ("pending", "seeded", "invalid")):
-                    mail = "'Invalid'" if status == "invalid" else UNACCEPTED_SQL
                     conn.execute(
                         "UPDATE scrape_tracker SET scrape_status=?, emails=?, "
-                        f"Mail_status={mail} WHERE appid=?",
+                        f"Mail_status={UNACCEPTED_SQL} WHERE appid=?",
                         (status, stored_email, appid))
                 continue
             conn.execute(
@@ -658,11 +657,10 @@ def seed_pending():
                 "Mail_status, added_at, release_date) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (appid, name, brief, f"https://store.steampowered.com/app/{appid}/",
                  website or "", support or "", _names(devs), _names(pubs), _genres(genres),
-                 stored_email, status,
-                 "Invalid" if status == "invalid" else "Pending", fetched_at,
+                 stored_email, status, "Pending", fetched_at,
                  _release_date(release)),
             )
-            have[appid] = (status, "Invalid" if status == "invalid" else "Pending")
+            have[appid] = (status, "Pending")
             added += 1
         conn.commit()
     return added
