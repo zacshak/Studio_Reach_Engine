@@ -59,11 +59,9 @@ class ReplyTest(unittest.TestCase):
                 patch.object(mailer.pipeline, "set_mail_status") as status, \
                 patch.object(mailer, "_scan_bounces") as self.bounces, \
                 patch.object(mailer.imaplib, "IMAP4_SSL", return_value=imap) as connect:
-            if select != "OK":
-                with self.assertRaises(RuntimeError):
-                    mailer.review()
-            else:
-                mailer.review()
+            code = mailer.review()
+        # A mailbox that cannot be opened is reported (exit 1) instead of crashing the run.
+        self.assertEqual(code, 1 if select != "OK" else 0)
         return imap, status, connect
 
     def test_shared_recipient_only_marks_the_matching_thread(self):

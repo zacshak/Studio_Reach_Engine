@@ -24,6 +24,7 @@ import imaplib
 import os
 import re
 import sys
+import time
 from datetime import datetime, timezone
 from email import policy
 from email.utils import parsedate_to_datetime
@@ -36,6 +37,19 @@ import pipeline  # noqa: E402
 from Email_Verifier.smtp_check import classify_rcpt  # noqa: E402
 
 IMAP_HOST = "imap.gmail.com"
+IMAP_CONNECT_TRIES = 3
+IMAP_RETRY_SECONDS = (5, 15)
+
+
+def _imap_connect(host):
+    """Open an IMAP SSL connection, retrying brief network failures (reset, TLS timeout)."""
+    for attempt in range(IMAP_CONNECT_TRIES):
+        try:
+            return imaplib.IMAP4_SSL(host, timeout=30)
+        except OSError:  # includes TimeoutError and connection resets
+            if attempt == IMAP_CONNECT_TRIES - 1:
+                raise
+            time.sleep(IMAP_RETRY_SECONDS[min(attempt, len(IMAP_RETRY_SECONDS) - 1)])
 _STATUS = re.compile(r"\b([245])\.(\d{1,3})\.(\d{1,3})\b")
 _CODE = re.compile(r"\b([245]\d\d)\b")
 _ADDR = re.compile(r"[^\s<>;,\"']+@[^\s<>;,\"']+\.[A-Za-z]{2,}")
@@ -119,7 +133,7 @@ def _all_mail(imap):
 def fetch_bounces(user, password, since, account=None):
     """Yield (key, msg, raw) for bounce notices received at/after `since` (aware datetime).
     `account` (a mailer.Account) selects its host and sign-in (Microsoft: OAuth, INBOX)."""
-    imap = imaplib.IMAP4_SSL(getattr(account, "imap", None) or IMAP_HOST, timeout=30)
+    imap = _imap_connect(getattr(account, "imap", None) or IMAP_HOST)
     try:
         if account is not None:
             account.imap_login(imap)
