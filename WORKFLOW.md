@@ -44,6 +44,9 @@ All local/manual commands still exist through the one launcher: `python SRE.py <
 - **`Mail_status`**: valid leads follow `Pending` → `Triaged` → `Verifying` → `Accepted` → `Drafted` →
   `Scheduled` → `Sending` → `Sent` → `Replied`; invalid leads branch to `Invalid` and
   stop. `Invalid` is quarantined and never rendered in the review views.
+  Discovery never quarantines: a malformed Steam support email (a website, "<redacted>") is
+  dropped and the game starts `Pending` with no email, so it is triaged and researched like
+  any other no-email game.
 
   | Status | Meaning | Set by |
   |---|---|---|
@@ -56,7 +59,7 @@ All local/manual commands still exist through the one launcher: `python SRE.py <
   | `Sending` | hidden claim held only while one mail is being submitted | `send.yml`, per row |
   | `Sent` | Gmail accepted the message; R2 media purged | `send.yml` |
   | `Replied` | verified reply to the retained Message-ID | `review-mails.yml` |
-  | `Invalid` | unusable or verified-invalid recipient | discovery, scrapers, `send.yml` |
+  | `Invalid` | unusable or verified-invalid researched recipient | scrapers, `send.yml` |
 
   Backward moves: a temporary SMTP failure returns `Sending` → `Scheduled`; a permanent
   rejection returns the row to `Drafted`; a missing draft returns it to `Accepted`;

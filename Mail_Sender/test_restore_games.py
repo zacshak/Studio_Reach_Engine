@@ -72,6 +72,12 @@ class RestoreTest(unittest.TestCase):
     def test_no_support_email_is_reported(self):
         self.assertEqual(self.restore(8, raw=steam(8, email="")), "restored to Pending (no email on Steam)")
 
+    def test_malformed_steam_email_restores_as_no_email(self):
+        for appid, bad in ((30, "https://studio.test/"), (31, "&lt;redacted&gt;")):
+            self.assertEqual(self.restore(appid, raw=steam(appid, email=bad)),
+                             "restored to Pending (no email on Steam)")
+            self.assertEqual(self.row(appid)[:5], ("Pending", None, None, None, "pending"))
+
     def test_existing_game_is_left_alone(self):
         self.restore(9, "pass")
         fetch = Mock()

@@ -211,18 +211,18 @@ class RecoveryTest(unittest.TestCase):
                 self.assertFalse(recovery.finish_ineligible(conn, 2, success, raw))
                 self.assertEqual(recovery.pending_appids(conn), [2])
 
-    def test_canonical_invalid_email_finishes_without_media(self):
+    def test_malformed_steam_email_becomes_a_pending_no_email_lead_with_media(self):
         self.queue()
         success, norm, raw = self.payload()
         payload = json.loads(raw)
         payload['2']['data']['support_info']['email'] = 'not an email'
         raw = json.dumps(payload)
         _, _, exporter = self.discover(lambda *args: (success, norm, raw))
-        exporter.submit.assert_not_called()
-        self.assertEqual(self.pending(), [])
+        exporter.submit.assert_called_once_with(2)   # its screenshots are still built
         with self.connect() as conn:
-            self.assertEqual(conn.execute("SELECT scrape_status FROM scrape_tracker WHERE appid=2").fetchone()[0],
-                             'invalid')
+            self.assertEqual(conn.execute(
+                "SELECT scrape_status, emails, Mail_status FROM scrape_tracker WHERE appid=2").fetchone(),
+                ('pending', None, 'Pending'))
 
     def test_successful_source_without_screenshots_finishes_rejected_work(self):
         self.queue()

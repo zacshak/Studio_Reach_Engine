@@ -229,24 +229,40 @@ class PipelineTest(unittest.TestCase):
 
     def test_trigger_seeds_email_from_support_info(self):
         # a lead with a support_info email is born 'seeded' with email pre-filled;
-        # one without stays 'pending'; malformed contact data is quarantined
+        # one without stays 'pending'; a malformed Steam email (a website, "<redacted>")
+        # is dropped, so the lead is Pending with no email and gets researched like 111
         with self._raw() as c:
             insert_lead(c, 110, support_email="careers@studio.com")
             insert_lead(c, 111, support_email="")
             insert_lead(c, 112, support_email="studio.example.com")
-            rows = dict(c.execute(
-                "SELECT appid, scrape_status FROM scrape_tracker WHERE appid IN (110,111,112)"))
-            invalid_mail = c.execute(
-                "SELECT Mail_status FROM scrape_tracker WHERE appid=112").fetchone()[0]
-            email = c.execute(
-                "SELECT emails FROM scrape_tracker WHERE appid=110").fetchone()[0]
-        self.assertEqual(rows[110], "seeded")
-        self.assertEqual(email, "careers@studio.com")
-        self.assertEqual(rows[111], "pending")
-        self.assertEqual(rows[112], "invalid")
-        self.assertEqual(invalid_mail, "Invalid")
+            insert_lead(c, 113, support_email="&lt;redacted&gt;")
+            insert_lead(c, 114, support_email="https://studio.example.com/")
+            rows = {r[0]: r[1:] for r in c.execute(
+                "SELECT appid, scrape_status, emails, Mail_status FROM scrape_tracker "
+                "WHERE appid IN (110,111,112,113,114)")}
+        self.assertEqual(rows[110], ("seeded", "careers@studio.com", "Pending"))
+        self.assertEqual(rows[111], ("pending", None, "Pending"))
+        for appid in (112, 113, 114):
+            self.assertEqual(rows[appid], ("pending", None, "Pending"), appid)
         self.assertNotIn(110, pipeline.get_pending())   # seeded skips Hermes
-        self.assertIn(111, pipeline.get_pending())
+        for appid in (111, 112, 113, 114):
+            self.assertIn(appid, pipeline.get_pending())
+
+    def test_seed_pending_releases_old_invalid_discovery_rows_as_no_email(self):
+        # rows quarantined by the old rule come back to Pending with no email
+        with self._raw() as c:
+            insert_lead(c, 119, support_email="&lt;redacted&gt;")
+            insert_lead(c, 120, support_email="https://studio.example.com/")
+            c.execute("UPDATE scrape_tracker SET scrape_status='invalid', Mail_status='Invalid', "
+                      "emails=json_extract(support_info,'$.email') WHERE appid IN (119,120)")
+            c.commit()
+        pipeline.seed_pending()
+        with self._raw() as c:
+            rows = c.execute("SELECT scrape_status, emails, Mail_status FROM scrape_tracker "
+                             "WHERE appid IN (119,120) ORDER BY appid").fetchall()
+        self.assertEqual(rows, [("pending", None, "Pending")] * 2)
+        self.assertEqual(pipeline.discovery_status("not an email"), "pending")
+        self.assertEqual(pipeline.discovery_status("a@b.co"), "seeded")
 
     def test_email_validation_rejects_blank_urls_and_bare_domains(self):
         self.assertEqual(pipeline.normalize_email("hello@example.com"), "hello@example.com")
@@ -287,7 +303,10 @@ class PipelineTest(unittest.TestCase):
             insert_lead(c, 116, support_email="bad.example.com")
             insert_lead(c, 117, support_email="fixed@example.com")
             c.execute("UPDATE scrape_tracker SET scrape_status='seeded', Mail_status='Accepted' WHERE appid=115")
-            c.execute("UPDATE scrape_tracker SET Mail_status='Accepted' WHERE appid=116")
+            # discovery never stores a malformed Steam email any more; a malformed value can
+            # still arrive from elsewhere (e.g. a researched address), and repair keeps it out
+            c.execute("UPDATE scrape_tracker SET Mail_status='Accepted', emails='bad.example.com' "
+                      "WHERE appid=116")
             c.execute("UPDATE scrape_tracker SET scrape_status='invalid', Mail_status='Invalid' WHERE appid=117")
             c.commit()
         self.assertEqual(pipeline.repair_invalid_rows(), [115, 116, 117])
