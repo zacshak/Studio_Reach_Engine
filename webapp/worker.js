@@ -122,6 +122,8 @@ export const VIEW_SQL = {
     FROM sender_accounts a ORDER BY a.daily_cap DESC, a.email`,
   // Steam release date shown on each review card, next to the appid
   releases: "SELECT appid, release_date FROM scrape_tracker WHERE Mail_status IN ('Pending','Triaged','Drafted') AND coalesce(release_date,'')<>'' ORDER BY appid",
+  // games the developer has on Steam (saved at discovery), shown next to the developer name
+  devGames: "SELECT appid, dev_game_count FROM scrape_tracker WHERE Mail_status IN ('Pending','Triaged','Drafted') AND dev_game_count IS NOT NULL ORDER BY appid",
 };
 
 export function homeCounts(rows) {
@@ -153,9 +155,10 @@ async function state(env) {
       [VIEW_SQL.verifying],
       [VIEW_SQL.senders],
       [VIEW_SQL.releases],
+      [VIEW_SQL.devGames],
     ]),
   ]);
-  const [pending, passed, flagged, noMail, drafted, counts, reviews, issues, verifying, senders, releases] = db;
+  const [pending, passed, flagged, noMail, drafted, counts, reviews, issues, verifying, senders, releases, devGames] = db;
   const ids = rows => rows.map(r => Number(r[0]));
   const home = homeCounts(counts);
   return {
@@ -167,6 +170,7 @@ async function state(env) {
     noMail: ids(noMail),
     verifying: ids(verifying),
     releases: Object.fromEntries((releases || []).map(([appid, date]) => [Number(appid), String(date)])),
+    devGames: Object.fromEntries((devGames || []).map(([appid, n]) => [Number(appid), Number(n)])),
     issues: Object.fromEntries(issues.map(([appid, raw, game]) => [Number(appid), { ...parseIssue(raw), game: game ?? null }])),
     mail: drafted.map((r) => ({ appid: Number(r[0]), emails: r[1] || "" })),
     triageReviews: triageSnapshot(reviews).triageReviews,

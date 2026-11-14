@@ -53,6 +53,23 @@ def to_row(n):
     return {h: ("" if r.get(k) is None else r.get(k, "")) for h, k, _ in COLUMNS}
 
 
+def save_studio_counts(conn, developer_of, count=None):
+    """Store, on each new game's tracker row, how many games its (first) developer has on
+    Steam. One store search per developer per run; a failed lookup leaves it empty."""
+    count = count or bf.studio_game_count
+    known = {}
+    for appid, developer in developer_of.items():
+        if developer not in known:
+            known[developer] = count(developer)
+        if known[developer] is not None:
+            conn.execute("UPDATE scrape_tracker SET dev_game_count=? WHERE appid=?",
+                         (known[developer], appid))
+    conn.commit()
+    missing = sum(1 for d in developer_of.values() if known.get(d) is None)
+    print(f"Studio game counts: {len(developer_of) - missing} saved"
+          + (f", {missing} not available" if missing else ""))
+
+
 def load_appids(args, conn, stamp):
     if args.sample:
         rows = conn.execute(
@@ -144,6 +161,7 @@ def main():
                                                               status="pending")
     limiter = bf.RateLimiter(bf.MIN_INTERVAL, bf.MAX_PER_WINDOW, bf.WINDOW)
     rows, tracked_appids, ok, dropped = [], [], 0, 0
+    developer_of = {}
     for idx, appid in enumerate(appids, 1):
         # Unpublished jobs may contain expired Steam CDN URLs. Refresh their
         # source on every attempt instead of retrying the same broken cache.
@@ -174,6 +192,7 @@ def main():
             continue
         if not is_sample and tracked:
             tracked_appids.append(appid)
+            developer_of[appid] = (norm.get("developers") or [None])[0]
         rows.append(to_row(norm))
         ok += 1
         print(f"[{idx}/{len(appids)}] {tag:<7} {norm['game_name'][:42]}  "
@@ -193,6 +212,7 @@ def main():
                 exporter.submit(appid)
             else:
                 nomail_exporter.submit(appid)
+        save_studio_counts(conn, developer_of)
     else:
         invalid = 0
 

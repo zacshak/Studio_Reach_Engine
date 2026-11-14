@@ -455,6 +455,8 @@ def init_tracker():
         conn.execute(f"CREATE TABLE IF NOT EXISTS triage_criteria {_TRIAGE_CRITERIA_SCHEMA}")
         if "email_issue" not in cols:  # why the last email was dropped (JSON), for the dashboard
             conn.execute("ALTER TABLE scrape_tracker ADD COLUMN email_issue TEXT")
+        if "dev_game_count" not in cols:  # games the developer has on Steam, set at discovery
+            conn.execute("ALTER TABLE scrape_tracker ADD COLUMN dev_game_count INTEGER")
         conn.execute(f"CREATE TABLE IF NOT EXISTS mail_bounce_state {_BOUNCE_STATE_SCHEMA}")
         conn.execute(f"CREATE TABLE IF NOT EXISTS mail_bounce_log {_BOUNCE_LOG_SCHEMA}")
         conn.execute("CREATE TABLE IF NOT EXISTS email_verification_cache "

@@ -101,7 +101,7 @@ test('dashboard state returns Home counts and the Pending, Passed, Flagged and M
      ['Verifying', 'pass', 1, 1], ['Accepted', '', 1, 2], ['Drafted', '', 1, 1], ['Sent', '', 1, 7], ['Invalid', '', 0, 1]],
     [[1, 'pass', 'Fits', 'Custom', '2026-11-09T00:00:00.000Z'], [2, 'flag', 'Does not fit', 'Custom', null]],
     [[3, JSON.stringify({ email: 'x@y.co', reason: 'bounced 5.1.1', source: 'bounce' }), 'Three']], [[8]],
-    [], [[1, 'Coming soon'], [2, 'Mar 26, 2027']]];
+    [], [[1, 'Coming soon'], [2, 'Mar 26, 2027']], [[1, 3], [2, 27]]];
   const cell = value => value === null ? { type: 'null' } : typeof value === 'number'
     ? { type: 'integer', value: String(value) } : { type: 'text', value };
   let statements;
@@ -128,6 +128,8 @@ test('dashboard state returns Home counts and the Pending, Passed, Flagged and M
     assert.deepEqual(state.verifying, [8]);
     assert.equal(statements[10], VIEW_SQL.releases);
     assert.deepEqual(state.releases, { 1: 'Coming soon', 2: 'Mar 26, 2027' });
+    assert.equal(statements[11], VIEW_SQL.devGames);
+    assert.deepEqual(state.devGames, { 1: 3, 2: 27 });
     assert.deepEqual(state.issues, { 3: { email: 'x@y.co', reason: 'bounced 5.1.1', source: 'bounce', game: 'Three' } });
     assert.equal(state.pendingDrafts, true);
     assert.equal(state.scheduled, false);

@@ -20,6 +20,7 @@ import os
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections import deque
 from datetime import datetime, timedelta, timezone
@@ -209,6 +210,32 @@ def cache_put(conn, appid, success, raw_text, discovered_on=None):
     )
     conn.commit()
     return True
+
+
+STORE_SEARCH = "https://store.steampowered.com/search/results/"
+
+
+def studio_game_count(developer, get=None, sleep=time.sleep):
+    """How many games Steam lists under this exact developer name (store search, games
+    only: no demos, DLC or soundtracks; unreleased games count, so this game is included).
+    None when there is no developer or Steam does not answer."""
+    developer = (developer or "").strip()
+    if not developer:
+        return None
+    query = urllib.parse.urlencode({"developer": developer, "category1": 998, "infinite": 1,
+                                    "count": 1, "ignore_preferences": 1, "cc": "us", "l": "english"})
+    url = f"{STORE_SEARCH}?{query}"
+    get = get or (lambda u: urllib.request.urlopen(
+        urllib.request.Request(u, headers={"User-Agent": UA}), timeout=30).read().decode("utf-8"))
+    for attempt in range(3):
+        try:
+            data = json.loads(get(url))
+            if data.get("success") and isinstance(data.get("total_count"), int):
+                return data["total_count"]
+        except (urllib.error.URLError, TimeoutError, ValueError):
+            pass
+        sleep(5 * (attempt + 1))
+    return None
 
 
 def http_get(appid, cc="us", lang="english"):
