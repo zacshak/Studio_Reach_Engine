@@ -204,8 +204,7 @@ last 30 minutes, it starts `send.yml` the same way the Send button does. It runs
 nothing needs to be open. Only approved mails are sent. Set the worker variable
 `AUTO_SEND=off` to disable it.
 
-**📨 Send scheduled mails** button (Home or Mail view) → fires `send.yml`. `Scheduled` only
-means *waiting*; nothing is sent until this button (or a manual `--send-mails`) runs.
+**Manual:** the **📨 Send scheduled mails** button (Home or Mail view) → fires `send.yml`.
 The run works through the `Scheduled` rows **one at a time**, paced 2–4 min apart. For
 each row it reads the draft from the R2 manifest (the address was verified at Accept; there
 is no second check here, and a dead address found later is caught by the nightly bounce
