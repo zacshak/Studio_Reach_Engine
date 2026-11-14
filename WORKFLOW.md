@@ -55,7 +55,7 @@ All local/manual commands still exist through the one launcher: `python SRE.py <
   | `Verifying` | accepted; `verify.yml` is checking the email and the media | dashboard **Accept** or MCP `accept_games` |
   | `Accepted` | email verified and media ready; needs a draft. Only `Triaged` + `pass` + an email can be accepted | `verify.yml` |
   | `Drafted` | draft saved; awaiting your approval | `draft.yml` or MCP `save_draft` |
-  | `Scheduled` | approved; **waiting**. Nothing sends it until the Send button (or a manual `--send-mails`) runs | dashboard **Approve** |
+  | `Scheduled` | approved; **waiting**. Sent by the next send run: the Send button, or the automatic send when an account's 24h cap has room | dashboard **Approve** |
   | `Sending` | hidden claim held only while one mail is being submitted | `send.yml`, per row |
   | `Sent` | Gmail accepted the message; R2 media purged | `send.yml` |
   | `Replied` | verified reply to the retained Message-ID | `review-mails.yml` |
@@ -196,9 +196,15 @@ the coordinated rollout, not on every Python initialization. When rolling back c
 leave the additive column and saved social state in place. Do not restart the retired
 Hermes socials writer alongside MCP ownership.
 
-## 3. Send — on demand (`send.yml`)
-**📨 Send scheduled mails** button (Home or Mail view) → fires `send.yml`. `Scheduled` only
-means *waiting*; nothing is sent until this button (or a manual `--send-mails`) runs.
+## 3. Send (`send.yml`)
+**Automatic:** every 10 minutes the dashboard worker's cron (`webapp/autosend.js`) checks for
+`Scheduled` (approved) mails and a sending account with room left in its rolling 24h cap (only
+accounts whose last login check was ok). If both, and no send run is active or started in the
+last 30 minutes, it starts `send.yml` the same way the Send button does. It runs in the cloud;
+nothing needs to be open. Only approved mails are sent. Set the worker variable
+`AUTO_SEND=off` to disable it.
+
+**Manual:** the **📨 Send scheduled mails** button (Home or Mail view) → fires `send.yml`.
 The run works through the `Scheduled` rows **one at a time**, paced 2–4 min apart. For
 each row it reads the draft from the R2 manifest (the address was verified at Accept; there
 is no second check here, and a dead address found later is caught by the nightly bounce

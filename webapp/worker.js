@@ -21,8 +21,9 @@
 
 import { triageSnapshot, saveTriage, setDecision, TRIAGE_SQL, TRIAGE_PASS_SQL } from './triage.js';
 import { rejectRows, cleanupJobs } from './deletion.js';
+import { autoSend, startSend } from './autosend.js';
 import { draftRequest } from './drafting.js';
-import { queueSocialsStatement, saveSocials, readSocialRequestBody } from './socials.js';
+import { saveSocials, readSocialRequestBody } from './socials.js';
 import { queues, keepMany, acceptOne, acceptMany, startVerification, dispatchWorkflow, verifyStatus, parseIssue, approveMany, returnToAccepted, saveEmail, triageDetails, workflowRuns, restoreGames, restoreStatus, Refused } from './agent-actions.js';
 
 // ---- Turso over HTTP (Hrana v2 pipeline; one fetch = N statements, no client lib) ----
@@ -269,11 +270,8 @@ async function act(env, body) {
       return rejectGames(env, appids);
     }
     case "trigger": { // fire a GHA workflow (send / draft / verify ...) on master
-      if (body.workflow === 'send') {
-        const [queued] = await sql(env, [queueSocialsStatement()]);
-        console.log(JSON.stringify({event:'social_requests_queued',count:queued.length}));
-      }
-      await dispatchWorkflow(env, body.workflow);
+      if (body.workflow === 'send') await startSend(env, sql);
+      else await dispatchWorkflow(env, body.workflow);
       break;
     }
     default:
@@ -294,11 +292,17 @@ export {
 };
 
 export default {
-  async scheduled(_event, env, ctx) {
+  async scheduled(event, env, ctx) {
     if (env.ROLLOUT_PAUSED === 'true') return;
     ctx.waitUntil(cleanupJobs(env, sql, updateJSON).catch(error => {
       console.error(JSON.stringify({ event: 'media_cleanup_failed', message: error.message }));
       throw error;
+    }));
+    // start sending approved mails as soon as an account's 24h cap frees up
+    ctx.waitUntil(autoSend(env, sql, { now: event?.scheduledTime ?? Date.now() }).then(result => {
+      if (result !== 'not this minute') console.log(JSON.stringify({ event: 'auto_send', result }));
+    }).catch(error => {
+      console.error(JSON.stringify({ event: 'auto_send_failed', message: error.message }));
     }));
   },
   async fetch(req, env, ctx) {
