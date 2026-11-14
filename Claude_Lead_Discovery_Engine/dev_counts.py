@@ -3,11 +3,10 @@
 For every developer of a game still in the pipeline (not yet sent), ask the Steam store
 search for the games listed under that exact developer name (games only: no demos,
 DLC or soundtracks; unreleased games included, so the count includes the game itself).
-Counts are stored in developer_games and refreshed after REFRESH_DAYS. Runs as part of
-the nightly discovery (run_daily.py), right after the night's games are added.
+Runs inside the nightly discovery (run_daily.py) and only looks up developers that have
+no count yet, i.e. the night's new studios. Counts are stored in developer_games.
 
-    python SRE.py --dev-counts            # missing or stale developers
-    python SRE.py --dev-counts --all      # refresh every developer
+    python SRE.py --dev-counts
 """
 import json
 import os
@@ -22,7 +21,6 @@ import pipeline  # noqa: E402
 
 SEARCH = "https://store.steampowered.com/search/results/"
 UA = "Mozilla/5.0 (compatible; studio-reach-engine/1.0)"
-REFRESH_DAYS = 14
 PAUSE_SECONDS = float(os.environ.get("DEV_COUNTS_PAUSE", "1.0"))
 TRIES = 4
 
@@ -69,15 +67,11 @@ def game_count(developer, fetch=http_get, sleep=time.sleep):
             sleep(10 * (attempt + 1))
 
 
-def due(conn, refresh_all=False):
+def due(conn):
+    """Developers in the pipeline that have no count yet."""
     conn.execute(SCHEMA)
-    names = [r[0] for r in conn.execute(DEVELOPERS_SQL)]
-    if refresh_all:
-        return names
-    fresh = {r[0] for r in conn.execute(
-        "SELECT developer FROM developer_games WHERE checked_at >= datetime('now', ?)",
-        (f"-{REFRESH_DAYS} days",))}
-    return [n for n in names if n not in fresh]
+    known = {r[0] for r in conn.execute("SELECT developer FROM developer_games")}
+    return [r[0] for r in conn.execute(DEVELOPERS_SQL) if r[0] not in known]
 
 
 def save(conn, developer, games):
@@ -87,9 +81,9 @@ def save(conn, developer, games):
     conn.commit()
 
 
-def main(argv=()):
+def main():
     conn = pipeline.connect()
-    names = due(conn, refresh_all="--all" in argv)
+    names = due(conn)
     print(f"{len(names)} developer(s) to look up")
     failed = 0
     for i, name in enumerate(names, 1):
@@ -114,4 +108,4 @@ def main(argv=()):
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    raise SystemExit(main())

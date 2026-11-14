@@ -73,9 +73,8 @@ def report_partial(path):
 
 
 def studio_counts():
-    """Look up how many games each new (or 14-day stale) developer has on Steam, for the
-    dashboard cards. Part of the nightly run so all Steam fetching happens here. A
-    failure is only a warning: discovery itself already succeeded."""
+    """Look up how many games the night's new studios have on Steam (dashboard cards).
+    A failure is only a warning: discovery itself already succeeded."""
     print("\nLooking up studio game counts on Steam ...")
     rc = run("dev_counts.py")
     if rc:

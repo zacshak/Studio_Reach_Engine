@@ -31,15 +31,10 @@ class DevCountsTest(unittest.TestCase):
     def test_developers_come_from_steam_list_with_fallback(self):
         self.assertEqual(sorted(dc.due(self.conn)), ["Compile Heart", "Idea Factory", "Red Corn", "Solo Dev"])
 
-    def test_fresh_counts_are_skipped_until_stale(self):
+    def test_only_developers_without_a_count_are_looked_up(self):
         dc.due(self.conn)
         dc.save(self.conn, "Red Corn", 3)
-        self.assertNotIn("Red Corn", dc.due(self.conn))
-        self.assertIn("Red Corn", dc.due(self.conn, refresh_all=True))
-        self.conn.execute("UPDATE developer_games SET checked_at=datetime('now','-15 days')")
-        self.assertIn("Red Corn", dc.due(self.conn))
-        dc.save(self.conn, "Red Corn", 4)
-        self.assertEqual(self.conn.execute("SELECT games FROM developer_games").fetchall(), [(4,)])
+        self.assertEqual(sorted(dc.due(self.conn)), ["Compile Heart", "Idea Factory", "Solo Dev"])
 
     def test_search_asks_for_exact_developer_games_only(self):
         q = urllib.parse.parse_qs(urllib.parse.urlsplit(dc.search_url("Red Corn & Co")).query)
