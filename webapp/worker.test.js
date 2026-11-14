@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  approveStmt, VIEW_SQL, homeCounts, sql, updateJSON,
+  approveStmt, VIEW_SQL, developersByApp, homeCounts, sql, updateJSON,
 } from "./worker.js";
 import worker from "./worker.js";
 
@@ -101,7 +101,8 @@ test('dashboard state returns Home counts and the Pending, Passed, Flagged and M
      ['Verifying', 'pass', 1, 1], ['Accepted', '', 1, 2], ['Drafted', '', 1, 1], ['Sent', '', 1, 7], ['Invalid', '', 0, 1]],
     [[1, 'pass', 'Fits', 'Custom', '2026-11-09T00:00:00.000Z'], [2, 'flag', 'Does not fit', 'Custom', null]],
     [[3, JSON.stringify({ email: 'x@y.co', reason: 'bounced 5.1.1', source: 'bounce' }), 'Three']], [[8]],
-    [], [[1, 'Coming soon'], [2, 'Mar 26, 2027']]];
+    [], [[1, 'Coming soon'], [2, 'Mar 26, 2027']],
+    [[1, 'Red Corn', 3], [2, 'Compile Heart', 27], [2, 'Idea Factory', null]]];
   const cell = value => value === null ? { type: 'null' } : typeof value === 'number'
     ? { type: 'integer', value: String(value) } : { type: 'text', value };
   let statements;
@@ -128,6 +129,9 @@ test('dashboard state returns Home counts and the Pending, Passed, Flagged and M
     assert.deepEqual(state.verifying, [8]);
     assert.equal(statements[10], VIEW_SQL.releases);
     assert.deepEqual(state.releases, { 1: 'Coming soon', 2: 'Mar 26, 2027' });
+    assert.equal(statements[11], VIEW_SQL.developers);
+    assert.deepEqual(state.developers, { 1: [{ name: 'Red Corn', games: 3 }],
+      2: [{ name: 'Compile Heart', games: 27 }, { name: 'Idea Factory', games: null }] });
     assert.deepEqual(state.issues, { 3: { email: 'x@y.co', reason: 'bounced 5.1.1', source: 'bounce', game: 'Three' } });
     assert.equal(state.pendingDrafts, true);
     assert.equal(state.scheduled, false);
@@ -317,4 +321,20 @@ test("public API does not require or set an authentication cookie", async () => 
   const response = await worker.fetch(new Request("https://example/api/not-found"), {});
   assert.equal(response.status, 404);
   assert.equal(response.headers.get("set-cookie"), null);
+});
+
+test('developer query lists each card\'s developers with their Steam game count', async () => {
+  const { DatabaseSync } = await import('node:sqlite');
+  const db = new DatabaseSync(':memory:');
+  db.exec(`CREATE TABLE scrape_tracker (appid INTEGER PRIMARY KEY, Mail_status TEXT, developers TEXT);
+    CREATE TABLE newly_added (appid INTEGER PRIMARY KEY, developers TEXT);
+    CREATE TABLE developer_games (developer TEXT PRIMARY KEY, games INTEGER, checked_at TEXT);
+    INSERT INTO scrape_tracker VALUES (1,'Pending','Red Corn'),(2,'Triaged','A, B'),(3,'Sent','Old'),(4,'Drafted',' Solo '),(5,'Pending','');
+    INSERT INTO newly_added VALUES (1,'["Red Corn"]'),(2,'["Compile Heart","Idea Factory"]'),(3,'["Old"]');
+    INSERT INTO developer_games VALUES ('Red Corn',3,'x'),('Compile Heart',27,'x'),('Solo',1,'x'),('Old',9,'x');`);
+  const rows = db.prepare(VIEW_SQL.developers).all().map(r => Object.values(r));
+  assert.deepEqual(developersByApp(rows), {
+    1: [{ name: 'Red Corn', games: 3 }],
+    2: [{ name: 'Compile Heart', games: 27 }, { name: 'Idea Factory', games: null }],
+    4: [{ name: 'Solo', games: 1 }] });
 });

@@ -351,3 +351,25 @@ test('cards show the release date next to the appid, or say there is none', asyn
     assert.match(elements.get('#view').innerHTML, expected);
   }
 });
+
+test('cards show each developer\'s Steam game count next to its name', async () => {
+  const developers = { 1: [{ name: 'Red <Corn>', games: 3 }, { name: 'Solo', games: 1 }, { name: 'New', games: null }] };
+  const state = { ...emptyState, index: { 1: 'Game_1' }, pending: [1], developers };
+  const { run, elements } = fixture(async url => response(url === '/api/state' ? state
+    : { name: 'Game', desc: 'Description', meta: 'Red <Corn>, Solo, New  ·  Action, Indie', images: ['SpriteSheet_Screenshots.png'] }));
+  await run('load()');
+  run("openTab('pending')");
+  await new Promise(resolve => setImmediate(resolve));
+  const html = elements.get('#view').innerHTML;
+  assert.match(html, /Red &lt;Corn&gt;<span class="devcount"[^>]*>🎮 3 games<\/span>, Solo<span class="devcount"[^>]*>🎮 1 game<\/span>, New · Action, Indie · appid 1/);
+});
+
+test('cards fall back to the manifest line when developer counts are missing', async () => {
+  const state = { ...emptyState, index: { 1: 'Game_1' }, pending: [1] };
+  const { run, elements } = fixture(async url => response(url === '/api/state' ? state
+    : { name: 'Game', desc: 'Description', meta: 'Studio  ·  Action', images: ['SpriteSheet_Screenshots.png'] }));
+  await run('load()');
+  run("openTab('pending')");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(elements.get('#view').innerHTML, /Studio  ·  Action · appid 1/);
+});

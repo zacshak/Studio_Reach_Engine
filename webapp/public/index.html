@@ -85,6 +85,8 @@
   #toast:empty { display: none; }
   .shotsall img { width: 100%; border-radius: 10px; margin-top: .4rem; display: block; }
   .badge.warn { background: #3b2f0b; color: #fde68a; }
+  .devcount { display: inline-block; background: #1e293b; color: #cbd5e1; border-radius: 999px;
+    padding: 0 .45rem; font-size: .78rem; margin-left: .25rem; white-space: nowrap; }
   table.senders { width: 100%; border-collapse: collapse; margin: .4rem 0 1rem; font-size: .9rem; }
   table.senders th, table.senders td { text-align: left; padding: .45rem .5rem; border-bottom: 1px solid #263042;
     overflow-wrap: anywhere; }
@@ -435,7 +437,7 @@ function render() {
     ${bulk ? `<div class="bulk top">${bulk}</div>` : ""}
     <div class="card">
       <h2>${escapeHtml(String(name))}</h2>
-      <div class="meta">${escapeHtml((m && m.meta) || "")} · appid ${card.appid} · 📅 ${escapeHtml(S.releases?.[card.appid] || 'No release date')} ·
+      <div class="meta">${metaHtml(card.appid, m)} · appid ${card.appid} · 📅 ${escapeHtml(S.releases?.[card.appid] || 'No release date')} ·
         <a href="https://store.steampowered.com/app/${card.appid}/" target="_blank" rel="noopener">Steam page 🔗</a>${
         noMail.has(card.appid) ? '<span class="badge">📭 No email</span>' : ''}${
         issue ? `<span class="badge warn" title="${escapeHtml(issue.reason || '')}">⚠️ ${escapeHtml(issueText(issue))}</span>` : ''}</div>
@@ -530,6 +532,18 @@ function imageFailed(image) {
 function retryMedia() {
   const card = Q[tab]?.[idx[tab]];
   if (card) { imageRetry++; invalidateMedia(); render(); }
+}
+
+// "Studio  ·  Genres" from the media manifest, with each developer's Steam game count
+// (S.developers, filled nightly by dev-counts.yml) next to its name.
+function metaHtml(appid, m) {
+  const meta = (m && m.meta) || "";
+  const devs = S.developers?.[appid];
+  if (!devs || !devs.length) return escapeHtml(meta);
+  const genres = meta.includes("·") ? meta.split("·").slice(1).join("·").trim() : "";
+  const names = devs.map(d => escapeHtml(d.name) + (d.games == null ? "" :
+    `<span class="devcount" title="Games this developer has on Steam, including this one (demos and DLC not counted)">🎮 ${d.games} game${d.games === 1 ? "" : "s"}</span>`)).join(", ");
+  return names + (genres ? " · " + escapeHtml(genres) : "");
 }
 
 function escapeHtml(s) {

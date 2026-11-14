@@ -119,6 +119,13 @@ show one card at a time (swipe or ←/→ to page). Games without an email are m
 Pending, Passed and Flagged and carry a **📭 No email** badge. Every triaged card shows
 its decision, reason and criteria.
 
+Next to each developer's name a card shows **🎮 N games**: how many games that exact developer
+name has on Steam, including this one (store search, games only: no demos, DLC or soundtracks;
+unreleased games count). `dev-counts.yml` (`python SRE.py --dev-counts`) looks them up nightly
+at 01:17 UTC for developers that are new or older than 14 days and stores them in
+`developer_games`; start it by hand with **all** to refresh every developer. Until a developer
+has been looked up, its name shows without a count.
+
 ### 🏠 Home — control panel
 **Deleted by mistake?** Ask an agent to run the MCP tool `restore_games` with the appids
 (optionally `decision="pass"`). `restore.yml` re-fetches each game from Steam, re-creates its

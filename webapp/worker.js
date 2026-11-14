@@ -122,7 +122,27 @@ export const VIEW_SQL = {
     FROM sender_accounts a ORDER BY a.daily_cap DESC, a.email`,
   // Steam release date shown on each review card, next to the appid
   releases: "SELECT appid, release_date FROM scrape_tracker WHERE Mail_status IN ('Pending','Triaged','Drafted') AND coalesce(release_date,'')<>'' ORDER BY appid",
+  // developers of each card with how many games they have on Steam (developer_games is
+  // filled nightly by dev-counts.yml; NULL = not looked up yet). Same name expression
+  // as Claude_Lead_Discovery_Engine/dev_counts.py.
+  developers: `SELECT s.appid, trim(j.value), g.games FROM scrape_tracker s
+    LEFT JOIN newly_added n ON n.appid = s.appid,
+    json_each(CASE WHEN json_valid(n.developers) AND json_type(n.developers) = 'array'
+                   THEN n.developers ELSE json_array(coalesce(s.developers, '')) END) j
+    LEFT JOIN developer_games g ON g.developer = trim(j.value)
+    WHERE s.Mail_status IN ('Pending','Triaged','Drafted') AND trim(j.value) <> ''
+    ORDER BY s.appid, j.key`,
 };
+
+// rows [appid, developer, games] -> { appid: [{ name, games }] } in Steam's order
+export function developersByApp(rows) {
+  const out = {};
+  for (const [appid, name, games] of rows || []) {
+    const n = games == null || games === '' ? null : Number(games);
+    (out[Number(appid)] ||= []).push({ name: String(name), games: Number.isFinite(n) ? n : null });
+  }
+  return out;
+}
 
 export function homeCounts(rows) {
   const c = { pending: 0, triaged: 0, passed: 0, flagged: 0, no_mail: 0, verifying: 0, accepted: 0, drafted: 0,
@@ -153,9 +173,10 @@ async function state(env) {
       [VIEW_SQL.verifying],
       [VIEW_SQL.senders],
       [VIEW_SQL.releases],
+      [VIEW_SQL.developers],
     ]),
   ]);
-  const [pending, passed, flagged, noMail, drafted, counts, reviews, issues, verifying, senders, releases] = db;
+  const [pending, passed, flagged, noMail, drafted, counts, reviews, issues, verifying, senders, releases, developers] = db;
   const ids = rows => rows.map(r => Number(r[0]));
   const home = homeCounts(counts);
   return {
@@ -167,6 +188,7 @@ async function state(env) {
     noMail: ids(noMail),
     verifying: ids(verifying),
     releases: Object.fromEntries((releases || []).map(([appid, date]) => [Number(appid), String(date)])),
+    developers: developersByApp(developers),
     issues: Object.fromEntries(issues.map(([appid, raw, game]) => [Number(appid), { ...parseIssue(raw), game: game ?? null }])),
     mail: drafted.map((r) => ({ appid: Number(r[0]), emails: r[1] || "" })),
     triageReviews: triageSnapshot(reviews).triageReviews,

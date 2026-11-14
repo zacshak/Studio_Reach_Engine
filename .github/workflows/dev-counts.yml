@@ -1,0 +1,40 @@
+name: Studio game counts
+
+# How many games each studio has on Steam, shown next to the developer name on the
+# dashboard cards. Looks up developers that are new or older than 14 days (Steam store
+# search, games only) and stores the counts in developer_games. Runs nightly after
+# discovery; start it by hand with "all" to refresh every developer.
+on:
+  schedule:
+    - cron: "17 1 * * *"     # 01:17 UTC, after the 22:30 UTC discovery run
+  workflow_dispatch:
+    inputs:
+      all:
+        description: "Refresh every developer, not just new or stale ones"
+        type: boolean
+        default: false
+
+concurrency:
+  group: dev-counts
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  counts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install --quiet libsql==0.1.11
+      - name: Look up studio game counts
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          ALL: ${{ inputs.all && '--all' || '' }}
+        run: python -u SRE.py --dev-counts $ALL
