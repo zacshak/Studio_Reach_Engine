@@ -117,12 +117,9 @@ table in `db-mcp/README.md` (`get_queues`, `accept_games`, `approve_mails`,
 `https://sre-review.zacgamedev.com` (public). It opens on **Home**; the other four views
 show one card at a time (swipe or ←/→ to page). Games without an email are mixed into
 Pending, Passed and Flagged and carry a **📭 No email** badge. Every triaged card shows
-its decision, reason and criteria.
-
-Next to each developer's name a card shows **🎮 N games**: how many games that exact developer
-name has on Steam, including this one (store search, games only: no demos, DLC or soundtracks;
-unreleased games count). The nightly discovery run (`discover.yml`) looks up the night's new
-studios right after adding their games and stores the counts in `developer_games`.
+its decision, reason and criteria. Next to the developer name, **🎮 N games** is how many games
+that developer has on Steam (including this one; no demos or DLC). Discovery fetches it for
+every new game and saves it in `scrape_tracker.dev_game_count`.
 
 ### 🏠 Home — control panel
 **Deleted by mistake?** Ask an agent to run the MCP tool `restore_games` with the appids

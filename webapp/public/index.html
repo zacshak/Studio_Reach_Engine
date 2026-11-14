@@ -534,16 +534,15 @@ function retryMedia() {
   if (card) { imageRetry++; invalidateMedia(); render(); }
 }
 
-// "Studio  ·  Genres" from the media manifest, with each developer's Steam game count
-// (S.developers, filled by the nightly discovery run) next to its name.
+// "Developer  ·  Genres" from the media manifest, with the developer's Steam game count
+// (saved at discovery) right after the developer name.
 function metaHtml(appid, m) {
   const meta = (m && m.meta) || "";
-  const devs = S.developers?.[appid];
-  if (!devs || !devs.length) return escapeHtml(meta);
-  const genres = meta.includes("·") ? meta.split("·").slice(1).join("·").trim() : "";
-  const names = devs.map(d => escapeHtml(d.name) + (d.games == null ? "" :
-    `<span class="devcount" title="Games this developer has on Steam, including this one (demos and DLC not counted)">🎮 ${d.games} game${d.games === 1 ? "" : "s"}</span>`)).join(", ");
-  return names + (genres ? " · " + escapeHtml(genres) : "");
+  const n = S.devGames?.[appid];
+  if (n == null || !meta || meta === "—") return escapeHtml(meta);
+  const [dev, ...rest] = meta.split("·");
+  const badge = `<span class="devcount" title="Games this developer has on Steam, including this one (demos and DLC not counted)">🎮 ${n} game${n === 1 ? "" : "s"}</span>`;
+  return escapeHtml(dev.trim()) + badge + (rest.length ? " · " + escapeHtml(rest.join("·").trim()) : "");
 }
 
 function escapeHtml(s) {
