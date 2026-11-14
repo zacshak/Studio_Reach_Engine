@@ -72,6 +72,17 @@ def report_partial(path):
     return True
 
 
+def studio_counts():
+    """Look up how many games each new (or 14-day stale) developer has on Steam, for the
+    dashboard cards. Part of the nightly run so all Steam fetching happens here. A
+    failure is only a warning: discovery itself already succeeded."""
+    print("\nLooking up studio game counts on Steam ...")
+    rc = run("dev_counts.py")
+    if rc:
+        print("::warning::Studio game counts were not all looked up; they are retried on the next run.")
+    return rc
+
+
 def main():
     stamp = datetime.now(IST).strftime("%Y-%m-%d_%H%M")
     print(f"=== Daily run {stamp} IST ===\n")
@@ -101,6 +112,7 @@ def main():
         os.remove(report)  # Never classify this run using an older report.
     rc = sync_media("--report", report)
     remaining = report_pending()
+    studio_counts()
     if rc:
         print(f"Media sync exited with code {rc}; stopping before triage.")
         return rc

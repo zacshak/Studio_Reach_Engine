@@ -286,6 +286,10 @@ class DailyRecoveryTest(unittest.TestCase):
         p = patch.object(run_daily, "report_pending", return_value=0)
         self.pending = p.start()
         self.addCleanup(p.stop)
+        self.real_counts = run_daily.studio_counts
+        c = patch.object(run_daily, "studio_counts", return_value=0)
+        self.counts = c.start()
+        self.addCleanup(c.stop)
 
     def test_expected_finder_results_all_drain_discovery_and_sync(self):
         for finder_rc in (0, 2, 10, 11):
@@ -296,6 +300,22 @@ class DailyRecoveryTest(unittest.TestCase):
                 self.assertEqual(run_daily.main(), 2 if finder_rc == 2 else 0)
                 self.assertEqual([c.args[0] for c in run.call_args_list], ["find_new.py", "lead_discovery.py"])
                 self.assertEqual(sync.call_args.args[0], "--report")
+        # studio game counts are looked up in the same run, after the night's games are added
+        self.assertEqual(self.counts.call_count, 4)
+
+    def test_studio_counts_run_inside_discovery_and_never_fail_it(self):
+        with patch.object(run_daily, "studio_counts", self.real_counts), \
+             patch.object(run_daily, "run", side_effect=[11, 0, 1]) as run, \
+             patch.object(run_daily, "sync_media", return_value=0), \
+             patch.object(run_daily.os.path, "exists", return_value=False):
+            self.assertEqual(run_daily.main(), 0)
+        self.assertEqual([c.args[0] for c in run.call_args_list], ["find_new.py", "lead_discovery.py", "dev_counts.py"])
+
+    def test_no_studio_lookups_when_discovery_failed(self):
+        with patch.object(run_daily, "run", side_effect=[11, 4]), \
+             patch.object(run_daily, "sync_media"):
+            run_daily.main()
+        self.counts.assert_not_called()
 
     def test_unexpected_finder_error_stops(self):
         with patch.object(run_daily, "run", return_value=7) as run, \

@@ -121,10 +121,10 @@ its decision, reason and criteria.
 
 Next to each developer's name a card shows **🎮 N games**: how many games that exact developer
 name has on Steam, including this one (store search, games only: no demos, DLC or soundtracks;
-unreleased games count). `dev-counts.yml` (`python SRE.py --dev-counts`) looks them up nightly
-at 01:17 UTC for developers that are new or older than 14 days and stores them in
-`developer_games`; start it by hand with **all** to refresh every developer. Until a developer
-has been looked up, its name shows without a count.
+unreleased games count). The nightly discovery run (`discover.yml`) looks them up right after
+it adds the night's games, for developers that are new or older than 14 days, and stores them
+in `developer_games`. `python SRE.py --dev-counts --all` refreshes every developer by hand.
+Until a developer has been looked up, its name shows without a count.
 
 ### 🏠 Home — control panel
 **Deleted by mistake?** Ask an agent to run the MCP tool `restore_games` with the appids

@@ -3,7 +3,8 @@
 For every developer of a game still in the pipeline (not yet sent), ask the Steam store
 search for the games listed under that exact developer name (games only: no demos,
 DLC or soundtracks; unreleased games included, so the count includes the game itself).
-Counts are stored in developer_games and refreshed after REFRESH_DAYS.
+Counts are stored in developer_games and refreshed after REFRESH_DAYS. Runs as part of
+the nightly discovery (run_daily.py), right after the night's games are added.
 
     python SRE.py --dev-counts            # missing or stale developers
     python SRE.py --dev-counts --all      # refresh every developer

@@ -12,7 +12,7 @@ the single front door so you don't memorise six script paths.
     python SRE.py --ingest-mailids '{"url":..,"email":..}, ..'   # feed scraped emails back
     python SRE.py --verify-accepted           # check email + media of 'Verifying' games -> Accepted
     python SRE.py --restore                   # re-create games deleted by mistake (restore_requests queue)
-    python SRE.py --dev-counts [--all]        # how many games each studio has on Steam (dashboard cards)
+    python SRE.py --dev-counts [--all]        # studio Steam game counts (also runs inside --discover)
     python SRE.py --draft-mails               # AI-draft cold mails for 'Accepted' leads -> R2
     python SRE.py --sync-templates            # push cold-mail templates -> R2 (drafter source)
     python SRE.py --send-mails                # send scheduled cold mails (--dry-run, --limit N)

@@ -123,7 +123,7 @@ export const VIEW_SQL = {
   // Steam release date shown on each review card, next to the appid
   releases: "SELECT appid, release_date FROM scrape_tracker WHERE Mail_status IN ('Pending','Triaged','Drafted') AND coalesce(release_date,'')<>'' ORDER BY appid",
   // developers of each card with how many games they have on Steam (developer_games is
-  // filled nightly by dev-counts.yml; NULL = not looked up yet). Same name expression
+  // filled by the nightly discovery run; NULL = not looked up yet). Same name expression
   // as Claude_Lead_Discovery_Engine/dev_counts.py.
   developers: `SELECT s.appid, trim(j.value), g.games FROM scrape_tracker s
     LEFT JOIN newly_added n ON n.appid = s.appid,
