@@ -132,8 +132,9 @@ return to the tab. It keeps your current card and skips a refresh while an actio
 a delete is armed or a dialog is open. The ↻ button refreshes immediately.
 
 Counts of Pending, Triaged, Passed, Flagged, No email (not yet accepted: Pending or
-Triaged without an email), Verifying email, Accepted, Drafted, Scheduled, Sent, Replied and Invalid
-(Sending only while non-zero). The Pending, Passed, Flagged, Drafted and Scheduled tiles
+Triaged without an email), Verifying email, Accepted, Drafted, Scheduled, Sent, Bounced, Replied and Invalid
+(Sending only while non-zero). Bounced is the number of sent addresses that bounced as dead
+(`mail_bounce_log`; spam/policy blocks are not counted). The Pending, Passed, Flagged, Drafted and Scheduled tiles
 open their view. **✍️ Draft accepted mails** (fires `draft.yml`) shows while `Accepted`
 rows exist; **📨 Send scheduled mails** shows while `Scheduled` rows exist.
 

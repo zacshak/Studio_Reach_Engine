@@ -125,6 +125,8 @@ export const VIEW_SQL = {
   releases: "SELECT appid, release_date FROM scrape_tracker WHERE Mail_status IN ('Pending','Triaged','Drafted') AND coalesce(release_date,'')<>'' ORDER BY appid",
   // games the developer has on Steam (saved at discovery), shown next to the developer name
   devGames: "SELECT appid, dev_game_count FROM scrape_tracker WHERE Mail_status IN ('Pending','Triaged','Drafted') AND dev_game_count IS NOT NULL ORDER BY appid",
+  // sent mails that bounced as a dead address (spam/policy blocks and delays are logged as 'ignored')
+  bounced: "SELECT count(DISTINCT lower(recipient)) FROM mail_bounce_log WHERE recipient<>'' AND outcome NOT IN ('ignored','error')",
 };
 
 export function homeCounts(rows) {
@@ -157,11 +159,12 @@ async function state(env) {
       [VIEW_SQL.senders],
       [VIEW_SQL.releases],
       [VIEW_SQL.devGames],
+      [VIEW_SQL.bounced],
     ]),
   ]);
-  const [pending, passed, flagged, noMail, drafted, counts, reviews, issues, verifying, senders, releases, devGames] = db;
+  const [pending, passed, flagged, noMail, drafted, counts, reviews, issues, verifying, senders, releases, devGames, bounced] = db;
   const ids = rows => rows.map(r => Number(r[0]));
-  const home = homeCounts(counts);
+  const home = { ...homeCounts(counts), bounced: Number(bounced?.[0]?.[0]) || 0 };
   return {
     index: index || {},
     counts: home,
