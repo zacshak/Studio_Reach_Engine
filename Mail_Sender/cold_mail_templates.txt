@@ -27,7 +27,7 @@ hey <developer/studio name>,
 
 <one specific thing you noticed about the game in their steam page, a mechanic, the atmosphere, a rough edge>. that's the kind of detail i can't leave alone.
 
-I'm a game programmer, 4 years in. did 10+ freelance projects for small studios, then spent the last year and a half on an xbox funded AA doing whole gameplay systems. also built my own directx12 renderer on the side, mostly because i'm that kind of nerd. solid in unreal, unity, C# and lovely C++
+I'm a game programmer, 4 years of exp, worked in multiple studios, spent the last year and a half on an xbox funded AA doing whole gameplay systems. also built my own directx12 renderer on the side, mostly because i'm that kind of nerd. solid in unreal, unity, C# and lovely C++
 
 short version, i'm the hire that covers a lot so you don't need three people. figured that might be handy for a small team.
 
@@ -42,18 +42,20 @@ Meshak A
 
 Subject:  helping with <game name> ?
 
-hey <developer/studio name>,
+hey saw your game <game name> on steam today
 
-<specific mechanic/detail you noticed>. especially liked <very small technical/design observation>, that's the kind of stuff i enjoy working on.
+<one specific, unique mechanic visible in the game's screenshots and explain why I love it, 1 sentence, appreciative, no criticism>
 
-I'm Meshak, Game Programmer with 4 years of experience. I've worked across gameplay and graphics programming, building games and systems using Unreal Engine, C++, DirectX 12, OpenGL, Unity, and C#.
+what if <one concrete new mechanic for the game or new feature that builds on that appreciated mechanic> ? <what it would add for the player, more fun or more engaging, 1 sentence>
 
-Having work experience on both AA and indie titles, I deliver industry standard quality and have also helped 10+ clients through freelance projects on Fiverr and LinkedIn.
+I can build that and more for your game if you like it. I'm Meshak, Game Programmer with 4 years of experience. I've worked across gameplay and graphics programming, building games and systems using Unreal/C++ and Unity/C#. Not just working, I have shipped games.
 
-Whether you need a gameplay mechanic, prototype, or complete game system, I'm here to deliver high-quality, production ready solutions.
-Just reply with what u r working on and where do u need help.
+In my last company at Ayelet Studio, I worked on Son of Thanjai, an Xbox-funded UE5 RPG title. Since it was a lean team, I built various mechanics there like Horse Locomotion, player parkor, Enemy Stealth, Group Attack Coordination Systems, AI Crowd Manager, NPC World Interactions and so on. Before Ayelet, I helped ship Cricketr and Lemusk at Madras Mind Works and helped ship Scarecrew at Zippy Studio.
 
-thanks,
+I believe <game name> has a good potential and I'm willing to contribute to the fullest. I can work as a contract or full-time employee based on your preference. Reply if interested, I'll share my portfolio here.
+
+
+Thanks,
 Meshak
 
 -----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -64,17 +66,22 @@ Subject: <game name>
 
 tldr;
 
-I love what you're building with <game name>. <specific observation>. I spend most of my time building games anyway, so working on something like this is pretty much exactly what I want to be doing.
+I love what you're building with <game name>. <one specific, unique mechanic visible in the game's screenshots and explain why I love it specifically, 1 sentence, appreciative, no criticism>. I don't have many hobbies outside coding. I am not athletic, bad at singing, don't drink, can't dance. Building is the only thing I am good at. At this point, I want to be a part of taking something from 0 -> 1 or 1 -> 100. I just want to be heads down chasing that goal
 
 Hi,
 
-Wanted to reach out and see if you need another programmer on <game name>.
+Saw <game name> on Steam today, loved the game and wanted to reach out to see if there were any openings for gameplay programmers on the team. I have 4 years of experience building gameplay systems in Unreal Engine (C++) and Unity (C#) at Ayelet Studio, Madras Mind Works and Zippy Studio.
 
-I've been doing game programming for 4 years, 10+ indie freelance projects and 1.5 years on an Xbox-funded AA title. Mostly gameplay/systems work in Unreal + C++, with Unity/C# experience as well.
+In my last company, at Ayelet I worked on Son of Thanjai, an RPG title. Working in a small team, one of my strongest suits has been owning systems end to end:
 
-I like owning systems end to end and just getting them shipped.
+- Enemy AI, crowd coordination
+- Player combat, parkour
+- horse locomotion with IK and sync
+- layered world partition streaming
 
-If there's anything you're short on programming bandwidth for, reply and I'll send over my work.
+I also work with custom renderers, so I’m comfortable going below the engine layer when performance needs it.
+
+I would love to be a part of <game name> and help shape what you’re building. happy to share my portfolio, or hop on a quick call to talk through, whichever's easier for you.
 
 Best,
 Meshak
