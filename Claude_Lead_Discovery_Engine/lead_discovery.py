@@ -57,10 +57,13 @@ def save_studio_counts(conn, developer_of, count=None):
     """Store, on each new game's tracker row, how many games its (first) developer has on
     Steam. One store search per developer per run; a failed lookup leaves it empty."""
     count = count or bf.studio_game_count
+    # All Steam lookups first, then the writes in one quick burst: a remote (Turso)
+    # transaction left open across slow lookups is rolled back as idle.
     known = {}
-    for appid, developer in developer_of.items():
+    for developer in developer_of.values():
         if developer not in known:
             known[developer] = count(developer)
+    for appid, developer in developer_of.items():
         if known[developer] is not None:
             conn.execute("UPDATE scrape_tracker SET dev_game_count=? WHERE appid=?",
                          (known[developer], appid))

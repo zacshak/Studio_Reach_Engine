@@ -68,6 +68,21 @@ class SaveStudioCountsTest(unittest.TestCase):
         rows = self.conn.execute("SELECT appid, dev_game_count FROM scrape_tracker ORDER BY appid").fetchall()
         self.assertEqual(rows, [(1, 3), (2, 3), (3, 1), (4, None)])
 
+    def test_no_write_is_open_while_steam_is_asked(self):
+        # A Turso transaction left open across slow lookups is rolled back as idle,
+        # so every lookup must finish before the first UPDATE.
+        events = []
+        class Conn:
+            def execute(self, *a):
+                events.append("write")
+            def commit(self):
+                events.append("commit")
+        def count(dev):
+            events.append("lookup")
+            return 2
+        lead_discovery.save_studio_counts(Conn(), {1: "A", 2: "B", 3: "A"}, count=count)
+        self.assertEqual(events, ["lookup", "lookup", "write", "write", "write", "commit"])
+
 
 if __name__ == "__main__":
     unittest.main()
