@@ -50,7 +50,7 @@ what if <one concrete new mechanic for the game or new feature that builds on th
 
 I can build that and more for your game if you like it. I'm Meshak, Game Programmer with 4 years of experience. I've worked across gameplay and graphics programming, building games and systems using Unreal/C++ and Unity/C#. Not just working, I have shipped games.
 
-In my last company at Ayelet Studio, I worked on Son of Thanjai, an Xbox-funded UE5 RPG title. Since it was a lean team, I built various mechanics there like Horse Locomotion, player parkor, Enemy Stealth, Group Attack Coordination Systems, AI Crowd Manager, NPC World Interactions and so on. Before Ayelet, I helped ship Cricketr and Lemusk at Madras Mind Works and helped ship Scarecrew at Zippy Studio.
+In my last company at Ayelet Studio, I worked on Son of Thanjai, an Xbox-funded UE5 RPG title. Since it was a lean team, I built various mechanics there like Horse Locomotion, player parkour, Enemy Stealth, Group Attack Coordination Systems, AI Crowd Manager, NPC World Interactions and so on. Before Ayelet, I helped ship Cricketr and Lemusk at Madras Mind Works and helped ship Scarecrew at Zippy Studio.
 
 I believe <game name> has a good potential and I'm willing to contribute to the fullest. I can work as a contract or full-time employee based on your preference. Reply if interested, I'll share my portfolio here.
 
