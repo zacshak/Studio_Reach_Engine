@@ -188,10 +188,12 @@ def build_message(mailbox, to, subject, body, *, name=None, message_id=None,
 
 
 def send(mailbox, msg, *, thread_id=None, sleep=time.sleep):
-    """users.messages.send as the mailbox. Returns {'id', 'threadId'}.
+    """users.messages.send as the mailbox. Returns {'id', 'threadId', 'messageId'}.
 
-    429 and rate-limit 403s are refusals, so they are retried. After a 5xx or network error
-    the mail may already be out, so Sent is searched for its Message-ID before each retry."""
+    Gmail replaces the Message-ID we set with its own; 'messageId' is the one it used (None if
+    it could not be read back). 429 and rate-limit 403s are refusals, so they are retried.
+    After a 5xx or network error the mail may already be out, so Sent is searched for it
+    (recipient, subject, sent since this call) before each retry."""
     from googleapiclient.errors import HttpError
     sender = msg["From"].addresses[0].addr_spec.lower() if msg["From"] else ""
     if sender != mailbox.strip().lower():
@@ -200,10 +202,11 @@ def send(mailbox, msg, *, thread_id=None, sleep=time.sleep):
     if thread_id:
         body["threadId"] = thread_id
     request = client(mailbox).users().messages().send(userId="me", body=body)
-    message_id = str(msg["Message-ID"] or "")
+    to = msg["To"].addresses[0].addr_spec if msg["To"] and msg["To"].addresses else ""
+    started = time.time()
     for attempt in range(RETRIES + 1):
         try:
-            return request.execute()
+            return _with_message_id(mailbox, request.execute())
         except Exception as exc:
             if not _retryable(exc):
                 if isinstance(exc, HttpError) and _status(exc) == 400:
@@ -212,17 +215,46 @@ def send(mailbox, msg, *, thread_id=None, sleep=time.sleep):
                 _raise_auth(mailbox, exc)
             refused = isinstance(exc, HttpError) and (
                 _status(exc) == 429 or _reason(exc) in RATE_REASONS - {"backendError"})
-            if not refused and message_id:
-                found = find_message_id(mailbox, message_id)
+            if not refused and to:
+                found = find_sent(mailbox, to, started - 60, subject=str(msg["Subject"] or ""))
                 if found:
-                    return found
+                    return _with_message_id(mailbox, found)
             if attempt == RETRIES:
                 if refused:
                     raise GmailNotSent(f"{mailbox} [gmail_api]: rate limited after "
                                        f"{RETRIES} retries: {str(exc)[:200]}") from None
-                raise GmailUncertain(f"{mailbox} [gmail_api]: no answer from send and "
-                                     f"{message_id} is not in Sent: {str(exc)[:200]}") from None
+                raise GmailUncertain(f"{mailbox} [gmail_api]: no answer from send and the mail "
+                                     f"to {to} is not in Sent: {str(exc)[:200]}") from None
             _wait(attempt, sleep)
+
+
+def _header(mailbox, gmail_id, name):
+    data = execute(mailbox, client(mailbox).users().messages().get(
+        userId="me", id=gmail_id, format="metadata", metadataHeaders=[name]))
+    for h in (data.get("payload") or {}).get("headers") or []:
+        if h["name"].lower() == name.lower():
+            return h["value"]
+    return None
+
+
+def _with_message_id(mailbox, result):
+    """Add the Message-ID Gmail actually used. The mail is already sent, so a failed lookup
+    is logged, not raised."""
+    try:
+        result["messageId"] = _header(mailbox, result["id"], "Message-ID")
+    except Exception as exc:
+        result["messageId"] = None
+        print(f"WARN {mailbox} [gmail_api]: sent {result.get('id')}, but its Message-ID could "
+              f"not be read back: {exc}")
+    return result
+
+
+def find_sent(mailbox, to, since_epoch, *, subject=None):
+    """A mail in Sent to `to` since `since_epoch` (with this exact subject, if given), or None."""
+    for hit in list_ids(mailbox, f"in:sent to:{to} after:{int(since_epoch)}", limit=20):
+        if subject is None or _header(mailbox, hit["id"], "Subject") == subject:
+            return hit
+    return None
 
 
 # -- read ---------------------------------------------------------------------
@@ -312,18 +344,20 @@ def thread_test(sender, recipient, log=print):
     first = build_message(sender, recipient, subject, "Gmail API test. Safe to delete.",
                           name="Meshak")
     sent = send(sender, first)
-    log(f"sent    {sender} -> {recipient}: thread {sent['threadId']} {first['Message-ID']}")
-    received = _await(recipient, first["Message-ID"])
-    unread = fetch_unread(recipient, f"is:unread rfc822msgid:{first['Message-ID'].strip('<>')}")
+    first_id = sent["messageId"]
+    if not first_id:
+        raise RuntimeError("could not read back the Message-ID Gmail used")
+    log(f"sent    {sender} -> {recipient}: thread {sent['threadId']} {first_id}")
+    received = _await(recipient, first_id)
+    unread = fetch_unread(recipient, f"is:unread rfc822msgid:{first_id.strip('<>')}")
     log(f"read    {recipient}: {len(unread)} unread copy found")
     for gmail_id, _thread, _raw in unread:
         mark_read(recipient, gmail_id)
     reply = build_message(recipient, sender, "Re: " + subject, "Reply in the same thread.",
-                          name="Meshak", in_reply_to=first["Message-ID"],
-                          references=first["Message-ID"])
-    send(recipient, reply, thread_id=received["threadId"])
-    log(f"replied {recipient} -> {sender}: {reply['Message-ID']}")
-    back = _await(sender, reply["Message-ID"])
+                          name="Meshak", in_reply_to=first_id, references=first_id)
+    replied = send(recipient, reply, thread_id=received["threadId"])
+    log(f"replied {recipient} -> {sender}: {replied['messageId']}")
+    back = _await(sender, replied["messageId"])
     same = back["threadId"] == sent["threadId"]
     log(f"thread  reply in {sender}: thread {back['threadId']} -> "
         f"{'SAME THREAD' if same else 'DIFFERENT THREAD'}")

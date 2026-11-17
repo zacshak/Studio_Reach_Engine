@@ -26,8 +26,9 @@ In GitHub Actions, the `GOOGLE_SA_KEY` repository secret holds the key's JSON co
 ## What the Gmail API backend does
 
 - **Send:** `users.messages.send`, with the same MIME message as SMTP (base64url `raw`). The From address is the impersonated mailbox. Replies pass `threadId` and set `In-Reply-To` and `References`.
+- **Message-ID:** Gmail replaces the Message-ID we set with its own (`<...@mail.gmail.com>`). After each send, the real one is read back and stored, so replies are matched to the right thread.
 - **Retries:** 429 and rate-limit 403 responses are retried with backoff.
-  - After a 5xx or a network error, the mailbox is searched for the Message-ID before retrying, so a mail that went out is not sent twice.
+  - After a 5xx or a network error, Sent is searched before retrying, for the same recipient and subject sent since the call, so a mail that went out is not sent twice.
   - If there is still no answer, the row stays `Sending` and is reconciled in the next run, the same as SMTP.
 - **Read:** `users.messages.list` and `users.messages.get` (`fetch_unread`, the bounce scan), plus `users.threads.get` for the reply scan. `mark_read` removes the `UNREAD` label.
 - **`unauthorized_client`:** delegation has not taken effect yet (it can take up to 24 hours), or the scopes in Google Admin are wrong. The error says so.

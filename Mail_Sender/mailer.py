@@ -343,7 +343,7 @@ def _send_gmail(account, to, subject, body, *, message_id):
     msg = gmail_api.build_message(account.email, to, subject, body, name=account.name,
                                   message_id=message_id)
     try:
-        gmail_api.send(account.email, msg)
+        return gmail_api.send(account.email, msg)
     except (gmail_api.GmailAuthError, gmail_api.GmailNotSent) as exc:
         raise MailNotSubmittedError(str(exc)) from exc
 
@@ -380,7 +380,10 @@ def _deliver(appid, to, subject, body, raw_email, account, deadline):
             return "skipped"
         try:
             if account.gmail:
-                _send_gmail(account, to, subject, body, message_id=message_id)
+                result = _send_gmail(account, to, subject, body, message_id=message_id)
+                real_id = (result or {}).get("messageId")
+                if real_id and real_id != message_id:   # Gmail replaced ours: keep the real one
+                    _persist_delivery(pipeline.set_attempt_message_id, appid, real_id, token=token)
             else:
                 _send(user, password, to, subject, body, message_id=message_id, **extra)
         except (MailNotSubmittedError, smtplib.SMTPResponseException,
@@ -468,13 +471,19 @@ def _reconcile_sending(mailboxes, legacy=None):
 
 
 def _reconcile_gmail(account, pending, remaining):
-    """Gmail API: an exact rfc822msgid hit in the mailbox is the same proof as IMAP's search."""
+    """Gmail API: Gmail replaces our Message-ID, so the proof is a mail in Sent to the game's
+    address since the claim started (one outreach mail per game), or an exact Message-ID hit."""
+    recipients = dict(pipeline.mail_status_emails("Sending"))
     for appid in pending:
         stored = pipeline.get_send_attempt(appid)
-        if not stored or not stored[1]:
+        if not stored:
             continue
         token, message_id = stored[0], stored[1]
-        if gmail_api.find_message_id(account.email, message_id):
+        to, started = _recipient(recipients.get(appid)), pipeline.attempt_started_at(appid)
+        since = (datetime.strptime(started, "%Y-%m-%d %H:%M:%S").replace(
+            tzinfo=timezone.utc).timestamp() - 60) if started else None
+        if ((message_id and gmail_api.find_message_id(account.email, message_id)) or
+                (to and since and gmail_api.find_sent(account.email, to, since))):
             if _persist_delivery(pipeline.mark_sent, appid, token=token):
                 remaining.discard(appid)
                 print(f"RECOVERED {appid}: found its exact Message-ID in {account.email} [gmail_api]")

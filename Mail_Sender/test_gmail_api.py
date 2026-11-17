@@ -151,6 +151,9 @@ class SendTest(unittest.TestCase):
         patcher = patch.object(gmail_api, "client", return_value=self.service)
         patcher.start()
         self.addCleanup(patcher.stop)
+        header = patch.object(gmail_api, "_header", return_value="<real@mail.gmail.com>")
+        self.header = header.start()
+        self.addCleanup(header.stop)
         self.sleep = Mock()
 
     def sent_body(self):
@@ -160,7 +163,9 @@ class SendTest(unittest.TestCase):
         self.service.users().messages().send.return_value = Request({"id": "1", "threadId": "t"})
         msg = gmail_api.build_message(WS, "studio@example.com", "Hi", "Body", name="Meshak",
                                       message_id="<a@thaswin.com>")
-        self.assertEqual(gmail_api.send(WS, msg), {"id": "1", "threadId": "t"})
+        self.assertEqual(gmail_api.send(WS, msg),
+                         {"id": "1", "threadId": "t", "messageId": "<real@mail.gmail.com>"})
+        self.header.assert_called_once_with(WS, "1", "Message-ID")
         body = self.sent_body()
         parsed = email.message_from_bytes(base64.urlsafe_b64decode(body["raw"]),
                                           policy=policy.default)
@@ -188,16 +193,18 @@ class SendTest(unittest.TestCase):
     def test_5xx_checks_sent_before_resending(self):
         self.service.users().messages().send.return_value = Request(http_error(502))
         msg = gmail_api.build_message(WS, "x@example.com", "S", "B", message_id="<m@thaswin.com>")
-        with patch.object(gmail_api, "find_message_id",
+        with patch.object(gmail_api, "find_sent",
                           return_value={"id": "9", "threadId": "t"}) as find:
-            self.assertEqual(gmail_api.send(WS, msg, sleep=self.sleep), {"id": "9", "threadId": "t"})
-        find.assert_called_once_with(WS, "<m@thaswin.com>")
+            self.assertEqual(gmail_api.send(WS, msg, sleep=self.sleep),
+                             {"id": "9", "threadId": "t", "messageId": "<real@mail.gmail.com>"})
+        self.assertEqual(find.call_args.args[:2], (WS, "x@example.com"))
+        self.assertEqual(find.call_args.kwargs["subject"], "S")
 
     def test_5xx_until_the_limit_is_uncertain_not_resent_blindly(self):
         req = Request(*[http_error(500)] * (gmail_api.RETRIES + 1))
         self.service.users().messages().send.return_value = req
         msg = gmail_api.build_message(WS, "x@example.com", "S", "B")
-        with patch.object(gmail_api, "find_message_id", return_value=None) as find, \
+        with patch.object(gmail_api, "find_sent", return_value=None) as find, \
                 self.assertRaises(gmail_api.GmailUncertain):
             gmail_api.send(WS, msg, sleep=self.sleep)
         self.assertEqual(find.call_count, req.calls)
@@ -206,10 +213,17 @@ class SendTest(unittest.TestCase):
         self.service.users().messages().send.return_value = Request(
             *[http_error(429)] * (gmail_api.RETRIES + 1))
         msg = gmail_api.build_message(WS, "x@example.com", "S", "B")
-        with patch.object(gmail_api, "find_message_id") as find, \
+        with patch.object(gmail_api, "find_sent") as find, \
                 self.assertRaises(gmail_api.GmailNotSent):
             gmail_api.send(WS, msg, sleep=self.sleep)
         find.assert_not_called()
+
+    def test_a_failed_message_id_read_back_does_not_fail_the_send(self):
+        self.header.side_effect = RuntimeError("down")
+        self.service.users().messages().send.return_value = Request({"id": "1", "threadId": "t"})
+        with patch("builtins.print"):
+            got = gmail_api.send(WS, gmail_api.build_message(WS, "x@example.com", "S", "B"))
+        self.assertIsNone(got["messageId"])
 
     def test_400_is_a_message_problem(self):
         self.service.users().messages().send.return_value = Request(http_error(400))
@@ -269,7 +283,8 @@ class MailerBackendTest(unittest.TestCase):
                          "fetched_at TEXT)")
         mailer.pipeline.init_tracker()
         self.smtp = enter(patch.object(mailer, "_send"))
-        self.gsend = enter(patch.object(gmail_api, "send", return_value={"id": "1", "threadId": "t"}))
+        self.gsend = enter(patch.object(gmail_api, "send", return_value={
+            "id": "1", "threadId": "t", "messageId": "<real@mail.gmail.com>"}))
         enter(patch.object(mailer, "_delete_media"))
         enter(patch.object(mailer.time, "sleep"))
         self.output = enter(patch("builtins.print"))
@@ -304,6 +319,8 @@ class MailerBackendTest(unittest.TestCase):
         msg = self.gsend.call_args.args[1]
         self.assertEqual(msg["From"].addresses[0].addr_spec, WS)
         self.assertTrue(msg["Message-ID"].startswith("<") and "sre.1" in msg["Message-ID"])
+        # Gmail replaced the Message-ID: replies are matched on the one it used.
+        self.assertEqual(mailer.pipeline.reply_evidence()[0][2], "<real@mail.gmail.com>")
 
     def test_other_mailboxes_keep_the_app_password_path(self):
         for box in ("meshak@zacgamedev.com", "meshakzac@gmail.com"):
@@ -350,7 +367,7 @@ class MailerBackendTest(unittest.TestCase):
 
     def test_rate_limited_gmail_send_is_retried_later(self):
         self.gsend.side_effect = [gmail_api.GmailNotSent("rate limited"),
-                                  {"id": "1", "threadId": "t"}]
+                                  {"id": "1", "threadId": "t", "messageId": None}]
         self.assertEqual(self.deliver(8, mailer.Account(WS, "")), "sent")
         self.assertEqual(self.gsend.call_count, 2)
 
@@ -359,6 +376,19 @@ class MailerBackendTest(unittest.TestCase):
         acct = mailer.Account(WS, "")
         self.assertFalse(acct.ready)
         self.assertEqual(mailer._account_problem(acct), "gmail_api: GOOGLE_SA_KEY_FILE not set")
+
+    def test_reconcile_finds_a_stuck_gmail_send_by_recipient_and_time(self):
+        self.seed(10)
+        mailer.pipeline.claim_mail(10, token="tok", message_id="<ours@thaswin.com>",
+                                   expected_email="studio@example.com", sender=WS)
+        acct = mailer.Account(WS, "")
+        with patch.object(gmail_api, "find_message_id", return_value=None), \
+                patch.object(gmail_api, "find_sent", return_value={"id": "s"}) as sent:
+            remaining = {10}
+            mailer._reconcile_mailbox(acct, [10], remaining)
+        self.assertEqual(remaining, set())
+        self.assertEqual(self.state(10), "Sent")
+        self.assertEqual(sent.call_args.args[1], "studio@example.com")
 
     def test_reply_scan_reads_the_thread(self):
         acct = mailer.Account(WS, "")

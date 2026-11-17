@@ -992,6 +992,25 @@ def get_send_attempt(appid):
     return row
 
 
+def set_attempt_message_id(appid, message_id, *, token):
+    """Record the Message-ID the provider actually used (the Gmail API replaces ours), so
+    replies are matched to the real thread. Only the claim owner may change it."""
+    _ensure()
+    with closing(_rw()) as conn:
+        conn.execute("UPDATE mail_send_attempt SET message_id=? WHERE appid=? AND token=?",
+                     (message_id, int(appid), token))
+        conn.commit()
+
+
+def attempt_started_at(appid):
+    """UTC 'YYYY-MM-DD HH:MM:SS' of the active claim, or None."""
+    _ensure()
+    with closing(_ro()) as conn:
+        row = conn.execute("SELECT started_at FROM mail_send_attempt WHERE appid=?",
+                           (int(appid),)).fetchone()
+    return row[0] if row else None
+
+
 def attempt_senders(appids=None):
     """{appid: sending account} for stored attempts (None = sent before rotation)."""
     _ensure()
