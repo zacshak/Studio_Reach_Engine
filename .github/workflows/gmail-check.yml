@@ -1,0 +1,61 @@
+name: Gmail API check
+
+# Manual checks for the Gmail API backend (Mail_Sender/GMAIL_API.md). Sends mail only in
+# thread_test mode, and only between our own inboxes.
+#   check:       users.getProfile for every Workspace inbox in mail_backends.json
+#   thread_test: send FROM -> TO via the Gmail API, reply TO -> FROM, confirm same thread
+#   mailbox:     sign in to one mailbox on its configured backend (no send, no DB write)
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [check, thread_test, mailbox]
+        default: check
+      mailbox:
+        description: "mailbox mode: the address. thread_test: FROM (default meshak@thaswin.com)"
+        default: ""
+      to:
+        description: "thread_test: TO (default meshakzac@thaswin.com)"
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install --quiet libsql==0.1.11 cryptography==50.0.1 google-auth==2.62.2 google-api-python-client==2.202.0
+      - name: Service account key file (Gmail API)
+        env:
+          GOOGLE_SA_KEY: ${{ secrets.GOOGLE_SA_KEY }}
+        run: |
+          if [ -n "$GOOGLE_SA_KEY" ]; then
+            umask 077
+            printf '%s' "$GOOGLE_SA_KEY" > "$RUNNER_TEMP/google-sa-key.json"
+            echo "GOOGLE_SA_KEY_FILE=$RUNNER_TEMP/google-sa-key.json" >> "$GITHUB_ENV"
+          else
+            echo "::warning::GOOGLE_SA_KEY secret is not set; the Gmail API backend is unavailable"
+          fi
+      - name: Run
+        env:
+          MODE: ${{ inputs.mode }}
+          MAILBOX: ${{ inputs.mailbox }}
+          TO: ${{ inputs.to }}
+          SENDER_ACCOUNTS: ${{ secrets.SENDER_ACCOUNTS }}
+          MS_TOKEN_KEY: ${{ secrets.MS_TOKEN_KEY }}
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: |
+          case "$MODE" in
+            check) python -u Mail_Sender/gmail_api.py --check ;;
+            thread_test) python -u Mail_Sender/gmail_api.py --thread-test "${MAILBOX:-meshak@thaswin.com}" "${TO:-meshakzac@thaswin.com}" ;;
+            mailbox) python -u Mail_Sender/mailer.py --check-mailbox "$MAILBOX" ;;
+          esac

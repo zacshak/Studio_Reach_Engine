@@ -30,7 +30,16 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install deps
-        run: pip install --quiet libsql==0.1.11 boto3==1.43.22 cryptography==50.0.1
+        run: pip install --quiet libsql==0.1.11 boto3==1.43.22 cryptography==50.0.1 google-auth==2.62.2 google-api-python-client==2.202.0
+      - name: Service account key file (Gmail API)
+        env:
+          GOOGLE_SA_KEY: ${{ secrets.GOOGLE_SA_KEY }}
+        run: |
+          if [ -n "$GOOGLE_SA_KEY" ]; then
+            umask 077
+            printf '%s' "$GOOGLE_SA_KEY" > "$RUNNER_TEMP/google-sa-key.json"
+            echo "GOOGLE_SA_KEY_FILE=$RUNNER_TEMP/google-sa-key.json" >> "$GITHUB_ENV"
+          fi
       - name: Send scheduled mails
         env:
           SEND_TIME_BUDGET_SECONDS: "19800" # stop between mails before the 350-minute runner ceiling

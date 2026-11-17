@@ -196,7 +196,7 @@ class RotationTest(unittest.TestCase):
         with patch("bounces.process", return_value={"bounces": 0}):
             self.assertTrue(mailer._scan_bounces("x@studio.test", "pw"))
         printed = " ".join(str(c.args[0]) for c in print.call_args_list if c.args)
-        self.assertIn("bounce scan failed for x@studio.test: handshake timed out", printed)
+        self.assertIn("bounce scan failed for x@studio.test [app_password]: handshake timed out", printed)
         self.assertIn("bounces (x@studio.test)", printed)
 
     def test_bounce_scanner_retries_then_gives_up(self):
