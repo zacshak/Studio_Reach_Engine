@@ -1,0 +1,15 @@
+{
+  "_doc": "Mail backend per mailbox. 'gmail_api' (service account + domain-wide delegation) is allowed only for gmail_api_domains and is their default; every other mailbox defaults to 'app_password' (the SMTP/IMAP path, XOAUTH2 for Microsoft). Set a mailbox's backend here to switch it, e.g. {\"backend\": \"app_password\"} (needs its app password in SENDER_ACCOUNTS). failover: true lets a mailbox that fails sign-in retry once on its other backend; off by default. See Mail_Sender/GMAIL_API.md.",
+  "gmail_api_domains": ["thaswinmeshak.com", "thaswin.com", "heymeshak.com", "hiremeshak.com"],
+  "failover": false,
+  "mailboxes": {
+    "meshak@thaswinmeshak.com": {},
+    "meshakzac@thaswinmeshak.com": {},
+    "meshak@thaswin.com": {},
+    "meshakzac@thaswin.com": {},
+    "meshak@heymeshak.com": {},
+    "meshakzac@heymeshak.com": {},
+    "meshak@hiremeshak.com": {},
+    "meshakzac@hiremeshak.com": {}
+  }
+}

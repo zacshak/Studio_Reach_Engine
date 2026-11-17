@@ -16,3 +16,9 @@ HermesScraper/nul
 
 # wrangler local auth cache (Cloudflare creds) — never commit
 .wrangler/
+
+# Google service account keys (GOOGLE_SA_KEY_FILE) — never commit
+*sa-key*.json
+sre-mail-*.json
+*service-account*.json
+*.gserviceaccount.json

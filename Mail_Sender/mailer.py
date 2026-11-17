@@ -37,9 +37,8 @@ import uuid
 from contextlib import suppress
 from datetime import datetime, timezone
 from email import policy
-from email.message import EmailMessage
 from email.parser import BytesParser
-from email.utils import formatdate, make_msgid, parsedate_to_datetime
+from email.utils import make_msgid, parsedate_to_datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -48,6 +47,7 @@ sys.path.insert(0, os.path.join(ROOT, "Leads_Reviewer"))
 sys.path.insert(0, ROOT)
 import pipeline      # noqa: E402
 import media_store   # noqa: E402  (cloud send: draft from R2 manifest, media purge in R2)
+import gmail_api     # noqa: E402  (Workspace inboxes: Gmail API via domain-wide delegation)
 
 MEDIA_DIR = os.path.join(ROOT, "Leads_Reviewer", "Studios_To_Review", "Approval_Pending_Games")
 # Cloud (GHA send job): no local media folders — drafts + media live in R2. Same test
@@ -67,17 +67,46 @@ PROVIDERS = {"google": dict(smtp=("smtp.gmail.com", 587), imap="imap.gmail.com")
 
 
 class Account:
-    """One sending mailbox. cap=None means no cap (single legacy GMAIL_USER account)."""
+    """One sending mailbox. cap=None means no cap (single legacy GMAIL_USER account).
 
-    def __init__(self, email, password, provider="google", cap=None, name=None):
+    backend (mail_backends.json): "gmail_api" for Workspace inboxes by default, else
+    "app_password" (SMTP/IMAP; XOAUTH2 for Microsoft). password stays the app password."""
+
+    def __init__(self, email, password, provider="google", cap=None, name=None, backend=None):
         self.email, self.password, self.provider = email, password, provider
         self.cap, self.name = cap, name or SENDER_NAME
         hosts = PROVIDERS.get(provider) or {}
         self.smtp, self.imap = hosts.get("smtp"), hosts.get("imap")
+        self.backend = backend or gmail_api.backend_for(email)
+        self.failed_over = False
 
     @property
     def oauth(self):
         return self.provider == "microsoft"
+
+    @property
+    def gmail(self):
+        return self.backend == gmail_api.GMAIL_API
+
+    def backend_ready(self, backend):
+        if backend == gmail_api.GMAIL_API:
+            return gmail_api.workspace(self.email) and bool(gmail_api.key_file())
+        return bool(self.password) and self.smtp is not None
+
+    @property
+    def ready(self):
+        return self.backend_ready(self.backend)
+
+    def failover(self, error):
+        """Switch to the other backend once, only when mail_backends.json enables failover.
+        Returns True if it switched."""
+        other = gmail_api.APP_PASSWORD if self.gmail else gmail_api.GMAIL_API
+        if self.failed_over or not gmail_api.failover_enabled() or not self.backend_ready(other):
+            return False
+        print(f"FAILOVER {self.email}: [{self.backend}] failed ({error}); "
+              f"switching to [{other}] for this run (failover is enabled in mail_backends.json)")
+        self.backend, self.failed_over = other, True
+        return True
 
     def smtp_login(self, smtp):
         if self.oauth:
@@ -94,7 +123,7 @@ class Account:
             imap.login(self.email, self.password)
 
     def __repr__(self):  # never print the password
-        return f"Account({self.email}, {self.provider}, cap={self.cap})"
+        return f"Account({self.email}, {self.provider}, {self.backend}, cap={self.cap})"
 
 
 def _ms_connected(email):
@@ -136,7 +165,7 @@ def load_accounts(*, record=False):
         if not legacy:
             return [], []
         acct = Account(legacy, passwords.get(legacy.lower(), ""))
-        return [acct], [acct] if acct.password else []
+        return [acct], [acct] if acct.ready else []
     senders, mailboxes, seen = [], [], set()
     for row in configured:
         email = row["email"].strip()
@@ -145,12 +174,9 @@ def load_accounts(*, record=False):
         seen.add(email.lower())
         if acct.oauth:
             acct.password = "oauth" if _ms_connected(email) else ""
-        if acct.password and acct.imap:
+        if acct.ready and (acct.gmail or acct.imap):
             mailboxes.append(acct)
-        problem = ("unknown provider" if acct.smtp is None
-                   else "Microsoft not connected yet" if acct.oauth and not acct.password
-                   else "no app password in SENDER_ACCOUNTS" if not acct.password
-                   else "paused (daily cap 0)" if not acct.cap else "")
+        problem = _account_problem(acct) or ("paused (daily cap 0)" if not acct.cap else "")
         if problem:
             if record:
                 pipeline.set_sender_status(email, problem)
@@ -160,6 +186,17 @@ def load_accounts(*, record=False):
     if legacy and legacy.lower() not in seen and passwords.get(legacy.lower()):
         mailboxes.append(Account(legacy, passwords[legacy.lower()]))
     return senders, mailboxes
+
+
+def _account_problem(acct):
+    """Why the account cannot be used on its configured backend, or ''."""
+    if acct.gmail:
+        if not gmail_api.workspace(acct.email):
+            return "gmail_api backend set for a non-Workspace mailbox"
+        return "" if gmail_api.key_file() else "gmail_api: GOOGLE_SA_KEY_FILE not set"
+    return ("unknown provider" if acct.smtp is None
+            else "Microsoft not connected yet" if acct.oauth and not acct.password
+            else "no app password in SENDER_ACCOUNTS" if not acct.password else "")
 
 
 def _pick_sender(senders, counts):
@@ -274,13 +311,8 @@ class MailNotSubmittedError(RuntimeError):
 def _send(user, password, to, subject, body, *, message_id=None, smtp=None, name=None, login=None):
     s = None
     try:
-        msg = EmailMessage()
-        msg["From"] = f"{name or SENDER_NAME} <{user}>"
-        msg["To"] = to
-        msg["Subject"] = subject
-        msg["Message-ID"] = message_id or make_msgid(domain=user.rsplit("@", 1)[-1])
-        msg["Date"] = formatdate(usegmt=True)
-        msg.set_content(body)
+        msg = gmail_api.build_message(user, to, subject, body, name=name or SENDER_NAME,
+                                      message_id=message_id)
         host, port = smtp or (SMTP_HOST, SMTP_PORT)
         s = smtplib.SMTP(host, port, timeout=30)
         s.starttls(context=ssl.create_default_context())
@@ -304,6 +336,16 @@ def _send(user, password, to, subject, body, *, message_id=None, smtp=None, name
         except Exception:
             with suppress(Exception):
                 s.close()
+
+
+def _send_gmail(account, to, subject, body, *, message_id):
+    """Same message as _send, through users.messages.send as the impersonated mailbox."""
+    msg = gmail_api.build_message(account.email, to, subject, body, name=account.name,
+                                  message_id=message_id)
+    try:
+        gmail_api.send(account.email, msg)
+    except (gmail_api.GmailAuthError, gmail_api.GmailNotSent) as exc:
+        raise MailNotSubmittedError(str(exc)) from exc
 
 
 def _persist_delivery(operation, *args, **kwargs):
@@ -337,7 +379,10 @@ def _deliver(appid, to, subject, body, raw_email, account, deadline):
             print(f"SKIP {appid}: state or recipient changed before the send claim")
             return "skipped"
         try:
-            _send(user, password, to, subject, body, message_id=message_id, **extra)
+            if account.gmail:
+                _send_gmail(account, to, subject, body, message_id=message_id)
+            else:
+                _send(user, password, to, subject, body, message_id=message_id, **extra)
         except (MailNotSubmittedError, smtplib.SMTPResponseException,
                 smtplib.SMTPRecipientsRefused, smtplib.SMTPNotSupportedError,
                 ValueError, TypeError, UnicodeError) as exc:
@@ -352,7 +397,7 @@ def _deliver(appid, to, subject, body, raw_email, account, deadline):
             draft_failure = isinstance(cause, (ValueError, TypeError, UnicodeError))
             account_failure = isinstance(cause, (
                 smtplib.SMTPAuthenticationError, smtplib.SMTPHeloError,
-                smtplib.SMTPSenderRefused)) or (
+                smtplib.SMTPSenderRefused, gmail_api.GmailAuthError)) or (
                     setup_failure and isinstance(cause, smtplib.SMTPNotSupportedError))
             temporary = any(400 <= code < 500 for code in codes) or (
                 setup_failure and not draft_failure and not account_failure)
@@ -360,8 +405,10 @@ def _deliver(appid, to, subject, body, raw_email, account, deadline):
             if not _persist_delivery(pipeline.reset_sending, appid, target, token=token):
                 print(f"UNRECORDED {appid}: SMTP did not accept the mail. Check its DB state.")
                 return "uncertain"
-            print(f"REJECTED {appid}: {cause}. Returned to {target}.")
+            print(f"REJECTED {appid}: {user} [{account.backend}]: {cause}. Returned to {target}.")
             if account_failure:
+                if account.failover(cause):
+                    return _deliver(appid, to, subject, body, raw_email, account, deadline)
                 return "halted"
             if not temporary:
                 return "rejected"
@@ -373,7 +420,8 @@ def _deliver(appid, to, subject, body, raw_email, account, deadline):
             print(f"RETRY {appid}: retrying known-unsent mail in {delay}s")
             time.sleep(delay)
         except BaseException as exc:
-            print(f"UNCERTAIN {appid}: no SMTP acceptance/rejection could be established: {exc}. "
+            print(f"UNCERTAIN {appid}: {user} [{account.backend}]: no acceptance/rejection could be "
+                  f"established: {exc}. "
                   f"Left Sending, Message-ID {message_id}.")
             if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                 return "interrupted"
@@ -419,7 +467,30 @@ def _reconcile_sending(mailboxes, legacy=None):
     return len(remaining)
 
 
+def _reconcile_gmail(account, pending, remaining):
+    """Gmail API: an exact rfc822msgid hit in the mailbox is the same proof as IMAP's search."""
+    for appid in pending:
+        stored = pipeline.get_send_attempt(appid)
+        if not stored or not stored[1]:
+            continue
+        token, message_id = stored[0], stored[1]
+        if gmail_api.find_message_id(account.email, message_id):
+            if _persist_delivery(pipeline.mark_sent, appid, token=token):
+                remaining.discard(appid)
+                print(f"RECOVERED {appid}: found its exact Message-ID in {account.email} [gmail_api]")
+                try:
+                    _delete_media(appid)
+                except Exception as exc:
+                    print(f"WARN {appid}: recovered Sent, but media cleanup failed: {exc}")
+
+
 def _reconcile_mailbox(account, pending, remaining):
+    if account.gmail:
+        try:
+            _reconcile_gmail(account, pending, remaining)
+        except Exception as exc:
+            print(f"WARN: Sent reconciliation failed for {account.email} [gmail_api]: {exc}")
+        return
     imap = None
     try:
         imap = imaplib.IMAP4_SSL(account.imap or IMAP_HOST, timeout=30)
@@ -451,7 +522,7 @@ def _reconcile_mailbox(account, pending, remaining):
                     except Exception as exc:
                         print(f"WARN {appid}: recovered Sent, but media cleanup failed: {exc}")
     except Exception as exc:
-        print(f"WARN: Sent reconciliation failed for {account.email}: {exc}")
+        print(f"WARN: Sent reconciliation failed for {account.email} [{account.backend}]: {exc}")
     finally:
         if imap is not None:
             try:
@@ -486,12 +557,14 @@ def _scan_bounces(user, password, account=None):
     Returns True when the mailbox was scanned."""
     try:
         import bounces
-        stats = (bounces.process(user, password) if account is None or not account.oauth
+        stats = (bounces.process(user, password)
+                 if account is None or not (account.oauth or account.gmail)
                  else bounces.process(user, password, account=account))
         print(f"bounces ({user}): " + json.dumps(stats))
         return True
     except Exception as exc:
-        print(f"WARN: bounce scan failed for {user}: {exc}")
+        backend = account.backend if account is not None else gmail_api.APP_PASSWORD
+        print(f"WARN: bounce scan failed for {user} [{backend}]: {exc}")
         return False
         with suppress(Exception):
             pipeline.reconnect()
@@ -504,7 +577,7 @@ def main(dry_run=False, limit=None):
     if not senders:
         sys.exit("No sending account is ready. Set GMAIL_USER, or add rows to sender_accounts "
                  "with a daily_cap and their app passwords in SENDER_ACCOUNTS.")
-    if not dry_run and not all(a.password for a in senders):
+    if not dry_run and not all(a.ready for a in senders):
         sys.exit("GMAIL_APP_PASSWORD not set. Add it to the repo-root .env "
                  "(see this file's header). Or use --dry-run.")
     print("sending accounts: " + ", ".join(
@@ -674,8 +747,11 @@ def review():
                  "(see this file's header).")
     failed = []   # (mailbox, what) that could not be checked; the others still are
     for account in mailboxes:
-        ok = (_scan_bounces(account.email, account.password, account) if account.oauth
+        ok = (_scan_bounces(account.email, account.password, account)
+              if account.oauth or account.gmail
               else _scan_bounces(account.email, account.password))
+        if not ok and account.failover("bounce scan failed"):
+            ok = _scan_bounces(account.email, account.password, account)
         if not ok:
             failed.append((account.email, "bounce scan"))
     sent = pipeline.reply_evidence()
@@ -698,9 +774,15 @@ def review():
                   "no password for that mailbox")
             continue
         try:
-            replied += _review_mailbox(account, rows)
+            try:
+                replied += _review_mailbox(account, rows)
+            except Exception as exc:
+                if not account.failover(exc):
+                    raise
+                replied += _review_mailbox(account, rows)
         except Exception as exc:  # one unreachable inbox must not stop the others
-            print(f"WARN: reply scan failed for {account.email} ({len(rows)} lead(s) not checked): {exc}")
+            print(f"WARN: reply scan failed for {account.email} [{account.backend}] "
+                  f"({len(rows)} lead(s) not checked): {exc}")
             failed.append((account.email, "reply scan"))
     print(f"reviewed {len(sent)} sent lead(s): {replied} replied -> marked 'Replied'.")
     return _review_summary(failed)
@@ -734,7 +816,28 @@ def _imap_connect(host):
             time.sleep(IMAP_RETRY_SECONDS[min(attempt, len(IMAP_RETRY_SECONDS) - 1)])
 
 
+def _review_gmail(account, sent):
+    """Gmail API: find the sent mail by Message-ID, then check every message in its thread
+    with the same header rules as the IMAP scan (read-only)."""
+    replied = 0
+    for appid, raw_email, message_id, started_at in sent:
+        addr = _recipient(raw_email)
+        if not addr or not re.fullmatch(r'<[^<>\s"\\]+>', message_id):
+            continue
+        ours = gmail_api.find_message_id(account.email, message_id)
+        if not ours:
+            continue
+        if any(_matches_reply(headers, addr, message_id, started_at)
+               for headers in gmail_api.thread_headers(account.email, ours["threadId"])):
+            pipeline.set_mail_status(appid, "Replied")
+            replied += 1
+            print(f"  REPLIED {appid} <- {addr} (to {account.email} [gmail_api])")
+    return replied
+
+
 def _review_mailbox(account, sent):
+    if account.gmail:
+        return _review_gmail(account, sent)
     imap = _imap_connect(account.imap or IMAP_HOST)
     replied = 0
     try:
@@ -772,6 +875,57 @@ def _review_mailbox(account, sent):
     return replied
 
 
+def _check_login(acct):
+    """Sign in on the account's configured backend without sending. Returns a status line."""
+    if acct.oauth:
+        acct.password = "oauth" if _ms_connected(acct.email) else ""
+    if acct.gmail:
+        status = _account_problem(acct)
+        if not status:
+            try:
+                gmail_api.profile(acct.email)
+                status = "ok (gmail_api profile checked)"
+            except Exception as exc:
+                status = f"gmail_api failed: {type(exc).__name__}: {str(exc)[:200]}"
+    elif acct.smtp is None:
+        status = "unknown provider"
+    elif acct.oauth and not acct.password:
+        status = "Microsoft not connected yet"
+    elif not acct.password:
+        status = "no app password in SENDER_ACCOUNTS"
+    else:
+        status = "ok (login checked)"
+        try:
+            smtp = smtplib.SMTP(*acct.smtp, timeout=30)
+            try:
+                smtp.starttls(context=ssl.create_default_context())
+                acct.smtp_login(smtp)
+            finally:
+                with suppress(Exception):
+                    smtp.quit()
+            imap = imaplib.IMAP4_SSL(acct.imap, timeout=30)
+            try:
+                acct.imap_login(imap)
+            finally:
+                with suppress(Exception):
+                    imap.logout()
+        except Exception as exc:
+            status = f"login failed: {type(exc).__name__}: {str(exc)[:120]}"
+    return status
+
+
+def check_mailbox(email):
+    """Check one mailbox on its configured backend (mail_backends.json); writes nothing.
+    Returns 0 when it signed in."""
+    _load_env()
+    email = email.strip().lower()
+    row = next((r for r in pipeline.sender_accounts() if r["email"].lower() == email), {})
+    acct = Account(email, _passwords().get(email, ""), row.get("provider", "google"))
+    status = _check_login(acct)
+    print(f"  {email} [{acct.backend}]: {status}")
+    return 0 if status.startswith("ok") else 1
+
+
 def check_accounts():
     """Log in to every configured account's SMTP and IMAP without sending anything, and
     record the result for the dashboard. Returns 1 if any account that should send failed."""
@@ -784,36 +938,11 @@ def check_accounts():
     for row in configured:
         email = row["email"].strip()
         acct = Account(email, passwords.get(email.lower(), ""), row["provider"], row["daily_cap"])
-        if acct.oauth:
-            acct.password = "oauth" if _ms_connected(email) else ""
-        if acct.smtp is None:
-            status = "unknown provider"
-        elif acct.oauth and not acct.password:
-            status = "Microsoft not connected yet"
-        elif not acct.password:
-            status = "no app password in SENDER_ACCOUNTS"
-        else:
-            status = "ok (login checked)"
-            try:
-                smtp = smtplib.SMTP(*acct.smtp, timeout=30)
-                try:
-                    smtp.starttls(context=ssl.create_default_context())
-                    acct.smtp_login(smtp)
-                finally:
-                    with suppress(Exception):
-                        smtp.quit()
-                imap = imaplib.IMAP4_SSL(acct.imap, timeout=30)
-                try:
-                    acct.imap_login(imap)
-                finally:
-                    with suppress(Exception):
-                        imap.logout()
-            except Exception as exc:
-                status = f"login failed: {type(exc).__name__}: {str(exc)[:120]}"
-        if acct.cap and not status.startswith("ok") and acct.password:
+        status = _check_login(acct)
+        if acct.cap and not status.startswith("ok") and acct.ready:
             failed += 1
         pipeline.set_sender_status(email, status)
-        print(f"  {email} (cap {acct.cap}): {status}")
+        print(f"  {email} [{acct.backend}] (cap {acct.cap}): {status}")
     return 1 if failed else 0
 
 
@@ -856,6 +985,8 @@ if __name__ == "__main__":
         raise SystemExit(review())
     elif "--check-accounts" in args:
         raise SystemExit(check_accounts())
+    elif "--check-mailbox" in args:
+        raise SystemExit(check_mailbox(args[args.index("--check-mailbox") + 1]))
     elif "--purge-sent" in args:
         purge_sent()
     else:

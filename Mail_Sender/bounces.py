@@ -132,7 +132,11 @@ def _all_mail(imap):
 
 def fetch_bounces(user, password, since, account=None):
     """Yield (key, msg, raw) for bounce notices received at/after `since` (aware datetime).
-    `account` (a mailer.Account) selects its host and sign-in (Microsoft: OAuth, INBOX)."""
+    `account` (a mailer.Account) selects its host and sign-in (Microsoft: OAuth, INBOX;
+    Gmail API backend: users.messages.list/get, all mail except spam and trash)."""
+    if account is not None and getattr(account, "gmail", False):
+        yield from _gmail_bounces(account.email, since)
+        return
     imap = _imap_connect(getattr(account, "imap", None) or IMAP_HOST)
     try:
         if account is not None:
@@ -162,6 +166,19 @@ def fetch_bounces(user, password, since, account=None):
             imap.logout()
         except Exception:
             pass
+
+
+def _gmail_bounces(mailbox, since):
+    import gmail_api
+    q = ("from:(mailer-daemon OR postmaster OR MicrosoftExchange) "
+         f"after:{int(since.timestamp())}")
+    for hit in gmail_api.list_ids(mailbox, q, limit=2000):
+        raw = gmail_api.get_raw(mailbox, hit["id"])  # reading via the API never marks it read
+        msg = email.message_from_bytes(raw, policy=policy.default)
+        received = _received(msg)
+        if received is not None and received < since:
+            continue
+        yield message_key(msg, raw), msg, raw
 
 
 def _body(msg):
