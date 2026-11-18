@@ -199,6 +199,22 @@ class RotationTest(unittest.TestCase):
         self.assertIn("bounce scan failed for x@studio.test [app_password]: handshake timed out", printed)
         self.assertIn("bounces (x@studio.test)", printed)
 
+    def test_scan_bounces_reconnects_and_retries_a_dropped_database_once(self):
+        drop = RuntimeError("Hrana: `http error: `connection closed before message completed``")
+        with patch("bounces.process", side_effect=[drop, {"bounces": 1}]) as process, \
+                patch.object(mailer.pipeline, "reconnect") as reconnect:
+            self.assertTrue(mailer._scan_bounces("x@studio.test", "pw"))
+        self.assertEqual(process.call_count, 2)
+        reconnect.assert_called_once()
+        with patch("bounces.process", side_effect=[drop, drop]) as process, \
+                patch.object(mailer.pipeline, "reconnect") as reconnect:
+            self.assertFalse(mailer._scan_bounces("x@studio.test", "pw"))
+        self.assertEqual((process.call_count, reconnect.call_count), (2, 2))
+        with patch("bounces.process", side_effect=ValueError("bad bounce")) as process, \
+                patch.object(mailer.pipeline, "reconnect"):
+            self.assertFalse(mailer._scan_bounces("x@studio.test", "pw"))
+        self.assertEqual(process.call_count, 1)   # not a database drop: no retry
+
     def test_bounce_scanner_retries_then_gives_up(self):
         import bounces
         attempts = []
