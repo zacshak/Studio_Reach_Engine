@@ -564,19 +564,25 @@ def _summary(stats, unprocessed, error):
 def _scan_bounces(user, password, account=None):
     """Act on new bounce notices (nightly reply check); a failure never blocks the reply scan.
     Returns True when the mailbox was scanned."""
-    try:
-        import bounces
-        stats = (bounces.process(user, password)
-                 if account is None or not (account.oauth or account.gmail)
-                 else bounces.process(user, password, account=account))
-        print(f"bounces ({user}): " + json.dumps(stats))
-        return True
-    except Exception as exc:
-        backend = account.backend if account is not None else gmail_api.APP_PASSWORD
-        print(f"WARN: bounce scan failed for {user} [{backend}]: {exc}")
-        return False
-        with suppress(Exception):
-            pipeline.reconnect()
+    import bounces
+    backend = account.backend if account is not None else gmail_api.APP_PASSWORD
+    for attempt in range(2):
+        try:
+            stats = (bounces.process(user, password)
+                     if account is None or not (account.oauth or account.gmail)
+                     else bounces.process(user, password, account=account))
+            print(f"bounces ({user}): " + json.dumps(stats))
+            return True
+        except Exception as exc:
+            with suppress(Exception):   # a dropped database connection is reset either way
+                pipeline.reconnect()
+            if attempt == 0 and pipeline.retryable_db_error(exc):
+                # Safe to rerun: each bounce is recorded once (mail_bounce_log).
+                print(f"RETRY bounce scan for {user} [{backend}]: {exc}")
+                time.sleep(5)
+                continue
+            print(f"WARN: bounce scan failed for {user} [{backend}]: {exc}")
+            return False
 
 
 def main(dry_run=False, limit=None):
