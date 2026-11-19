@@ -1,0 +1,37 @@
+name: tmp check email
+on:
+  push:
+    branches: [claude/gifted-planck-qayhpu]
+    paths: [.github/workflows/tmp-check-email.yml]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet dnspython==2.7.0
+      - name: check
+        env:
+          EMAIL: yann.orhon@pharequest-studio.fr
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          QEV_API_KEY: ${{ secrets.QEV_API_KEY }}
+          ABSTRACT_API_KEY: ${{ secrets.ABSTRACT_API_KEY }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from Email_Verifier.smtp_check import SMTPVerifier
+          from Email_Verifier.client import QuickEmailVerification
+          from Email_Verifier.abstract_client import AbstractEmailReputation
+          e = os.environ["EMAIL"]
+          def show(name, fn):
+              try: print(f"=== {name}\n" + json.dumps(fn(), indent=2, default=str))
+              except Exception as x: print(f"=== {name}\nERROR {type(x).__name__}: {x}")
+          show("1. Own SMTP check", lambda: SMTPVerifier(helo=os.environ.get("VERIFIER_HELO") or None, mail_from=os.environ["GMAIL_USER"]).verify(e))
+          show("2. QuickEmailVerification", lambda: QuickEmailVerification.from_env(timeout=60).verify(e))
+          show("3. Abstract", lambda: AbstractEmailReputation.from_env(timeout=60).verify(e))
+          PY
