@@ -72,7 +72,8 @@ class ReplyTest(unittest.TestCase):
         imap.select.assert_called_once_with("INBOX", readonly=True)
         self.assertEqual(imap.fetch.call_args.args[1],
                          "(BODY.PEEK[HEADER.FIELDS (FROM DATE IN-REPLY-TO REFERENCES)])")
-        self.assertEqual(imap.search.call_args.args[1:4], ("OR", "HEADER", "In-Reply-To"))
+        self.assertEqual(imap.search.call_args.args[1:], ("FROM", '"studio@example.com"',
+                                                          "SINCE", "15-Oct-2026"))
         imap.logout.assert_called_once()
 
     def test_old_or_unrelated_message_never_marks_replied(self):
@@ -82,6 +83,30 @@ class ReplyTest(unittest.TestCase):
             with self.subTest(headers=headers):
                 _, status, _ = self.review(evidence, headers)
                 status.assert_not_called()
+
+    def test_outlook_style_server_that_ignores_header_searches_still_finds_the_reply(self):
+        """Exchange Online answers HEADER In-Reply-To/References searches with nothing."""
+        evidence = [(1, "studio@example.com", self.message_id, self.started)]
+        headers = self.headers()
+        class Outlook:
+            def __init__(self, host, timeout): pass
+            def login(self, user, pw): pass
+            def select(self, *a, **k): return ("OK", [b"1"])
+            def search(self, charset, *criteria):
+                if "HEADER" in criteria:
+                    return ("OK", [b""])
+                return ("OK", [b"7"]) if criteria[:2] == ("FROM", '"studio@example.com"') else ("OK", [b""])
+            def fetch(self, number, what): return ("OK", [(b"7 (BODY[HEADER] {100}", headers), b")"])
+            def logout(self): pass
+        with patch.object(mailer, "_load_env"), \
+                patch.dict(os.environ, {"GMAIL_USER": "sender@example.com", "GMAIL_APP_PASSWORD": "fake"}), \
+                patch.object(mailer.pipeline, "reply_evidence", return_value=evidence), \
+                patch.object(mailer.pipeline, "sender_accounts", return_value=[]), \
+                patch.object(mailer.pipeline, "set_mail_status") as status, \
+                patch.object(mailer, "_scan_bounces"), \
+                patch.object(mailer.imaplib, "IMAP4_SSL", Outlook):
+            self.assertEqual(mailer.review(), 0)
+        status.assert_called_once_with(1, "Replied")
 
     def test_no_evidence_never_opens_imap(self):
         _, status, connect = self.review([], self.headers())

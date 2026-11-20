@@ -35,7 +35,7 @@ import time
 import traceback
 import uuid
 from contextlib import suppress
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email import policy
 from email.parser import BytesParser
 from email.utils import make_msgid, parsedate_to_datetime
@@ -493,6 +493,26 @@ def _reconcile_gmail(account, pending, remaining):
                     print(f"WARN {appid}: recovered Sent, but media cleanup failed: {exc}")
 
 
+def _imap_since(started_at):
+    """IMAP SINCE date (a day early, so time zones never cut off the right message)."""
+    started = datetime.strptime(started_at[:19], "%Y-%m-%d %H:%M:%S")
+    return (started - timedelta(days=1)).strftime("%d-%b-%Y")
+
+
+def _has_message_id(imap, numbers, message_id):
+    """True when one of these messages carries exactly this Message-ID header."""
+    for number in numbers:
+        typ, parts = imap.fetch(number, "(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
+        if typ != "OK":
+            continue
+        for item in parts or []:
+            if isinstance(item, tuple) and isinstance(item[1], bytes):
+                header = BytesParser(policy=policy.default).parsebytes(item[1])
+                if str(header.get("Message-ID") or "").strip() == message_id:
+                    return True
+    return False
+
+
 def _reconcile_mailbox(account, pending, remaining):
     if account.gmail:
         try:
@@ -516,13 +536,17 @@ def _reconcile_mailbox(account, pending, remaining):
                 break
         if imap.select(sent_folder, readonly=True)[0] != "OK":
             raise RuntimeError("cannot open Gmail Sent")
+        recipients = dict(pipeline.mail_status_emails("Sending"))
         for appid in pending:
             stored = pipeline.get_send_attempt(appid)
-            if not stored or not stored[1]:
+            to, started = _recipient(recipients.get(appid)), pipeline.attempt_started_at(appid)
+            if not stored or not stored[1] or not to or not started:
                 continue
             token, message_id = stored[0], stored[1]
-            typ, data = imap.search(None, "HEADER", "Message-ID", f'"{message_id}"')
-            if typ == "OK" and data and data[0].split():
+            # Outlook's IMAP ignores HEADER searches, so find candidates by recipient and
+            # date, then require the exact Message-ID header.
+            typ, data = imap.search(None, "TO", f'"{to}"', "SINCE", _imap_since(started))
+            if typ == "OK" and data and _has_message_id(imap, data[0].split(), message_id):
                 if _persist_delivery(pipeline.mark_sent, appid, token=token):
                     remaining.discard(appid)
                     print(f"RECOVERED {appid}: found its exact Message-ID in {account.email} Sent")
@@ -863,11 +887,12 @@ def _review_mailbox(account, sent):
             addr = _recipient(raw_email)
             if not addr or not re.fullmatch(r'<[^<>\s"\\]+>', message_id):
                 continue
-            # Search is only a candidate filter. Fetch headers without setting Seen.
+            # Search is only a candidate filter (by sender: Outlook's IMAP ignores HEADER
+            # searches). _matches_reply then requires the exact sender, our Message-ID in
+            # In-Reply-To/References and a later date. Fetch headers without setting Seen.
             try:
-                typ, data = imap.search(None, "OR", "HEADER", "In-Reply-To",
-                                        f'"{message_id}"', "HEADER", "References",
-                                        f'"{message_id}"')
+                typ, data = imap.search(None, "FROM", f'"{addr}"', "SINCE",
+                                        _imap_since(started_at))
                 if typ != "OK" or not data or not data[0]:
                     continue
                 for number in data[0].split():

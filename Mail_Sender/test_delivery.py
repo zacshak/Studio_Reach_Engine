@@ -177,21 +177,37 @@ class DeliveryTest(unittest.TestCase):
         message_id = mailer.pipeline.get_send_attempt(1)[1]
         started_at = self.sql("SELECT started_at FROM mail_send_attempt WHERE appid=1")[0][0]
         self.cleanup.assert_not_called()
-        imap = self.sent_mailbox(b"7")
+        imap = self.sent_mailbox(b"7", message_id)
         with patch.object(mailer.imaplib, "IMAP4_SSL", return_value=imap):
             self.assertEqual(mailer.main(), 0)  # only reconciliation work remains
-        imap.search.assert_called_once_with(None, "HEADER", "Message-ID", f'"{message_id}"')
+        imap.search.assert_called_once_with(None, "TO", '"studio1@example.com"', "SINCE",
+                                            mailer._imap_since(started_at))
+        imap.fetch.assert_called_once_with(b"7", "(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
         self.assertEqual(self.state(1), "Sent")
         self.assertIsNone(mailer.pipeline.get_send_attempt(1))
         self.assertEqual(mailer.pipeline.reply_evidence()[0][2:], (message_id, started_at))
         self.send.assert_called_once()
 
-    def sent_mailbox(self, ids):
+    def sent_mailbox(self, ids, message_id="<not-ours@example.com>"):
         imap = Mock()
         imap.list.return_value = ("OK", [b'(\\HasNoChildren \\Sent) "/" "[Gmail]/Sent Mail"'])
         imap.select.return_value = ("OK", [b"1"])
         imap.search.return_value = ("OK", [ids])
+        imap.fetch.return_value = ("OK", [(b"7 (BODY[HEADER.FIELDS (MESSAGE-ID)] {60}",
+                                           f"Message-ID: {message_id}\r\n\r\n".encode()), b")"])
         return imap
+
+    def test_sent_match_needs_the_exact_message_id_not_just_the_recipient(self):
+        self.seed(1)
+        with patch.object(mailer.pipeline, "mark_sent", side_effect=ValueError("connection closed")), \
+                patch.object(mailer.pipeline, "reconnect"):
+            mailer.main()
+        message_id = mailer.pipeline.get_send_attempt(1)[1]
+        for other in ("<different@example.com>", message_id[:-1] + "x>"):
+            with self.subTest(other=other), \
+                    patch.object(mailer.imaplib, "IMAP4_SSL", return_value=self.sent_mailbox(b"7", other)):
+                mailer._reconcile_sending(mailer.load_accounts()[1])
+            self.assertEqual(self.state(1), "Sending")
 
     def test_absence_in_gmail_sent_never_automatically_resends(self):
         email = self.seed(1)
