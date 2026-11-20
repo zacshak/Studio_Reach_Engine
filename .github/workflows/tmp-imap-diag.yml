@@ -1,0 +1,45 @@
+name: tmp imap diag
+on:
+  push:
+    branches: [claude/gifted-planck-qayhpu]
+    paths: [.github/workflows/tmp-imap-diag.yml]
+permissions:
+  contents: read
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet libsql==0.1.11 cryptography==50.0.1
+      - name: diag
+        env:
+          MS_TOKEN_KEY: ${{ secrets.MS_TOKEN_KEY }}
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: |
+          cd Mail_Sender && python - <<'PY'
+          import imaplib, ms_oauth
+          MID = "<179448662727.2218.4128291605598717297.sre.3468040@xrevise.cc>"
+          imap = imaplib.IMAP4_SSL("outlook.office365.com", timeout=30)
+          ms_oauth.imap_login(imap, "meshak@xrevise.cc")
+          print("select", imap.select("INBOX", readonly=True))
+          tries = {
+            "current: OR HEADER In-Reply-To / References": ("OR", "HEADER", "In-Reply-To", f'"{MID}"', "HEADER", "References", f'"{MID}"'),
+            "HEADER In-Reply-To only": ("HEADER", "In-Reply-To", f'"{MID}"'),
+            "HEADER References only": ("HEADER", "References", f'"{MID}"'),
+            "HEADER In-Reply-To, ID without <>": ("HEADER", "In-Reply-To", f'"{MID.strip("<>")}"'),
+            "FROM sender": ("FROM", '"codesmithmikesquared@gmail.com"'),
+            "SUBJECT": ("SUBJECT", '"FixIt"'),
+          }
+          for name, crit in tries.items():
+              try: print(name, "->", imap.search(None, *crit))
+              except Exception as e: print(name, "-> ERROR", e)
+          typ, d = imap.search(None, "FROM", '"codesmithmikesquared@gmail.com"')
+          for n in (d[0] or b"").split():
+              print("fetch", imap.fetch(n, "(BODY.PEEK[HEADER.FIELDS (FROM DATE IN-REPLY-TO REFERENCES)])"))
+          imap.logout()
+          PY
