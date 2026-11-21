@@ -29,13 +29,13 @@ function fixture(fetch) {
   return { ctx, run: code => vm.runInContext(code, ctx), elements };
 }
 
-test('Home plus the four review views render without socials state or controls', async () => {
-  const views = ['pending', 'passed', 'flagged', 'mail'];
+test('Home plus the five review views render without socials state or controls', async () => {
+  const views = ['pending', 'passed', 'flagged', 'accepted', 'mail'];
   assert.deepEqual([...html.matchAll(/data-tab="([^"]+)"/g)].map(match => match[1]), ['home', ...views]);
   assert.doesNotMatch(html, /renderSocials|toggleSocials|reqsocial|social-links|social-empty|Fetch requested socials|social research/);
-  const buttons = { pending: ['reject', 'triage_pass'], passed: ['flag', 'accept'], flagged: ['reject', 'pass'], mail: ['reject', 'approve'] };
+  const buttons = { pending: ['reject', 'triage_pass'], passed: ['flag', 'accept'], flagged: ['reject', 'pass'], accepted: ['reject'], mail: ['reject', 'approve'] };
   for (const view of views) {
-    const state = { ...emptyState, index: { 1: 'Game_1' }, [view]: view === 'mail' ? [{ appid: 1 }] : [1] };
+    const state = { ...emptyState, index: { 1: 'Game_1' }, [view]: view === 'mail' || view === 'accepted' ? [{ appid: 1, emails: 'studio@x.co' }] : [1] };
     const { run, elements } = fixture(async url => response(url === '/api/state' ? state
       : { name: 'Game', desc: 'Description', images: ['SpriteSheet_Screenshots.png'], mail: 'Draft' }));
     await run('load()');
@@ -46,6 +46,7 @@ test('Home plus the four review views render without socials state or controls',
     assert.match(elements.get('#view').innerHTML, /Description/);
     assert.deepEqual([...elements.get('#view').innerHTML.matchAll(/doAct\('([a-z_]+)'\)/g)].map(m => m[1]), buttons[view]);
     assert.doesNotMatch(elements.get('#view').innerHTML, /social/i);
+    if (view === 'accepted') assert.match(elements.get('#view').innerHTML, /To: studio@x\.co/);
   }
 });
 
@@ -365,4 +366,27 @@ test('cards show the developer\'s Steam game count right after the developer nam
     await new Promise(resolve => setImmediate(resolve));
     assert.match(elements.get('#view').innerHTML, expected);
   }
+});
+
+test('Accepted view sorts A-Z, newest added or oldest added, and remembers the choice', async () => {
+  const accepted = [{ appid: 1, emails: 'a@x.co', added_at: '2026-11-10T10:00:00+05:30' },
+                    { appid: 2, emails: 'b@x.co', added_at: '2026-11-20 08:00:00' },
+                    { appid: 3, emails: 'c@x.co', added_at: '2026-10-01T00:00:00+05:30' }];
+  const state = { ...emptyState, index: { 1: 'Zeta_1', 2: 'Alpha_2', 3: 'Mid_3' }, accepted };
+  const { run, elements } = fixture(async url => response(url === '/api/state' ? state
+    : { name: 'Game', desc: 'Description', images: ['SpriteSheet_Screenshots.png'] }));
+  await run('load()');
+  run("openTab('accepted')");
+  await new Promise(resolve => setImmediate(resolve));
+  const order = () => Array.from(run('Q.accepted.map(c => c.appid)'));
+  assert.deepEqual(order(), [2, 3, 1]);                       // A-Z by name
+  assert.match(elements.get('#view').innerHTML, /Sort: A–Z/);
+  run('cycleAcceptedSort()');
+  assert.deepEqual(order(), [2, 1, 3]);                       // newest added first
+  assert.match(elements.get('#view').innerHTML, /Sort: Newest added/);
+  assert.match(elements.get('#view').innerHTML, /Added 2026-11-20/);
+  run('cycleAcceptedSort()');
+  assert.deepEqual(order(), [3, 1, 2]);                       // oldest added first
+  run('cycleAcceptedSort()');
+  assert.deepEqual(order(), [2, 3, 1]);                       // back to A-Z
 });
