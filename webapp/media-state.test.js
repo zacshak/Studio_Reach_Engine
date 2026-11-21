@@ -367,3 +367,26 @@ test('cards show the developer\'s Steam game count right after the developer nam
     assert.match(elements.get('#view').innerHTML, expected);
   }
 });
+
+test('Accepted view sorts A-Z, newest added or oldest added, and remembers the choice', async () => {
+  const accepted = [{ appid: 1, emails: 'a@x.co', added_at: '2026-11-10T10:00:00+05:30' },
+                    { appid: 2, emails: 'b@x.co', added_at: '2026-11-20 08:00:00' },
+                    { appid: 3, emails: 'c@x.co', added_at: '2026-10-01T00:00:00+05:30' }];
+  const state = { ...emptyState, index: { 1: 'Zeta_1', 2: 'Alpha_2', 3: 'Mid_3' }, accepted };
+  const { run, elements } = fixture(async url => response(url === '/api/state' ? state
+    : { name: 'Game', desc: 'Description', images: ['SpriteSheet_Screenshots.png'] }));
+  await run('load()');
+  run("openTab('accepted')");
+  await new Promise(resolve => setImmediate(resolve));
+  const order = () => Array.from(run('Q.accepted.map(c => c.appid)'));
+  assert.deepEqual(order(), [2, 3, 1]);                       // A-Z by name
+  assert.match(elements.get('#view').innerHTML, /Sort: A–Z/);
+  run('cycleAcceptedSort()');
+  assert.deepEqual(order(), [2, 1, 3]);                       // newest added first
+  assert.match(elements.get('#view').innerHTML, /Sort: Newest added/);
+  assert.match(elements.get('#view').innerHTML, /Added 2026-11-20/);
+  run('cycleAcceptedSort()');
+  assert.deepEqual(order(), [3, 1, 2]);                       // oldest added first
+  run('cycleAcceptedSort()');
+  assert.deepEqual(order(), [2, 3, 1]);                       // back to A-Z
+});

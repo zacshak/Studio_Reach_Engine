@@ -128,7 +128,7 @@ export const VIEW_SQL = {
   // sent mails that bounced as a dead address (spam/policy blocks and delays are logged as 'ignored')
   bounced: "SELECT count(DISTINCT lower(recipient)) FROM mail_bounce_log WHERE recipient<>'' AND outcome NOT IN ('ignored','error')",
   // Accepted view: verified games waiting to be drafted, with the address the mail will go to
-  accepted: "SELECT appid, emails FROM scrape_tracker WHERE Mail_status='Accepted' ORDER BY appid",
+  accepted: "SELECT appid, emails, added_at FROM scrape_tracker WHERE Mail_status='Accepted' ORDER BY appid",
 };
 
 export function homeCounts(rows) {
@@ -180,7 +180,7 @@ async function state(env) {
     devGames: Object.fromEntries((devGames || []).map(([appid, n]) => [Number(appid), Number(n)])),
     issues: Object.fromEntries(issues.map(([appid, raw, game]) => [Number(appid), { ...parseIssue(raw), game: game ?? null }])),
     mail: drafted.map((r) => ({ appid: Number(r[0]), emails: r[1] || "" })),
-    accepted: (accepted || []).map((r) => ({ appid: Number(r[0]), emails: r[1] || "" })),
+    accepted: (accepted || []).map((r) => ({ appid: Number(r[0]), emails: r[1] || "", added_at: r[2] ?? null })),
     triageReviews: triageSnapshot(reviews).triageReviews,
     scheduled: home.scheduled > 0,
     pendingDrafts: home.accepted > 0,

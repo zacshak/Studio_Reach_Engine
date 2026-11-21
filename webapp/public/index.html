@@ -240,6 +240,18 @@ function invalidateMedia() {
 let shot = 0;                          // selected screenshot on current card
 let armed = null;                      // two-tap confirm for bulk buttons
 let showAll = false;                   // "All N screenshots" toggle on current card
+// Accepted view order: A–Z, newest added first, or oldest added first (remembered per browser)
+const ACCEPTED_SORTS = [["name", "A–Z"], ["newest", "Newest added"], ["oldest", "Oldest added"]];
+let acceptedSort = "name";
+try { if (ACCEPTED_SORTS.some(([k]) => k === localStorage.getItem("sre_accepted_sort"))) acceptedSort = localStorage.getItem("sre_accepted_sort"); } catch {}
+const addedAt = (appid) => (S.accepted || []).find((r) => r.appid === appid)?.added_at || null;
+const addedTime = (appid) => { const t = Date.parse(String(addedAt(appid) || "").replace(" ", "T")); return Number.isFinite(t) ? t : 0; };
+function cycleAcceptedSort() {
+  const i = ACCEPTED_SORTS.findIndex(([k]) => k === acceptedSort);
+  acceptedSort = ACCEPTED_SORTS[(i + 1) % ACCEPTED_SORTS.length][0];
+  try { localStorage.setItem("sre_accepted_sort", acceptedSort); } catch {}
+  Q = queues(); idx.accepted = 0; shot = 0; showAll = false; render();
+}
 
 function queues() {
   // A game whose media was purged after an earlier send (it bounced) has no folder; it
@@ -251,7 +263,10 @@ function queues() {
     pending: mk(S.pending),
     passed: mk(S.passed),
     flagged: mk(S.flagged),
-    accepted: mk((S.accepted || []).map((m) => m.appid)),
+    accepted: acceptedSort === "name" ? mk((S.accepted || []).map((m) => m.appid))
+      : mk((S.accepted || []).map((m) => m.appid)).sort((x, y) =>
+          (acceptedSort === "newest" ? addedTime(y.appid) - addedTime(x.appid) : addedTime(x.appid) - addedTime(y.appid))
+          || (sortName(x) < sortName(y) ? -1 : 1)),
     mail: mk(S.mail.map((m) => m.appid)),
   };
 }
@@ -432,7 +447,8 @@ function render() {
       ? `<button class="armed" onclick="acceptAll()">Tap again to accept ${withEmail} game(s) with an email</button>
          <button onclick="armed=null;render()">Cancel</button>`
       : `<button ${withEmail ? '' : 'disabled data-unavailable'} onclick="acceptAll()">✅ Accept all (${withEmail} with email)</button>`)
-    : tab === "mail" ? `<button onclick="approveAll()">✅ Approve all (${list.length})</button>` : "";
+    : tab === "mail" ? `<button onclick="approveAll()">✅ Approve all (${list.length})</button>`
+    : tab === "accepted" ? `<button onclick="cycleAcceptedSort()" title="Change order">⇅ Sort: ${ACCEPTED_SORTS.find(([k]) => k === acceptedSort)[1]}</button>` : "";
   const bulk = bulkBar + gha;
   const review = S.triageReviews?.[card.appid];
 
@@ -443,6 +459,7 @@ function render() {
       <h2>${escapeHtml(String(name))}</h2>
       <div class="meta">${metaHtml(card.appid, m)} · appid ${card.appid} · 📅 ${escapeHtml(S.releases?.[card.appid] || 'No release date')} ·
         <a href="https://store.steampowered.com/app/${card.appid}/" target="_blank" rel="noopener">Steam page 🔗</a>${
+        tab === 'accepted' && addedAt(card.appid) ? ` · ➕ Added ${escapeHtml(String(addedAt(card.appid)).slice(0, 10))}` : ''}${
         noMail.has(card.appid) ? '<span class="badge">📭 No email</span>' : ''}${
         issue ? `<span class="badge warn" title="${escapeHtml(issue.reason || '')}">⚠️ ${escapeHtml(issueText(issue))}</span>` : ''}</div>
       ${img}${thumbs}${shotsCtl}${allShots}
