@@ -2,7 +2,7 @@
 <!-- SRE review app — the whole frontend. Vanilla JS, no build step.
      Cards advance only after confirmed writes. Queue refresh runs without
      clearing already-loaded media; explicit Refresh reloads all manifests.
-     Views: Home (counts) · Pending · Passed · Flagged · Mail.
+     Views: Home (counts) · Pending · Passed · Flagged · Accepted · Mail.
      Keyboard: ←/→ navigate · A = accept/pass/approve · F = flag · R = reject/delete. -->
 <html lang="en">
 <head>
@@ -109,6 +109,7 @@
   <button class="tab" data-tab="pending">⏳ Pending <b></b></button>
   <button class="tab" data-tab="passed">✅ Passed <b></b></button>
   <button class="tab" data-tab="flagged">🚩 Flagged <b></b></button>
+  <button class="tab" data-tab="accepted">📋 Accepted <b></b></button>
   <button class="tab" data-tab="mail">📧 Mail <b></b></button>
   <button class="refresh" onclick="load()" aria-label="Refresh dashboard">↻</button>
 </header>
@@ -220,8 +221,8 @@ async function retryFailed() {
 // ---- state ----
 let S = null;                          // /api/state payload
 let tab = "home";
-const VIEWS = ["pending", "passed", "flagged", "mail"];
-const idx = { pending: 0, passed: 0, flagged: 0, mail: 0 };
+const VIEWS = ["pending", "passed", "flagged", "accepted", "mail"];
+const idx = { pending: 0, passed: 0, flagged: 0, accepted: 0, mail: 0 };
 let noMail = new Set();                // not-yet-accepted games without an email
 const manifests = new Map();           // folder -> manifest (or null while loading)
 const manifestTokens = new Map();
@@ -250,12 +251,13 @@ function queues() {
     pending: mk(S.pending),
     passed: mk(S.passed),
     flagged: mk(S.flagged),
+    accepted: mk((S.accepted || []).map((m) => m.appid)),
     mail: mk(S.mail.map((m) => m.appid)),
   };
 }
 const sortName = c => (c.folder || S.issues?.[c.appid]?.game || String(c.appid)).toLowerCase();
 let Q = null;
-const emailsOf = (appid) => (S.mail.find((m) => m.appid === appid) || {}).emails || "";
+const emailsOf = (appid) => ([...S.mail, ...(S.accepted || [])].find((m) => m.appid === appid) || {}).emails || "";
 
 function refreshError(message, background) {
   if (background && Q) { actionNotice = message; showBanner(); }
@@ -409,13 +411,15 @@ function render() {
         imageTag(card.folder, f, 'loading="lazy"')).join("")}</div>` : "";
   const mail = tab === "mail"
     ? `<div class="mail"><div class="to">To: ${escapeHtml(emailsOf(card.appid) || "(no recipient!)")}</div>${
-        (m && m.mail) ? escapeHtml(m.mail) : "<i>(not drafted yet)</i>"}</div>` : "";
+        (m && m.mail) ? escapeHtml(m.mail) : "<i>(not drafted yet)</i>"}</div>`
+    : tab === "accepted" ? `<div class="mail"><div class="to">To: ${escapeHtml(emailsOf(card.appid) || "(no recipient!)")}</div><i>Verified. Waiting to be drafted.</i></div>` : "";
 
   // [label, action, class] per view: left = secondary, right = primary
   const B = {
     pending: [["❌ Reject", "reject", "bad"], ["✅ Accept", "triage_pass", "ok"]],
     passed: [["🚩 Flag", "flag", "bad"], ["✅ Accept", "accept", "ok"]],
     flagged: [["🗑 Delete", "reject", "bad"], ["✅ Pass", "pass", "ok"]],
+    accepted: [["🗑 Delete", "reject", "bad"]],
     mail: [["❌ Reject", "reject", "bad"], ["✅ Approve", "approve", "ok"]],
   }[tab];
   const withEmail = Q.passed.filter(c => !noMail.has(c.appid)).length;
@@ -466,7 +470,7 @@ function render() {
 const TILES = [
   ["Review", [["pending", "Pending", "pending"], ["triaged", "Triaged"], ["passed", "Passed", "passed"],
               ["flagged", "Flagged", "flagged"], ["no_mail", "No email (not accepted)"]]],
-  ["Outreach", [["verifying", "Verifying email"], ["accepted", "Accepted"], ["drafted", "Drafted", "mail"], ["scheduled", "Scheduled", "mail"],
+  ["Outreach", [["verifying", "Verifying email"], ["accepted", "Accepted", "accepted"], ["drafted", "Drafted", "mail"], ["scheduled", "Scheduled", "mail"],
                 ["sending", "Sending"], ["sent", "Sent"], ["bounced", "Bounced"], ["replied", "Replied"]]],
   ["Quarantine", [["invalid", "Invalid"]]],
 ];
@@ -585,6 +589,7 @@ async function doAct(action) {
       if (result && !result.blocked?.includes(card.appid)) {
         for (const key of ['pending', 'passed', 'flagged']) S[key] = S[key].filter(id => id !== card.appid);
         S.mail = S.mail.filter(row => row.appid !== card.appid);
+        if (S.accepted) S.accepted = S.accepted.filter(row => row.appid !== card.appid);
         if (action === 'triage_pass' || action === 'pass') S.passed.push(card.appid);
         if (action === 'flag') S.flagged.push(card.appid);
         if (action === 'accept') watchVerification([card.appid]);
@@ -749,7 +754,7 @@ document.addEventListener("keydown", (e) => {
   const key = e.key.toLowerCase();
   if (e.key === "ArrowLeft") move(-1);
   else if (e.key === "ArrowRight") move(1);
-  else if (key === "a") doAct({ pending: "triage_pass", passed: "accept", flagged: "pass", mail: "approve" }[tab]);
+  else if (key === "a") { const action = { pending: "triage_pass", passed: "accept", flagged: "pass", mail: "approve" }[tab]; if (action) doAct(action); }
   else if (key === "f" && tab === "passed") doAct("flag");
   else if (key === "r" && tab !== "passed") doAct("reject");
 });

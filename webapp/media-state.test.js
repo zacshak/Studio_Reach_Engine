@@ -29,13 +29,13 @@ function fixture(fetch) {
   return { ctx, run: code => vm.runInContext(code, ctx), elements };
 }
 
-test('Home plus the four review views render without socials state or controls', async () => {
-  const views = ['pending', 'passed', 'flagged', 'mail'];
+test('Home plus the five review views render without socials state or controls', async () => {
+  const views = ['pending', 'passed', 'flagged', 'accepted', 'mail'];
   assert.deepEqual([...html.matchAll(/data-tab="([^"]+)"/g)].map(match => match[1]), ['home', ...views]);
   assert.doesNotMatch(html, /renderSocials|toggleSocials|reqsocial|social-links|social-empty|Fetch requested socials|social research/);
-  const buttons = { pending: ['reject', 'triage_pass'], passed: ['flag', 'accept'], flagged: ['reject', 'pass'], mail: ['reject', 'approve'] };
+  const buttons = { pending: ['reject', 'triage_pass'], passed: ['flag', 'accept'], flagged: ['reject', 'pass'], accepted: ['reject'], mail: ['reject', 'approve'] };
   for (const view of views) {
-    const state = { ...emptyState, index: { 1: 'Game_1' }, [view]: view === 'mail' ? [{ appid: 1 }] : [1] };
+    const state = { ...emptyState, index: { 1: 'Game_1' }, [view]: view === 'mail' || view === 'accepted' ? [{ appid: 1, emails: 'studio@x.co' }] : [1] };
     const { run, elements } = fixture(async url => response(url === '/api/state' ? state
       : { name: 'Game', desc: 'Description', images: ['SpriteSheet_Screenshots.png'], mail: 'Draft' }));
     await run('load()');
@@ -46,6 +46,7 @@ test('Home plus the four review views render without socials state or controls',
     assert.match(elements.get('#view').innerHTML, /Description/);
     assert.deepEqual([...elements.get('#view').innerHTML.matchAll(/doAct\('([a-z_]+)'\)/g)].map(m => m[1]), buttons[view]);
     assert.doesNotMatch(elements.get('#view').innerHTML, /social/i);
+    if (view === 'accepted') assert.match(elements.get('#view').innerHTML, /To: studio@x\.co/);
   }
 });
 
