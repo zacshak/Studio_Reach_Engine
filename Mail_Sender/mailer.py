@@ -990,6 +990,32 @@ def check_mailbox(email):
     return 0 if status.startswith("ok") else 1
 
 
+def mark_replies_read():
+    """Apply the dashboard's Mark as read to the mailboxes (read flag), then clear the request."""
+    import replies
+    _load_env()
+    _senders, mailboxes = load_accounts()
+    by_email = {m.email.lower(): m for m in mailboxes}
+    groups = {}
+    for reply_id, mailbox, addr in pipeline.replies_to_mark_read():
+        groups.setdefault((mailbox or "").lower(), []).append((reply_id, addr))
+    failed = 0
+    for mailbox, items in groups.items():
+        account = by_email.get(mailbox)
+        if account is None:
+            print(f"WARN: cannot mark {len(items)} repl(ies) read: no access to {mailbox}")
+            failed += 1
+            continue
+        try:
+            for reply_id in replies.mark_read(account, items, connect=_imap_connect):
+                pipeline.reply_marked_read(reply_id)
+                print(f"  marked read in {account.email}: {reply_id}")
+        except Exception as exc:
+            print(f"WARN: mark read failed for {account.email} [{account.backend}]: {exc}")
+            failed += 1
+    return 1 if failed else 0
+
+
 def check_accounts():
     """Log in to every configured account's SMTP and IMAP without sending anything, and
     record the result for the dashboard. Returns 1 if any account that should send failed."""
@@ -1049,6 +1075,8 @@ if __name__ == "__main__":
         raise SystemExit(review())
     elif "--check-accounts" in args:
         raise SystemExit(check_accounts())
+    elif "--mark-replies-read" in args:
+        raise SystemExit(mark_replies_read())
     elif "--check-mailbox" in args:
         raise SystemExit(check_mailbox(args[args.index("--check-mailbox") + 1]))
     elif "--purge-sent" in args:

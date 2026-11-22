@@ -196,7 +196,8 @@ _MAIL_REPLIES_SCHEMA = """(
     our_subject  TEXT,
     our_body     TEXT,
     our_sent_at  TEXT,
-    updated_at   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    updated_at   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    mark_read_pending INTEGER NOT NULL DEFAULT 0
 )"""
 
 # tracker columns seeded from newly_added (the rest are filled by the scraper)
@@ -488,6 +489,9 @@ def init_tracker():
         conn.execute(f"CREATE TABLE IF NOT EXISTS mail_send_log {_MAIL_SEND_LOG_SCHEMA}")
         conn.execute(f"CREATE TABLE IF NOT EXISTS oauth_tokens {_OAUTH_TOKENS_SCHEMA}")
         conn.execute(f"CREATE TABLE IF NOT EXISTS mail_replies {_MAIL_REPLIES_SCHEMA}")
+        if "mark_read_pending" not in {c[1] for c in conn.execute("PRAGMA table_info(mail_replies)")}:
+            # set by the dashboard's Mark as read; cleared once the mailbox has the read flag
+            conn.execute("ALTER TABLE mail_replies ADD COLUMN mark_read_pending INTEGER NOT NULL DEFAULT 0")
         conn.execute("CREATE INDEX IF NOT EXISTS mail_send_log_sender_time "
                      "ON mail_send_log(sender, sent_at)")
         # Column order is not a contract. Preserve additive columns, indexes and triggers.
@@ -1128,11 +1132,30 @@ def save_reply(reply):
     cols = ("reply_id", "appid", "mailbox", "from_name", "from_addr", "subject", "received_at",
             "body", "status", "our_subject", "our_body", "our_sent_at")
     values = [reply.get(c) for c in cols]
-    updates = ", ".join(f"{c}=excluded.{c}" for c in cols[1:])
+    # A reply marked read on the dashboard stays read until the mailbox catches up.
+    updates = ", ".join(f"{c}=excluded.{c}" for c in cols[1:] if c != "status")
+    updates += (", status=CASE WHEN mail_replies.mark_read_pending=1 AND excluded.status='unread' "
+                "THEN 'read' ELSE excluded.status END")
     with closing(_rw()) as conn:
         conn.execute(f"INSERT INTO mail_replies ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))}) "
                      f"ON CONFLICT(reply_id) DO UPDATE SET {updates}, updated_at=CURRENT_TIMESTAMP",
                      values)
+        conn.commit()
+
+
+def replies_to_mark_read():
+    """(reply_id, mailbox, from_addr) the dashboard marked read, not yet flagged in the mailbox."""
+    _ensure()
+    with closing(_ro()) as conn:
+        return conn.execute("SELECT reply_id, mailbox, from_addr FROM mail_replies "
+                            "WHERE mark_read_pending=1 ORDER BY mailbox").fetchall()
+
+
+def reply_marked_read(reply_id):
+    _ensure()
+    with closing(_rw()) as conn:
+        conn.execute("UPDATE mail_replies SET mark_read_pending=0, updated_at=CURRENT_TIMESTAMP "
+                     "WHERE reply_id=?", (reply_id,))
         conn.commit()
 
 

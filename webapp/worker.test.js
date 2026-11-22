@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  approveStmt, VIEW_SQL, homeCounts, sql, updateJSON, REPLIES_SQL, repliesList,
+  approveStmt, VIEW_SQL, homeCounts, sql, updateJSON, REPLIES_SQL, repliesList, MARK_READ_SQL,
 } from "./worker.js";
 import worker from "./worker.js";
 
@@ -336,4 +336,9 @@ test('replies list returns every stored reply with its game, newest first', asyn
     from_name: 'Michal', from_addr: 'dev@x.co', subject: 'Re: FixIt', received_at: '2026-11-19T14:32:54Z', status: 'unread',
     body: 'Send me your portfolio.', our_subject: 'FixIt?', our_body: 'hey', our_sent_at: '2026-11-12T12:30:34Z',
     updated_at: '2026-11-22 10:00:00' });
+});
+
+test('mark read only changes an unread reply and queues it for the mailbox', () => {
+  assert.match(MARK_READ_SQL, /SET status='read', mark_read_pending=1/);
+  assert.match(MARK_READ_SQL, /WHERE reply_id=\? AND status='unread' RETURNING reply_id/);
 });

@@ -42,12 +42,13 @@ class FakeImap:
         self.boxes = {"INBOX": inbox, '"Sent Items"': sent}
         self.current = None
         self.peeked_only = True
+        self.allow_write = False
 
     def list(self):
         return "OK", [b'(\\HasNoChildren) "/" "INBOX"', b'(\\HasNoChildren \\Sent) "/" "Sent Items"']
 
     def select(self, name, readonly=False):
-        assert readonly, "the sync must never open a mailbox read-write"
+        assert readonly or self.allow_write, "the sync must never open a mailbox read-write"
         self.current = self.boxes[name]
         return "OK", [str(len(self.current)).encode()]
 
@@ -66,6 +67,12 @@ class FakeImap:
         raw, seen = self.current[int(number) - 1]
         flags = b"(\\Seen)" if seen else b"()"
         return "OK", [(number + b" (FLAGS " + flags + b" BODY[] {%d}" % len(raw), raw), b")"]
+
+    def store(self, number, op, flags):
+        assert (op, flags) == ("+FLAGS", "(\\Seen)")
+        raw, _ = self.current[int(number) - 1]
+        self.current[int(number) - 1] = (raw, True)
+        return "OK", [b""]
 
     def logout(self):
         pass
@@ -137,6 +144,25 @@ class RepliesTest(unittest.TestCase):
     def test_mail_outside_the_thread_is_never_stored(self):
         self.assertEqual(self.sync([(UNRELATED, False)], [(OUR_MAIL, True)]), 0)
         self.assertEqual(self.rows(), [])
+
+    def test_mark_read_sets_the_flag_on_exactly_that_reply_and_the_sync_keeps_it_read(self):
+        self.sync([(REPLY, False), (SECOND, False)], [(OUR_MAIL, True), (FOLLOW_UP, True)])
+        with closing(sqlite3.connect(self.db)) as conn:   # what the dashboard button does
+            conn.execute("UPDATE mail_replies SET status='read', mark_read_pending=1 WHERE reply_id=?",
+                         ("<reply.2@game.test>",))
+            conn.commit()
+        self.sync([(REPLY, False), (SECOND, False)], [(OUR_MAIL, True), (FOLLOW_UP, True)])
+        rows = {r["reply_id"]: r for r in self.rows()}
+        self.assertEqual(rows["<reply.2@game.test>"]["status"], "read")   # not flipped back
+        inbox = [(REPLY, False), (SECOND, False), (UNRELATED, False)]
+        imap = FakeImap(inbox, [])
+        imap.allow_write = True
+        items = [(rid, addr) for rid, _box, addr in mailer.pipeline.replies_to_mark_read()]
+        done = replies.mark_read(Account(), items, connect=lambda host: imap)
+        self.assertEqual(done, ["<reply.2@game.test>"])
+        self.assertEqual([seen for _raw, seen in imap.boxes["INBOX"]], [False, True, False])
+        mailer.pipeline.reply_marked_read("<reply.2@game.test>")
+        self.assertEqual(mailer.pipeline.replies_to_mark_read(), [])
 
     def test_html_only_reply_becomes_text(self):
         msg = REPLY.replace(b"Content-Type: text/plain", b"Content-Type: text/html").replace(
