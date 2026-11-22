@@ -29,13 +29,13 @@ function fixture(fetch) {
   return { ctx, run: code => vm.runInContext(code, ctx), elements };
 }
 
-test('Home plus the five review views render without socials state or controls', async () => {
-  const views = ['pending', 'passed', 'flagged', 'accepted', 'mail'];
-  assert.deepEqual([...html.matchAll(/data-tab="([^"]+)"/g)].map(match => match[1]), ['home', 'pending', 'passed', 'flagged', 'accepted', 'replies', 'mail']);
+test('Home plus the six review views render without socials state or controls', async () => {
+  const views = ['pending', 'passed', 'flagged', 'accepted', 'scheduled', 'mail'];
+  assert.deepEqual([...html.matchAll(/data-tab="([^"]+)"/g)].map(match => match[1]), ['home', 'pending', 'passed', 'flagged', 'accepted', 'scheduled', 'replies', 'mail']);
   assert.doesNotMatch(html, /renderSocials|toggleSocials|reqsocial|social-links|social-empty|Fetch requested socials|social research/);
-  const buttons = { pending: ['reject', 'triage_pass'], passed: ['flag', 'accept'], flagged: ['reject', 'pass'], accepted: ['reject'], mail: ['reject', 'approve'] };
+  const buttons = { pending: ['reject', 'triage_pass'], passed: ['flag', 'accept'], flagged: ['reject', 'pass'], accepted: ['reject'], scheduled: ['reject'], mail: ['reject', 'approve'] };
   for (const view of views) {
-    const state = { ...emptyState, index: { 1: 'Game_1' }, [view]: view === 'mail' || view === 'accepted' ? [{ appid: 1, emails: 'studio@x.co' }] : [1] };
+    const state = { ...emptyState, index: { 1: 'Game_1' }, [view === 'scheduled' ? 'scheduledGames' : view]: ['mail', 'accepted', 'scheduled'].includes(view) ? [{ appid: 1, emails: 'studio@x.co' }] : [1] };
     const { run, elements } = fixture(async url => response(url === '/api/state' ? state
       : { name: 'Game', desc: 'Description', images: ['SpriteSheet_Screenshots.png'], mail: 'Draft' }));
     await run('load()');
@@ -46,7 +46,8 @@ test('Home plus the five review views render without socials state or controls',
     assert.match(elements.get('#view').innerHTML, /Description/);
     assert.deepEqual([...elements.get('#view').innerHTML.matchAll(/doAct\('([a-z_]+)'\)/g)].map(m => m[1]), buttons[view]);
     assert.doesNotMatch(elements.get('#view').innerHTML, /social/i);
-    if (view === 'accepted') assert.match(elements.get('#view').innerHTML, /To: studio@x\.co/);
+    if (view === 'accepted' || view === 'scheduled') assert.match(elements.get('#view').innerHTML, /To: studio@x\.co/);
+    if (view === 'scheduled') assert.match(elements.get('#view').innerHTML, /scheduled, goes out with the next send run[\s\S]*Draft/);
   }
 });
 
@@ -486,4 +487,24 @@ test('Replies tab badge shows only the unread count, before and after the list l
   assert.equal(badge.textContent, 1);                       // from the loaded list: 1 of 3 unread
   run("R[0].status = 'read'; render()");
   assert.equal(badge.textContent, 0);
+});
+
+test('Scheduled view sorts on its own setting and the Home tile opens it', async () => {
+  const scheduledGames = [{ appid: 1, emails: 'a@x.co', added_at: '2026-11-10T10:00:00Z' },
+                          { appid: 2, emails: 'b@x.co', added_at: '2026-11-20T10:00:00Z' }];
+  const state = { ...emptyState, index: { 1: 'Zeta_1', 2: 'Alpha_2' }, scheduledGames, accepted: [],
+    counts: { scheduled: 2 }, scheduled: true };
+  const { run, elements } = fixture(async url => response(url === '/api/state' ? state
+    : { name: 'Game', desc: 'Description', images: ['SpriteSheet_Screenshots.png'], mail: 'Subject: Hi' }));
+  await run('load()');
+  assert.match(elements.get('#view').innerHTML, /openTab\('scheduled'\)/);
+  run("openTab('scheduled')");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(Array.from(run('Q.scheduled.map(c => c.appid)')), [2, 1]);       // A-Z
+  assert.match(elements.get('#view').innerHTML, /Send scheduled mails/);
+  run("cycleSort('scheduled')");
+  assert.deepEqual(Array.from(run('Q.scheduled.map(c => c.appid)')), [2, 1]);       // newest first
+  run("cycleSort('scheduled')");
+  assert.deepEqual(Array.from(run('Q.scheduled.map(c => c.appid)')), [1, 2]);       // oldest first
+  assert.equal(run('listSort.accepted'), 'name');                                     // Accepted untouched
 });
