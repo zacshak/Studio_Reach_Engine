@@ -265,8 +265,25 @@ let showAll = false;                   // "All N screenshots" toggle on current 
 const ACCEPTED_SORTS = [["name", "A–Z"], ["newest", "Newest added"], ["oldest", "Oldest added"]];
 let acceptedSort = "name";
 try { if (ACCEPTED_SORTS.some(([k]) => k === localStorage.getItem("sre_accepted_sort"))) acceptedSort = localStorage.getItem("sre_accepted_sort"); } catch {}
+// Every time on the dashboard is shown in IST (Asia/Kolkata). Database times without a zone
+// (SQLite CURRENT_TIMESTAMP) are UTC.
+function parseTime(value) {
+  if (!value) return NaN;
+  let text = String(value).trim().replace(" ", "T");
+  if (/^\d{4}-\d\d-\d\dT\d\d:\d\d(:\d\d)?$/.test(text)) text += "Z";
+  return Date.parse(text);
+}
+const IST_PARTS = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit",
+  day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+function fmtIST(value, dateOnly = false) {
+  const t = parseTime(value);
+  if (!Number.isFinite(t)) return value ? String(value) : "";
+  const p = Object.fromEntries(IST_PARTS.formatToParts(new Date(t)).map((x) => [x.type, x.value]));
+  const date = `${p.year}-${p.month}-${p.day}`;
+  return dateOnly ? date : `${date} ${p.hour}:${p.minute} IST`;
+}
 const addedAt = (appid) => (S.accepted || []).find((r) => r.appid === appid)?.added_at || null;
-const addedTime = (appid) => { const t = Date.parse(String(addedAt(appid) || "").replace(" ", "T")); return Number.isFinite(t) ? t : 0; };
+const addedTime = (appid) => { const t = parseTime(addedAt(appid)); return Number.isFinite(t) ? t : 0; };
 function cycleAcceptedSort() {
   const i = ACCEPTED_SORTS.findIndex(([k]) => k === acceptedSort);
   acceptedSort = ACCEPTED_SORTS[(i + 1) % ACCEPTED_SORTS.length][0];
@@ -482,7 +499,7 @@ function render() {
       <h2>${escapeHtml(String(name))}</h2>
       <div class="meta">${metaHtml(card.appid, m)} · appid ${card.appid} · 📅 ${escapeHtml(S.releases?.[card.appid] || 'No release date')} ·
         <a href="https://store.steampowered.com/app/${card.appid}/" target="_blank" rel="noopener">Steam page 🔗</a>${
-        tab === 'accepted' && addedAt(card.appid) ? ` · ➕ Added ${escapeHtml(String(addedAt(card.appid)).slice(0, 10))}` : ''}${
+        tab === 'accepted' && addedAt(card.appid) ? ` · ➕ Added ${escapeHtml(fmtIST(addedAt(card.appid), true))}` : ''}${
         noMail.has(card.appid) ? '<span class="badge">📭 No email</span>' : ''}${
         issue ? `<span class="badge warn" title="${escapeHtml(issue.reason || '')}">⚠️ ${escapeHtml(issueText(issue))}</span>` : ''}</div>
       ${img}${thumbs}${shotsCtl}${allShots}
@@ -569,7 +586,7 @@ async function loadReplies() {
   finally { repliesLoading = false; render(); }
 }
 const STATUS_LABEL = { unread: "Unread", read: "Read", replied: "Replied" };
-const fmtWhen = (iso) => (iso || "").replace("T", " ").replace(/:\d\dZ$/, " UTC");
+const fmtWhen = (iso) => fmtIST(iso);
 function showReply(id) { openReply = id; renderedHTML = null; render(); globalThis.scrollTo?.(0, 0); }
 function closeReply() { openReply = null; renderedHTML = null; render(); }
 async function refreshReplies() {

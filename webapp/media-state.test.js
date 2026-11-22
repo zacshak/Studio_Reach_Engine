@@ -420,3 +420,13 @@ test('Replies view lists replies with status, opens one with both mails and Stea
   run(`showReply('<r1@y.co>')`);
   assert.match(elements.get('#view').innerHTML, /your original mail was not found in Sent/);
 });
+
+test('dashboard times are shown in IST', async () => {
+  const { run } = fixture(async url => response(emptyState));
+  await run('load()');
+  assert.equal(run("fmtIST('2026-11-19T14:32:54Z')"), '2026-11-19 20:02 IST');       // UTC ISO
+  assert.equal(run("fmtIST('2026-11-22 23:00:00')"), '2026-11-23 04:30 IST');        // SQLite UTC, crosses midnight
+  assert.equal(run("fmtIST('2026-11-20T09:47:54+05:30')"), '2026-11-20 09:47 IST');  // already IST
+  assert.equal(run("fmtIST('2026-11-22 20:00:00', true)"), '2026-11-23');            // date only, IST day
+  assert.equal(run("fmtIST(null)"), '');
+});
