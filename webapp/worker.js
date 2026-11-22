@@ -130,6 +130,8 @@ export const VIEW_SQL = {
   bounced: "SELECT count(DISTINCT lower(recipient)) FROM mail_bounce_log WHERE recipient<>'' AND outcome NOT IN ('ignored','error')",
   // Accepted view: verified games waiting to be drafted, with the address the mail will go to
   accepted: "SELECT appid, emails, added_at FROM scrape_tracker WHERE Mail_status='Accepted' ORDER BY appid",
+  // Replies tab badge: replies still unread in their mailbox (and not marked read here)
+  repliesUnread: "SELECT count(*) FROM mail_replies WHERE status='unread'",
 };
 
 // Replies view: every stored studio reply with the outreach mail it answers (mail_replies is
@@ -182,9 +184,10 @@ async function state(env) {
       [VIEW_SQL.devGames],
       [VIEW_SQL.bounced],
       [VIEW_SQL.accepted],
+      [VIEW_SQL.repliesUnread],
     ]),
   ]);
-  const [pending, passed, flagged, noMail, drafted, counts, reviews, issues, verifying, senders, releases, devGames, bounced, accepted] = db;
+  const [pending, passed, flagged, noMail, drafted, counts, reviews, issues, verifying, senders, releases, devGames, bounced, accepted, repliesUnread] = db;
   const ids = rows => rows.map(r => Number(r[0]));
   const home = { ...homeCounts(counts), bounced: Number(bounced?.[0]?.[0]) || 0 };
   return {
@@ -200,6 +203,7 @@ async function state(env) {
     issues: Object.fromEntries(issues.map(([appid, raw, game]) => [Number(appid), { ...parseIssue(raw), game: game ?? null }])),
     mail: drafted.map((r) => ({ appid: Number(r[0]), emails: r[1] || "" })),
     accepted: (accepted || []).map((r) => ({ appid: Number(r[0]), emails: r[1] || "", added_at: r[2] ?? null })),
+    repliesUnread: Number(repliesUnread?.[0]?.[0]) || 0,
     triageReviews: triageSnapshot(reviews).triageReviews,
     scheduled: home.scheduled > 0,
     pendingDrafts: home.accepted > 0,

@@ -472,3 +472,18 @@ test('opened reply: Your message starts collapsed and unread replies get Mark as
   run(`showReply('<r@x.co>')`);
   assert.doesNotMatch(elements.get('#view').innerHTML, /Mark as read/);     // already read
 });
+
+test('Replies tab badge shows only the unread count, before and after the list loads', async () => {
+  const replies = [{ reply_id: '<a>', appid: 1, status: 'unread', body: '' }, { reply_id: '<b>', appid: 2, status: 'read', body: '' },
+                   { reply_id: '<c>', appid: 3, status: 'replied', body: '' }];
+  const badge = { textContent: '' };
+  const { run, ctx } = fixture(async url => response(url === '/api/state' ? { ...emptyState, repliesUnread: 1 } : { replies }));
+  ctx.document.querySelectorAll = sel => sel === '.tab' ? [{ dataset: { tab: 'replies' }, classList: { toggle() {} }, querySelector: () => badge }] : [];
+  await run('load()');
+  assert.equal(badge.textContent, 1);                       // from /api/state, list not loaded
+  run("openTab('replies')");
+  for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(badge.textContent, 1);                       // from the loaded list: 1 of 3 unread
+  run("R[0].status = 'read'; render()");
+  assert.equal(badge.textContent, 0);
+});

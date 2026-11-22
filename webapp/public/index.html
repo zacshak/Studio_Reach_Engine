@@ -452,7 +452,8 @@ function render() {
     const t = b.dataset.tab;
     b.classList.toggle("on", t === tab);
     const count = b.querySelector("b");
-    if (count) count.textContent = t === "replies" ? (R ? R.length : "") : Q[t].length;
+    // Replies tab: unread replies only, so a new reply stands out
+    if (count) count.textContent = t === "replies" ? (R ? R.filter((r) => r.status === "unread").length : (S.repliesUnread ?? "")) : Q[t].length;
   });
   const view = $("#view");
   if (tab === "home") { renderHome(view); return; }
