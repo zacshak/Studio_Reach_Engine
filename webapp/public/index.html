@@ -140,6 +140,7 @@
   <button class="tab" data-tab="passed">✅ Passed <b></b></button>
   <button class="tab" data-tab="flagged">🚩 Flagged <b></b></button>
   <button class="tab" data-tab="accepted">📋 Accepted <b></b></button>
+  <button class="tab" data-tab="scheduled">📨 Scheduled <b></b></button>
   <button class="tab" data-tab="replies">💬 Replies <b></b></button>
   <button class="tab" data-tab="mail">📧 Mail <b></b></button>
   <button class="refresh" onclick="load()" aria-label="Refresh dashboard">↻</button>
@@ -252,8 +253,8 @@ async function retryFailed() {
 // ---- state ----
 let S = null;                          // /api/state payload
 let tab = "home";
-const VIEWS = ["pending", "passed", "flagged", "accepted", "mail"];
-const idx = { pending: 0, passed: 0, flagged: 0, accepted: 0, mail: 0 };
+const VIEWS = ["pending", "passed", "flagged", "accepted", "scheduled", "mail"];
+const idx = { pending: 0, passed: 0, flagged: 0, accepted: 0, scheduled: 0, mail: 0 };
 let noMail = new Set();                // not-yet-accepted games without an email
 const manifests = new Map();           // folder -> manifest (or null while loading)
 const manifestTokens = new Map();
@@ -271,10 +272,12 @@ function invalidateMedia() {
 let shot = 0;                          // selected screenshot on current card
 let armed = null;                      // two-tap confirm for bulk buttons
 let showAll = false;                   // "All N screenshots" toggle on current card
-// Accepted view order: A–Z, newest added first, or oldest added first (remembered per browser)
+// Accepted and Scheduled order: A–Z, newest added first, or oldest added first (remembered per browser)
 const ACCEPTED_SORTS = [["name", "A–Z"], ["newest", "Newest added"], ["oldest", "Oldest added"]];
-let acceptedSort = "name";
-try { if (ACCEPTED_SORTS.some(([k]) => k === localStorage.getItem("sre_accepted_sort"))) acceptedSort = localStorage.getItem("sre_accepted_sort"); } catch {}
+const listSort = { accepted: "name", scheduled: "name" };
+for (const view of Object.keys(listSort)) {
+  try { const saved = localStorage.getItem(`sre_${view}_sort`); if (ACCEPTED_SORTS.some(([k]) => k === saved)) listSort[view] = saved; } catch {}
+}
 // Every time on the dashboard is shown in IST (Asia/Kolkata). Database times without a zone
 // (SQLite CURRENT_TIMESTAMP) are UTC.
 function parseTime(value) {
@@ -310,35 +313,40 @@ function fmtIST(value, dateOnly = false) {
   const date = `${p.year}-${p.month}-${p.day}`;
   return dateOnly ? date : `${date} ${p.hour}:${p.minute} IST`;
 }
-const addedAt = (appid) => (S.accepted || []).find((r) => r.appid === appid)?.added_at || null;
+const addedAt = (appid) => [...(S.accepted || []), ...(S.scheduledGames || [])].find((r) => r.appid === appid)?.added_at || null;
 const addedTime = (appid) => { const t = parseTime(addedAt(appid)); return Number.isFinite(t) ? t : 0; };
-function cycleAcceptedSort() {
-  const i = ACCEPTED_SORTS.findIndex(([k]) => k === acceptedSort);
-  acceptedSort = ACCEPTED_SORTS[(i + 1) % ACCEPTED_SORTS.length][0];
-  try { localStorage.setItem("sre_accepted_sort", acceptedSort); } catch {}
-  Q = queues(); idx.accepted = 0; shot = 0; showAll = false; render();
+function cycleSort(view) {
+  const i = ACCEPTED_SORTS.findIndex(([k]) => k === listSort[view]);
+  listSort[view] = ACCEPTED_SORTS[(i + 1) % ACCEPTED_SORTS.length][0];
+  try { localStorage.setItem(`sre_${view}_sort`, listSort[view]); } catch {}
+  Q = queues(); idx[view] = 0; shot = 0; showAll = false; render();
+}
+function cycleAcceptedSort() { cycleSort("accepted"); }
+function sortedList(view, rows) {
+  const list = mk(rows.map((m) => m.appid));
+  if (listSort[view] === "name") return list;
+  return list.sort((x, y) => (listSort[view] === "newest" ? addedTime(y.appid) - addedTime(x.appid)
+    : addedTime(x.appid) - addedTime(y.appid)) || (sortName(x) < sortName(y) ? -1 : 1));
 }
 
+// A game whose media was purged after an earlier send (it bounced) has no folder; it
+// still shows, so a new email can be researched and the game accepted again.
+const mk = (ids) => ids.map((a) => ({ appid: a, folder: S.index[String(a)] }))
+                       .filter((c) => (c.folder || S.issues?.[c.appid]) && !pendingCards.has(c.appid))
+                       .sort((x, y) => sortName(x) < sortName(y) ? -1 : 1);
 function queues() {
-  // A game whose media was purged after an earlier send (it bounced) has no folder; it
-  // still shows, so a new email can be researched and the game accepted again.
-  const mk = (ids) => ids.map((a) => ({ appid: a, folder: S.index[String(a)] }))
-                         .filter((c) => (c.folder || S.issues?.[c.appid]) && !pendingCards.has(c.appid))
-                         .sort((x, y) => sortName(x) < sortName(y) ? -1 : 1);
   return {
     pending: mk(S.pending),
     passed: mk(S.passed),
     flagged: mk(S.flagged),
-    accepted: acceptedSort === "name" ? mk((S.accepted || []).map((m) => m.appid))
-      : mk((S.accepted || []).map((m) => m.appid)).sort((x, y) =>
-          (acceptedSort === "newest" ? addedTime(y.appid) - addedTime(x.appid) : addedTime(x.appid) - addedTime(y.appid))
-          || (sortName(x) < sortName(y) ? -1 : 1)),
+    accepted: sortedList("accepted", S.accepted || []),
+    scheduled: sortedList("scheduled", S.scheduledGames || []),
     mail: mk(S.mail.map((m) => m.appid)),
   };
 }
 const sortName = c => (c.folder || S.issues?.[c.appid]?.game || String(c.appid)).toLowerCase();
 let Q = null;
-const emailsOf = (appid) => ([...S.mail, ...(S.accepted || [])].find((m) => m.appid === appid) || {}).emails || "";
+const emailsOf = (appid) => ([...S.mail, ...(S.accepted || []), ...(S.scheduledGames || [])].find((m) => m.appid === appid) || {}).emails || "";
 
 function refreshError(message, background) {
   if (background && Q) { actionNotice = message; showBanner(); }
@@ -452,13 +460,14 @@ function render() {
     const t = b.dataset.tab;
     b.classList.toggle("on", t === tab);
     const count = b.querySelector("b");
-    if (count) count.textContent = t === "replies" ? (R ? R.length : "") : Q[t].length;
+    // Replies tab: unread replies only, so a new reply stands out
+    if (count) count.textContent = t === "replies" ? (R ? R.filter((r) => r.status === "unread").length : (S.repliesUnread ?? "")) : Q[t].length;
   });
   const view = $("#view");
   if (tab === "home") { renderHome(view); return; }
   if (tab === "replies") { renderReplies(view); return; }
   const list = Q[tab];
-  const gha = tab === "mail" && S.scheduled ? ghaBtn("📨 Send scheduled mails", "send") : "";
+  const gha = (tab === "mail" || tab === "scheduled") && S.scheduled ? ghaBtn("📨 Send scheduled mails", "send") : "";
   if (!list.length) {
     paint(view, (gha ? `<div class="bulk top">${gha}</div>` : "") +
                      `<div class="empty">${pendingCards.size ? 'Review actions are still saving…' : 'Nothing to review 🎉'}</div>`);
@@ -495,7 +504,9 @@ function render() {
   const mail = tab === "mail"
     ? `<div class="mail"><div class="to">To: ${escapeHtml(emailsOf(card.appid) || "(no recipient!)")}</div>${
         (m && m.mail) ? escapeHtml(m.mail) : "<i>(not drafted yet)</i>"}</div>`
-    : tab === "accepted" ? `<div class="mail"><div class="to">To: ${escapeHtml(emailsOf(card.appid) || "(no recipient!)")}</div><i>Verified. Waiting to be drafted.</i></div>` : "";
+    : tab === "accepted" ? `<div class="mail"><div class="to">To: ${escapeHtml(emailsOf(card.appid) || "(no recipient!)")}</div><i>Verified. Waiting to be drafted.</i></div>`
+    : tab === "scheduled" ? `<div class="mail"><div class="to">To: ${escapeHtml(emailsOf(card.appid) || "(no recipient!)")} · scheduled, goes out with the next send run</div>${
+        (m && m.mail) ? escapeHtml(m.mail) : "<i>(draft not found)</i>"}</div>` : "";
 
   // [label, action, class] per view: left = secondary, right = primary
   const B = {
@@ -503,6 +514,7 @@ function render() {
     passed: [["🚩 Flag", "flag", "bad"], ["✅ Accept", "accept", "ok"]],
     flagged: [["🗑 Delete", "reject", "bad"], ["✅ Pass", "pass", "ok"]],
     accepted: [["🗑 Delete", "reject", "bad"]],
+    scheduled: [["🗑 Delete", "reject", "bad"]],
     mail: [["❌ Reject", "reject", "bad"], ["✅ Approve", "approve", "ok"]],
   }[tab];
   const withEmail = Q.passed.filter(c => !noMail.has(c.appid)).length;
@@ -516,7 +528,7 @@ function render() {
          <button onclick="armed=null;render()">Cancel</button>`
       : `<button ${withEmail ? '' : 'disabled data-unavailable'} onclick="acceptAll()">✅ Accept all (${withEmail} with email)</button>`)
     : tab === "mail" ? `<button onclick="approveAll()">✅ Approve all (${list.length})</button>`
-    : tab === "accepted" ? `<button onclick="cycleAcceptedSort()" title="Change order">⇅ Sort: ${ACCEPTED_SORTS.find(([k]) => k === acceptedSort)[1]}</button>` : "";
+    : tab === "accepted" || tab === "scheduled" ? `<button onclick="cycleSort('${tab}')" title="Change order">⇅ Sort: ${ACCEPTED_SORTS.find(([k]) => k === listSort[tab])[1]}</button>` : "";
   const bulk = bulkBar + gha;
   const review = S.triageReviews?.[card.appid];
 
@@ -527,7 +539,7 @@ function render() {
       <h2>${escapeHtml(String(name))}</h2>
       <div class="meta">${metaHtml(card.appid, m)} · appid ${card.appid} · 📅 ${escapeHtml(S.releases?.[card.appid] || 'No release date')} ·
         <a href="https://store.steampowered.com/app/${card.appid}/" target="_blank" rel="noopener">Steam page 🔗</a>${
-        tab === 'accepted' && addedAt(card.appid) ? ` · ➕ Added ${escapeHtml(fmtShort(addedAt(card.appid)))}` : ''}${
+        (tab === 'accepted' || tab === 'scheduled') && addedAt(card.appid) ? ` · ➕ Added ${escapeHtml(fmtShort(addedAt(card.appid)))}` : ''}${
         noMail.has(card.appid) ? '<span class="badge">📭 No email</span>' : ''}${
         issue ? `<span class="badge warn" title="${escapeHtml(issue.reason || '')}">⚠️ ${escapeHtml(issueText(issue))}</span>` : ''}</div>
       ${img}${thumbs}${shotsCtl}${allShots}
@@ -555,7 +567,7 @@ function render() {
 const TILES = [
   ["Review", [["pending", "Pending", "pending"], ["triaged", "Triaged"], ["passed", "Passed", "passed"],
               ["flagged", "Flagged", "flagged"], ["no_mail", "No email (not accepted)"]]],
-  ["Outreach", [["verifying", "Verifying email"], ["accepted", "Accepted", "accepted"], ["drafted", "Drafted", "mail"], ["scheduled", "Scheduled", "mail"],
+  ["Outreach", [["verifying", "Verifying email"], ["accepted", "Accepted", "accepted"], ["drafted", "Drafted", "mail"], ["scheduled", "Scheduled", "scheduled"],
                 ["sending", "Sending"], ["sent", "Sent"], ["bounced", "Bounced"], ["replied", "Replied"]]],
   ["Quarantine", [["invalid", "Invalid"]]],
 ];
@@ -755,6 +767,7 @@ async function doAct(action) {
         for (const key of ['pending', 'passed', 'flagged']) S[key] = S[key].filter(id => id !== card.appid);
         S.mail = S.mail.filter(row => row.appid !== card.appid);
         if (S.accepted) S.accepted = S.accepted.filter(row => row.appid !== card.appid);
+        if (S.scheduledGames) S.scheduledGames = S.scheduledGames.filter(row => row.appid !== card.appid);
         if (action === 'triage_pass' || action === 'pass') S.passed.push(card.appid);
         if (action === 'flag') S.flagged.push(card.appid);
         if (action === 'accept') watchVerification([card.appid]);

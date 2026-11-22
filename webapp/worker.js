@@ -123,13 +123,17 @@ export const VIEW_SQL = {
     (SELECT count(*) FROM mail_send_log l WHERE l.sender=a.email AND l.sent_at >= datetime('now','-1 day'))
     FROM sender_accounts a ORDER BY a.daily_cap DESC, a.email`,
   // Steam release date shown on each review card, next to the appid
-  releases: "SELECT appid, release_date FROM scrape_tracker WHERE Mail_status IN ('Pending','Triaged','Accepted','Drafted') AND coalesce(release_date,'')<>'' ORDER BY appid",
+  releases: "SELECT appid, release_date FROM scrape_tracker WHERE Mail_status IN ('Pending','Triaged','Accepted','Drafted','Scheduled') AND coalesce(release_date,'')<>'' ORDER BY appid",
   // games the developer has on Steam (saved at discovery), shown next to the developer name
-  devGames: "SELECT appid, dev_game_count FROM scrape_tracker WHERE Mail_status IN ('Pending','Triaged','Accepted','Drafted') AND dev_game_count IS NOT NULL ORDER BY appid",
+  devGames: "SELECT appid, dev_game_count FROM scrape_tracker WHERE Mail_status IN ('Pending','Triaged','Accepted','Drafted','Scheduled') AND dev_game_count IS NOT NULL ORDER BY appid",
   // sent mails that bounced as a dead address (spam/policy blocks and delays are logged as 'ignored')
   bounced: "SELECT count(DISTINCT lower(recipient)) FROM mail_bounce_log WHERE recipient<>'' AND outcome NOT IN ('ignored','error')",
   // Accepted view: verified games waiting to be drafted, with the address the mail will go to
   accepted: "SELECT appid, emails, added_at FROM scrape_tracker WHERE Mail_status='Accepted' ORDER BY appid",
+  // Scheduled view: approved mails waiting for the send run
+  scheduledGames: "SELECT appid, emails, added_at FROM scrape_tracker WHERE Mail_status='Scheduled' ORDER BY appid",
+  // Replies tab badge: replies still unread in their mailbox (and not marked read here)
+  repliesUnread: "SELECT count(*) FROM mail_replies WHERE status='unread'",
 };
 
 // Replies view: every stored studio reply with the outreach mail it answers (mail_replies is
@@ -182,9 +186,11 @@ async function state(env) {
       [VIEW_SQL.devGames],
       [VIEW_SQL.bounced],
       [VIEW_SQL.accepted],
+      [VIEW_SQL.repliesUnread],
+      [VIEW_SQL.scheduledGames],
     ]),
   ]);
-  const [pending, passed, flagged, noMail, drafted, counts, reviews, issues, verifying, senders, releases, devGames, bounced, accepted] = db;
+  const [pending, passed, flagged, noMail, drafted, counts, reviews, issues, verifying, senders, releases, devGames, bounced, accepted, repliesUnread, scheduledGames] = db;
   const ids = rows => rows.map(r => Number(r[0]));
   const home = { ...homeCounts(counts), bounced: Number(bounced?.[0]?.[0]) || 0 };
   return {
@@ -200,6 +206,8 @@ async function state(env) {
     issues: Object.fromEntries(issues.map(([appid, raw, game]) => [Number(appid), { ...parseIssue(raw), game: game ?? null }])),
     mail: drafted.map((r) => ({ appid: Number(r[0]), emails: r[1] || "" })),
     accepted: (accepted || []).map((r) => ({ appid: Number(r[0]), emails: r[1] || "", added_at: r[2] ?? null })),
+    repliesUnread: Number(repliesUnread?.[0]?.[0]) || 0,
+    scheduledGames: (scheduledGames || []).map((r) => ({ appid: Number(r[0]), emails: r[1] || "", added_at: r[2] ?? null })),
     triageReviews: triageSnapshot(reviews).triageReviews,
     scheduled: home.scheduled > 0,
     pendingDrafts: home.accepted > 0,
