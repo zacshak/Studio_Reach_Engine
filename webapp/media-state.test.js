@@ -384,7 +384,7 @@ test('Accepted view sorts A-Z, newest added or oldest added, and remembers the c
   run('cycleAcceptedSort()');
   assert.deepEqual(order(), [2, 1, 3]);                       // newest added first
   assert.match(elements.get('#view').innerHTML, /Sort: Newest added/);
-  assert.match(elements.get('#view').innerHTML, /Added 2026-11-20/);
+  assert.match(elements.get('#view').innerHTML, /Added 20 Nov/);
   run('cycleAcceptedSort()');
   assert.deepEqual(order(), [3, 1, 2]);                       // oldest added first
   run('cycleAcceptedSort()');
@@ -429,4 +429,46 @@ test('dashboard times are shown in IST', async () => {
   assert.equal(run("fmtIST('2026-11-20T09:47:54+05:30')"), '2026-11-20 09:47 IST');  // already IST
   assert.equal(run("fmtIST('2026-11-22 20:00:00', true)"), '2026-11-23');            // date only, IST day
   assert.equal(run("fmtIST(null)"), '');
+});
+
+test('mailbox-style dates: time today, day and month this year, full date when opened', async () => {
+  const { run } = fixture(async () => response(emptyState));
+  await run('load()');
+  const now = "Date.parse('2026-11-22T06:30:00Z')";                       // 12:00 IST, 22 Nov
+  assert.equal(run(`fmtShort('2026-11-22T02:50:18Z', ${now})`), '08:20');      // today in IST
+  assert.equal(run(`fmtShort('2026-11-21T17:15:10Z', ${now})`), '21 Nov');     // yesterday
+  assert.equal(run(`fmtShort('2026-11-21T19:00:00Z', ${now})`), '00:30');      // after IST midnight = today
+  assert.equal(run(`fmtShort('2025-12-31T10:00:00Z', ${now})`), '31 Dec 2025');
+  assert.equal(run(`fmtLong('2026-11-22T02:50:18Z', ${now})`), 'Sun, 22 Nov, 08:20');
+  assert.equal(run(`fmtLong('2025-12-31T10:00:00Z', ${now})`), 'Wed, 31 Dec 2025, 15:30');
+});
+
+test('opened reply: Your message starts collapsed and unread replies get Mark as read', async () => {
+  const replies = [{ reply_id: '<u@x.co>', appid: 7, game_name: 'FixIt', mailbox: 'meshak@xrevise.cc', from_name: 'M',
+    from_addr: 'dev@x.co', subject: 'Re', received_at: '2026-11-19T14:32:54Z', status: 'unread', body: 'Hi',
+    our_subject: 'FixIt?', our_body: 'hey', our_sent_at: '2026-11-12T12:30:34Z' },
+    { reply_id: '<r@x.co>', appid: 8, game_name: 'Other', mailbox: 'a@b.co', from_name: '', from_addr: 'o@x.co',
+    subject: 'Re', received_at: '2026-11-18T10:00:00Z', status: 'read', body: 'Hello', our_subject: 'S', our_body: 'b', our_sent_at: null }];
+  const calls = [];
+  const fetch = async (url, options) => {
+    if (url === '/api/act') { calls.push(JSON.parse(options.body)); return { ok: true, status: 200, json: async () => ({ ok: true }) }; }
+    return response(url === '/api/state' ? emptyState : url === '/api/replies' ? { replies } : {});
+  };
+  const { run, elements } = fixture(fetch);
+  await run('load()');
+  run("openTab('replies')");
+  for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve));
+  run(`showReply('<u@x.co>')`);
+  let page = elements.get('#view').innerHTML;
+  assert.match(page, /<details class="rmsg ours" +ontoggle=/);              // collapsed: no "open"
+  assert.match(page, /Mark as read/);
+  await run(`markReplyRead('<u@x.co>')`);
+  assert.deepEqual(calls.at(-1), { action: 'mark_reply_read', reply_id: '<u@x.co>' });
+  page = elements.get('#view').innerHTML;
+  assert.doesNotMatch(page, /Mark as read/);
+  assert.match(page, /pill read">Read/);
+  run('oursOpen = true; renderedHTML = null; render()');
+  assert.match(elements.get('#view').innerHTML, /<details class="rmsg ours" open/);
+  run(`showReply('<r@x.co>')`);
+  assert.doesNotMatch(elements.get('#view').innerHTML, /Mark as read/);     // already read
 });

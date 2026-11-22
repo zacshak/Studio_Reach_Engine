@@ -105,6 +105,16 @@
   .rmsg h3 { margin: 0 0 .3rem; font-size: .95rem; }
   .rmsg .hdr { color: #9aa4b2; font-size: .8rem; margin-bottom: .5rem; }
   .rmsg .text { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
+  .rmsg .rhead { display: flex; align-items: center; gap: .6rem; }
+  .rmsg .rhead h3 { margin: 0 0 .3rem; }
+  .markread { margin-left: auto; background: #1e3a8a; color: #dbeafe; border: 1px solid #3b82f6;
+    border-radius: 8px; padding: .35rem .8rem; cursor: pointer; font: inherit; font-size: .85rem; }
+  details.ours > summary { cursor: pointer; list-style: none; display: flex; flex-wrap: wrap; align-items: baseline; gap: .6rem; }
+  details.ours > summary::-webkit-details-marker { display: none; }
+  details.ours > summary h3 { margin: 0; }
+  details.ours > summary h3::before { content: "▸ "; color: #9aa4b2; }
+  details.ours[open] > summary h3::before { content: "▾ "; }
+  details.ours[open] > summary { margin-bottom: .5rem; }
   .devcount { display: inline-block; background: #1e293b; color: #cbd5e1; border-radius: 999px;
     padding: 0 .45rem; font-size: .78rem; margin-left: .25rem; white-space: nowrap; }
   table.senders { width: 100%; border-collapse: collapse; margin: .4rem 0 1rem; font-size: .9rem; }
@@ -275,6 +285,24 @@ function parseTime(value) {
 }
 const IST_PARTS = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit",
   day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+const IST_LONG = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Kolkata", weekday: "short", year: "numeric",
+  month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+function istParts(t, fmt = IST_LONG) { return Object.fromEntries(fmt.formatToParts(new Date(t)).map((x) => [x.type, x.value])); }
+// Mailbox-style dates: today -> "08:20", this year -> "21 Nov", older -> "21 Nov 2025".
+function fmtShort(value, now = Date.now()) {
+  const t = parseTime(value);
+  if (!Number.isFinite(t)) return value ? String(value) : "";
+  const p = istParts(t), n = istParts(now);
+  if (p.year === n.year && p.month === n.month && p.day === n.day) return `${p.hour}:${p.minute}`;
+  return p.year === n.year ? `${p.day} ${p.month}` : `${p.day} ${p.month} ${p.year}`;
+}
+// Full date for an opened mail: "Sat, 22 Nov, 08:20" (year added when not this year).
+function fmtLong(value, now = Date.now()) {
+  const t = parseTime(value);
+  if (!Number.isFinite(t)) return value ? String(value) : "";
+  const p = istParts(t), n = istParts(now);
+  return `${p.weekday}, ${p.day} ${p.month}${p.year === n.year ? "" : ` ${p.year}`}, ${p.hour}:${p.minute}`;
+}
 function fmtIST(value, dateOnly = false) {
   const t = parseTime(value);
   if (!Number.isFinite(t)) return value ? String(value) : "";
@@ -499,7 +527,7 @@ function render() {
       <h2>${escapeHtml(String(name))}</h2>
       <div class="meta">${metaHtml(card.appid, m)} · appid ${card.appid} · 📅 ${escapeHtml(S.releases?.[card.appid] || 'No release date')} ·
         <a href="https://store.steampowered.com/app/${card.appid}/" target="_blank" rel="noopener">Steam page 🔗</a>${
-        tab === 'accepted' && addedAt(card.appid) ? ` · ➕ Added ${escapeHtml(fmtIST(addedAt(card.appid), true))}` : ''}${
+        tab === 'accepted' && addedAt(card.appid) ? ` · ➕ Added ${escapeHtml(fmtShort(addedAt(card.appid)))}` : ''}${
         noMail.has(card.appid) ? '<span class="badge">📭 No email</span>' : ''}${
         issue ? `<span class="badge warn" title="${escapeHtml(issue.reason || '')}">⚠️ ${escapeHtml(issueText(issue))}</span>` : ''}</div>
       ${img}${thumbs}${shotsCtl}${allShots}
@@ -574,6 +602,7 @@ function openTab(t) { tab = t; shot = 0; armed = null; showAll = false; render()
 let R = null;                 // /api/replies rows, newest first (null until loaded)
 let openReply = null;         // reply_id shown in detail, or null for the list
 let repliesError = "", repliesLoading = false, repliesRefreshAt = 0;
+let oursOpen = false;          // "Your message" expanded on the open reply
 async function loadReplies() {
   if (repliesLoading) return;
   repliesLoading = true;
@@ -586,13 +615,20 @@ async function loadReplies() {
   finally { repliesLoading = false; render(); }
 }
 const STATUS_LABEL = { unread: "Unread", read: "Read", replied: "Replied" };
-const fmtWhen = (iso) => fmtIST(iso);
-function showReply(id) { openReply = id; renderedHTML = null; render(); globalThis.scrollTo?.(0, 0); }
+function showReply(id) { openReply = id; oursOpen = false; renderedHTML = null; render(); globalThis.scrollTo?.(0, 0); }
 function closeReply() { openReply = null; renderedHTML = null; render(); }
+async function markReplyRead(id) {
+  if (await api("mark_reply_read", { reply_id: id })) {
+    const row = R.find((r) => r.reply_id === id);
+    if (row) row.status = "read";
+    toast("Marked as read. Your mailbox shows it as read within a minute or two.", "info");
+  }
+  renderedHTML = null; render();
+}
 async function refreshReplies() {
   if (await api("trigger", { workflow: "replies" })) {
     repliesRefreshAt = Date.now();
-    toast("Checking all mailboxes for replies. This takes a minute or two; the list updates by itself.");
+    toast("Checking all mailboxes for replies. This takes a minute or two; the list updates by itself.", "info");
     for (const wait of [90000, 150000, 240000]) setTimeout(loadReplies, wait);
   }
   render();
@@ -612,13 +648,15 @@ function renderReplies(view) {
         <h2>${escapeHtml(reply.game_name || String(reply.appid))}</h2>
         <div class="meta">${pill} · appid ${reply.appid} ·
           <a href="https://store.steampowered.com/app/${reply.appid}/" target="_blank" rel="noopener">Steam page 🔗</a></div>
-        <div class="rmsg"><h3>Their reply</h3>
+        <div class="rmsg"><div class="rhead"><h3>Their reply</h3>${reply.status === "unread"
+            ? `<button class="markread" ${writeBusy ? "disabled" : ""} onclick="markReplyRead(${escapeHtml(JSON.stringify(reply.reply_id))})">✓ Mark as read</button>` : ""}</div>
           <div class="hdr">From ${escapeHtml(reply.from_name ? `${reply.from_name} <${reply.from_addr}>` : reply.from_addr || "")}
-            · to ${escapeHtml(reply.mailbox)} · ${escapeHtml(fmtWhen(reply.received_at))}<br>${escapeHtml(reply.subject || "")}</div>
+            · to ${escapeHtml(reply.mailbox)} · ${escapeHtml(fmtLong(reply.received_at))}<br>${escapeHtml(reply.subject || "")}</div>
           <div class="text">${escapeHtml(reply.body || "(no text)")}</div></div>
-        <div class="rmsg"><h3>Your message</h3>
-          <div class="hdr">From ${escapeHtml(reply.mailbox)} · ${escapeHtml(fmtWhen(reply.our_sent_at))}<br>${escapeHtml(reply.our_subject || "")}</div>
-          <div class="text">${escapeHtml(reply.our_body || "(your original mail was not found in Sent)")}</div></div>
+        <details class="rmsg ours" ${oursOpen ? "open" : ""} ontoggle="oursOpen=this.open"><summary><h3>Your message</h3>
+          <span class="hdr">From ${escapeHtml(reply.mailbox)} · ${escapeHtml(fmtLong(reply.our_sent_at))}</span></summary>
+          <div class="hdr">${escapeHtml(reply.our_subject || "")}</div>
+          <div class="text">${escapeHtml(reply.our_body || "(your original mail was not found in Sent)")}</div></details>
       </div>`);
     return;
   }
@@ -632,7 +670,7 @@ function renderReplies(view) {
       <div class="top"><span class="pill ${r.status}">${STATUS_LABEL[r.status] || escapeHtml(r.status)}</span>
         <span class="game">${escapeHtml(r.game_name || String(r.appid))}</span>
         <span>· ${escapeHtml(r.from_name || r.from_addr || "")}</span>
-        <span class="when">${escapeHtml(fmtWhen(r.received_at))}</span></div>
+        <span class="when">${escapeHtml(fmtShort(r.received_at))}</span></div>
       <div class="snip">${escapeHtml((r.body || "").replace(/\s+/g, " ").slice(0, 160))}</div>
     </button>`).join("");
   paint(view, `${bar}${repliesError ? `<p>${escapeHtml(repliesError)}</p>` : ""}

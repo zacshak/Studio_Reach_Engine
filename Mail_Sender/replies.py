@@ -221,3 +221,45 @@ def sync_account(account, threads, *, matches, since, recipient, connect, log=pr
         except Exception:
             pass
     return saved
+
+
+# -- dashboard "Mark as read" -> the mailbox's read flag ------------------------------------
+def mark_read(account, items, *, connect, log=print):
+    """Set the read flag on each (reply_id, from_addr) in this mailbox. Returns reply_ids done."""
+    done = []
+    if account.gmail:
+        import gmail_api
+        for reply_id, _addr in items:
+            hit = gmail_api.find_message_id(account.email, reply_id)
+            if hit:
+                gmail_api.mark_read(account.email, hit["id"])
+                done.append(reply_id)
+            else:
+                log(f"  not found in {account.email}: {reply_id}")
+        return done
+    imap = connect(account.imap)
+    try:
+        account.imap_login(imap)
+        if imap.select("INBOX")[0] != "OK":       # read-write: this is the one write we make
+            raise RuntimeError("cannot open INBOX")
+        for reply_id, addr in items:
+            # Outlook ignores HEADER searches: find by sender, then match the Message-ID exactly.
+            typ, data = imap.search(None, "FROM", f'"{addr}"')
+            found = False
+            for number in (data[0].split() if typ == "OK" and data and data[0] else []):
+                typ, parts = imap.fetch(number, "(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
+                header = next((p[1] for p in parts or [] if isinstance(p, tuple)), b"")
+                msg = email.message_from_bytes(header or b"", policy=policy.default)
+                if str(msg.get("Message-ID") or "").strip() == reply_id:
+                    imap.store(number, "+FLAGS", "(\\Seen)")
+                    found = True
+            if found:
+                done.append(reply_id)
+            else:
+                log(f"  not found in {account.email}: {reply_id}")
+    finally:
+        try:
+            imap.logout()
+        except Exception:
+            pass
+    return done

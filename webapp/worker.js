@@ -141,6 +141,9 @@ export const REPLIES_SQL = `SELECT r.reply_id, r.appid, s.game_name, r.mailbox, 
 const REPLY_FIELDS = ['reply_id', 'appid', 'game_name', 'mailbox', 'from_name', 'from_addr', 'subject',
   'received_at', 'status', 'body', 'our_subject', 'our_body', 'our_sent_at', 'updated_at'];
 
+export const MARK_READ_SQL = "UPDATE mail_replies SET status='read', mark_read_pending=1, " +
+  "updated_at=CURRENT_TIMESTAMP WHERE reply_id=? AND status='unread' RETURNING reply_id";
+
 export async function repliesList(env, run = sql) {
   const [rows] = await run(env, [[REPLIES_SQL]]);
   return { replies: rows.map(row => Object.fromEntries(REPLY_FIELDS.map((k, i) =>
@@ -291,6 +294,14 @@ async function act(env, body) {
     case "reject_all_irrelevant": {
       const appids = manyIds(body);
       return rejectGames(env, appids);
+    }
+    case "mark_reply_read": { // Replies view: mark an unread reply read here, then in its mailbox
+      const replyId = String(body.reply_id || "");
+      if (!replyId || replyId.length > 998) throw new Error("invalid reply_id");
+      const [changed] = await sql(env, [[MARK_READ_SQL, replyId]]);
+      if (!changed.length) throw new Refused("That reply is not unread any more.");
+      await dispatchWorkflow(env, "mark_read");   // sets the read flag in the mailbox
+      break;
     }
     case "trigger": { // fire a GHA workflow (send / draft / verify ...) on master
       if (body.workflow === 'send') await startSend(env, sql);

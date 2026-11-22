@@ -1,0 +1,44 @@
+name: Mark replies read
+
+# Started by the dashboard's "Mark as read" on a reply: sets the read flag on that reply in
+# its mailbox (IMAP STORE \Seen or the Gmail API), so the mailbox and the dashboard agree.
+# Only touches replies the dashboard queued (mail_replies.mark_read_pending). Sends nothing.
+on:
+  workflow_dispatch: {}
+
+concurrency:
+  group: mark-read
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  mark-read:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install --quiet libsql==0.1.11 dnspython==2.7.0 cryptography==50.0.1 google-auth==2.62.2 google-api-python-client==2.202.0
+      - name: Service account key file (Gmail API)
+        env:
+          GOOGLE_SA_KEY: ${{ secrets.GOOGLE_SA_KEY }}
+        run: |
+          if [ -n "$GOOGLE_SA_KEY" ]; then
+            umask 077
+            printf '%s' "$GOOGLE_SA_KEY" > "$RUNNER_TEMP/google-sa-key.json"
+            echo "GOOGLE_SA_KEY_FILE=$RUNNER_TEMP/google-sa-key.json" >> "$GITHUB_ENV"
+          fi
+      - name: Set the read flag on queued replies
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          SENDER_ACCOUNTS: ${{ secrets.SENDER_ACCOUNTS }}
+          MS_TOKEN_KEY: ${{ secrets.MS_TOKEN_KEY }}
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: python -u Mail_Sender/mailer.py --mark-replies-read
