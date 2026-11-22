@@ -47,11 +47,19 @@
   .mail { background: #161b26; border: 1px solid #262b36; border-radius: 10px;
           padding: .8rem; margin: .8rem 0; white-space: pre-wrap; font-size: .92rem; }
   .mail .to { color: #34d399; font-size: .85rem; margin-bottom: .5rem; }
-  .nav { display: flex; align-items: center; justify-content: center; gap: 1rem; margin: .8rem 0; }
-  .nav button { background: #1b2330; color: #e6e6e6; border: 1px solid #262b36;
-                border-radius: 8px; padding: .35rem .9rem; cursor: pointer; }
-  .nav span { color: #9aa4b2; font-size: .85rem; min-width: 70px; text-align: center; }
-  .nav button { min-width: 44px; min-height: 44px; }
+  /* Previous / next float over the page at a fixed spot (screen edges, vertically centred;
+     just outside the card column on wide screens), so they never scroll out of reach. */
+  .nav button { position: fixed; top: 50%; transform: translateY(-50%); z-index: 4;
+                width: 52px; height: 52px; border-radius: 50%; cursor: pointer;
+                background: #1b2330d9; color: #e6e6e6; border: 1px solid #3b4252;
+                font-size: 1.4rem; line-height: 1; box-shadow: 0 4px 16px #0009;
+                -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px); }
+  .nav button:hover { background: #26324ad9; border-color: #3b82f6; }
+  .nav button.prev { left: max(.4rem, calc(50vw - 430px - 4rem)); }
+  .nav button.next { right: max(.4rem, calc(50vw - 430px - 4rem)); }
+  .nav span { position: fixed; left: 50%; transform: translateX(-50%); z-index: 4;
+              bottom: calc(4.4rem + env(safe-area-inset-bottom)); color: #c9d1dc; font-size: .8rem;
+              background: #1b2330e6; border: 1px solid #262b36; border-radius: 999px; padding: .15rem .7rem; }
   .tab { min-height: 44px; }
   .refresh { min-width: 44px; min-height: 44px; background: #1b2330; color: #e6e6e6; border: 1px solid #52525b; border-radius: 8px; cursor: pointer; }
   #activity { position: fixed; top: 4rem; right: 1rem; z-index: 3; background: #1b2330; color: #e6e6e6; padding: .4rem .7rem; border-radius: 6px; pointer-events: none; }
@@ -548,7 +556,7 @@ function render() {
       <div class="desc">${m ? escapeHtml(m.desc || "") : "Loading…"}</div>
       ${mail}
       <div class="nav">
-        <button aria-label="Previous game" onclick="move(-1)">←</button><span>${i + 1} / ${list.length}</span><button aria-label="Next game" onclick="move(1)">→</button>
+        <button class="prev" aria-label="Previous game" title="Previous (←)" onclick="move(-1)">←</button><span>${i + 1} / ${list.length}</span><button class="next" aria-label="Next game" title="Next (→)" onclick="move(1)">→</button>
       </div>
       <div class="actions">
         ${B.map(([label, action, cls]) => `<button class="${cls}" onclick="doAct('${action}')">${label}</button>`).join("")}
