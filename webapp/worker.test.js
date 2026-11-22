@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  approveStmt, VIEW_SQL, homeCounts, sql, updateJSON,
+  approveStmt, VIEW_SQL, homeCounts, sql, updateJSON, REPLIES_SQL, repliesList,
 } from "./worker.js";
 import worker from "./worker.js";
 
@@ -322,4 +322,18 @@ test("public API does not require or set an authentication cookie", async () => 
   const response = await worker.fetch(new Request("https://example/api/not-found"), {});
   assert.equal(response.status, 404);
   assert.equal(response.headers.get("set-cookie"), null);
+});
+
+test('replies list returns every stored reply with its game, newest first', async () => {
+  let asked;
+  const run = async (_env, stmts) => { asked = stmts; return [[
+    ['<r@x>', '7', 'FixIt', 'meshak@xrevise.cc', 'Michal', 'dev@x.co', 'Re: FixIt', '2026-11-19T14:32:54Z', 'unread',
+     'Send me your portfolio.', 'FixIt?', 'hey', '2026-11-12T12:30:34Z', '2026-11-22 10:00:00']]]; };
+  const result = await repliesList({}, run);
+  assert.deepEqual(asked, [[REPLIES_SQL]]);
+  assert.match(REPLIES_SQL, /ORDER BY r\.received_at DESC/);
+  assert.deepEqual(result.replies[0], { reply_id: '<r@x>', appid: 7, game_name: 'FixIt', mailbox: 'meshak@xrevise.cc',
+    from_name: 'Michal', from_addr: 'dev@x.co', subject: 'Re: FixIt', received_at: '2026-11-19T14:32:54Z', status: 'unread',
+    body: 'Send me your portfolio.', our_subject: 'FixIt?', our_body: 'hey', our_sent_at: '2026-11-12T12:30:34Z',
+    updated_at: '2026-11-22 10:00:00' });
 });

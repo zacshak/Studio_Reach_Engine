@@ -296,6 +296,13 @@ def thread_headers(mailbox, thread_id, names=("From", "Date", "In-Reply-To", "Re
     return out
 
 
+def thread_messages(mailbox, thread_id):
+    """[{'id', 'labelIds'}] for every message in a thread, oldest first."""
+    data = execute(mailbox, client(mailbox).users().threads().get(
+        userId="me", id=thread_id, format="minimal"))
+    return [{"id": m["id"], "labelIds": m.get("labelIds") or []} for m in data.get("messages") or []]
+
+
 def fetch_unread(mailbox, q="is:unread in:inbox", *, limit=100):
     """[(gmail id, threadId, raw bytes)] for matching messages. Does not mark them read."""
     return [(m["id"], m["threadId"], get_raw(mailbox, m["id"]))

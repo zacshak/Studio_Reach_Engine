@@ -6,6 +6,7 @@ const BATCH = 100;
 export const WORKFLOWS = {
   send: 'send.yml', draft: 'draft.yml', discover: 'discover.yml', verify: 'verify.yml',
   hermes: 'hermes.yml', kimchi: 'kimchi.yml', epic: 'epic-discovery.yml', restore: 'restore.yml',
+  replies: 'review-mails.yml',
 };
 
 export function batchIds(body, max = BATCH) {

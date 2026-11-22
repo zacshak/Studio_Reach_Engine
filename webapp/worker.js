@@ -4,6 +4,7 @@
 // wraps this handler; review actions update the page after server confirmation.
 //
 //   GET  /api/state   -> Home counts + all review views (1 DB round-trip + 1 R2 get)
+//   GET  /api/replies -> studio replies for the Replies view (newest first, with both mails)
 //   POST /api/act     -> {action, ...} — triage_pass / pass / flag / accept / accept_many /
 //                        verify_status /
 //                        reject / reject_all / approve / approve_all / trigger
@@ -130,6 +131,21 @@ export const VIEW_SQL = {
   // Accepted view: verified games waiting to be drafted, with the address the mail will go to
   accepted: "SELECT appid, emails, added_at FROM scrape_tracker WHERE Mail_status='Accepted' ORDER BY appid",
 };
+
+// Replies view: every stored studio reply with the outreach mail it answers (mail_replies is
+// filled by Mail_Sender/replies.py in the nightly reply check and the Refresh button's run).
+export const REPLIES_SQL = `SELECT r.reply_id, r.appid, s.game_name, r.mailbox, r.from_name, r.from_addr,
+  r.subject, r.received_at, r.status, r.body, r.our_subject, r.our_body, r.our_sent_at, r.updated_at
+  FROM mail_replies r LEFT JOIN scrape_tracker s ON s.appid=r.appid
+  ORDER BY r.received_at DESC, r.reply_id`;
+const REPLY_FIELDS = ['reply_id', 'appid', 'game_name', 'mailbox', 'from_name', 'from_addr', 'subject',
+  'received_at', 'status', 'body', 'our_subject', 'our_body', 'our_sent_at', 'updated_at'];
+
+export async function repliesList(env, run = sql) {
+  const [rows] = await run(env, [[REPLIES_SQL]]);
+  return { replies: rows.map(row => Object.fromEntries(REPLY_FIELDS.map((k, i) =>
+    [k, k === 'appid' ? Number(row[i]) : row[i] ?? null]))) };
+}
 
 export function homeCounts(rows) {
   const c = { pending: 0, triaged: 0, passed: 0, flagged: 0, no_mail: 0, verifying: 0, accepted: 0, drafted: 0,
@@ -353,6 +369,7 @@ export default {
         if (req.method === 'POST' && path === '/api/workflows/runs')
           response = json(await workflowRuns(env, await req.json()));
         if (path === "/api/state") response = json(await state(env));
+        if (path === "/api/replies" && req.method === "GET") response = json(await repliesList(env));
         if (path === "/api/act" && req.method === "POST") {
           const result = await act(env, await req.json());
           response = json(result);
