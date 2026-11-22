@@ -13,6 +13,7 @@ import email
 import hashlib
 import html
 import re
+from datetime import timezone
 from email import policy
 from email.utils import getaddresses, parsedate_to_datetime
 
@@ -65,7 +66,30 @@ def _when(msg):
 
 
 def _iso(when):
-    return when.strftime("%Y-%m-%dT%H:%M:%SZ") if when else None
+    if not when:
+        return None
+    if when.tzinfo is not None:
+        when = when.astimezone(timezone.utc)
+    return when.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _thread_replies(candidates, sent_ids, addr, message_id, started_at, matches):
+    """Replies in the conversation: mail from the studio that answers our outreach mail, a
+    later mail of ours to them, or one of their earlier replies (a follow-up)."""
+    known, picked = {message_id, *sent_ids}, []
+    changed = True
+    while changed:
+        changed = False
+        for raw, read in candidates:
+            if any(raw is p for p, _ in picked):
+                continue
+            if any(matches(raw, addr, ref, started_at) for ref in known):
+                picked.append((raw, read))
+                mid = str(email.message_from_bytes(raw, policy=policy.default).get("Message-ID") or "").strip()
+                if mid:
+                    known.add(mid)
+                changed = True
+    return picked
 
 
 def _sender(msg):
@@ -118,12 +142,12 @@ def _fetch(imap, number):
 def _imap_thread(imap, sent_folder, appid, addr, message_id, started_at, matches, since):
     imap.select("INBOX", readonly=True)
     typ, data = imap.search(None, "FROM", f'"{addr}"', "SINCE", since(started_at))
-    replies = []
+    candidates = []
     for number in (data[0].split() if typ == "OK" and data and data[0] else []):
         raw, read = _fetch(imap, number)
-        if raw and matches(raw, addr, message_id, started_at):
-            replies.append((raw, read))
-    if not replies:
+        if raw:
+            candidates.append((raw, read))
+    if not candidates:
         return [], None, []
     imap.select(sent_folder, readonly=True)
     typ, data = imap.search(None, "TO", f'"{addr}"', "SINCE", since(started_at))
@@ -133,6 +157,8 @@ def _imap_thread(imap, sent_folder, appid, addr, message_id, started_at, matches
         if raw:
             sent.append(email.message_from_bytes(raw, policy=policy.default))
     ours = next((m for m in sent if str(m.get("Message-ID") or "").strip() == message_id), None)
+    sent_ids = {str(m.get("Message-ID") or "").strip() for m in sent} - {""}
+    replies = _thread_replies(candidates, sent_ids, addr, message_id, started_at, matches)
     later = [_when(m) for m in sent if m is not ours and _when(m)]
     return replies, ours, later
 
@@ -159,17 +185,19 @@ def sync_account(account, threads, *, matches, since, recipient, connect, log=pr
             ours = gmail_api.find_message_id(account.email, message_id) if addr else None
             if not ours:
                 continue
-            replies, later, ours_msg = [], [], None
+            candidates, later, sent_ids, ours_msg = [], [], set(), None
             for m in gmail_api.thread_messages(account.email, ours["threadId"]):
                 raw = gmail_api.get_raw(account.email, m["id"])
+                parsed = email.message_from_bytes(raw, policy=policy.default)
                 if m["id"] == ours["id"]:
-                    ours_msg = email.message_from_bytes(raw, policy=policy.default)
-                elif matches(raw, addr, message_id, started_at):
-                    replies.append((raw, "UNREAD" not in m["labelIds"]))
+                    ours_msg = parsed
                 elif "SENT" in m["labelIds"]:
-                    when = _when(email.message_from_bytes(raw, policy=policy.default))
-                    if when:
-                        later.append(when)
+                    sent_ids.add(str(parsed.get("Message-ID") or "").strip())
+                    if _when(parsed):
+                        later.append(_when(parsed))
+                else:
+                    candidates.append((raw, "UNREAD" not in m["labelIds"]))
+            replies = _thread_replies(candidates, sent_ids - {""}, addr, message_id, started_at, matches)
             for row in _rows_for(appid, account.email, replies, ours_msg, later):
                 pipeline.save_reply(row)
                 saved += 1

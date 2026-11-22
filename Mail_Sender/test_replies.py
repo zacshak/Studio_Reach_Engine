@@ -29,6 +29,8 @@ REPLY = mail("Michal <dev@game.test>", "me@studio.test", "Re: FixIt: chain bonus
              "<reply.1@game.test>", OURS)
 UNRELATED = mail("Michal <dev@game.test>", "me@studio.test", "Hello", "Fri, 20 Nov 2026 10:00:00 +0000",
                  "Different thread", "<other@game.test>")
+SECOND = mail("Michal <dev@game.test>", "me@studio.test", "Re: Re: FixIt", "Sat, 21 Nov 2026 10:00:00 +0100",
+              "Thanks, looking at it now.", "<reply.2@game.test>", "<followup@studio.test>")
 FOLLOW_UP = mail("Meshak <me@studio.test>", "dev@game.test", "Re: FixIt", "Fri, 20 Nov 2026 09:00:00 +0000",
                  "Here it is", "<followup@studio.test>", "<reply.1@game.test>")
 
@@ -122,6 +124,15 @@ class RepliesTest(unittest.TestCase):
         self.sync([(REPLY, True)], [(OUR_MAIL, True), (FOLLOW_UP, True)])
         [row] = self.rows()                       # same reply updated, not duplicated
         self.assertEqual(row["status"], "replied")
+
+    def test_a_follow_up_reply_in_the_conversation_is_stored_too(self):
+        self.assertEqual(self.sync([(REPLY, True), (SECOND, False), (UNRELATED, False)],
+                                   [(OUR_MAIL, True), (FOLLOW_UP, True)]), 2)
+        rows = {r["reply_id"]: r for r in self.rows()}
+        self.assertEqual(set(rows), {"<reply.1@game.test>", "<reply.2@game.test>"})
+        self.assertEqual(rows["<reply.2@game.test>"]["received_at"], "2026-11-21T09:00:00Z")  # UTC
+        self.assertEqual(rows["<reply.2@game.test>"]["status"], "unread")
+        self.assertEqual(rows["<reply.1@game.test>"]["status"], "replied")
 
     def test_mail_outside_the_thread_is_never_stored(self):
         self.assertEqual(self.sync([(UNRELATED, False)], [(OUR_MAIL, True)]), 0)
