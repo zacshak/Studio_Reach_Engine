@@ -60,6 +60,15 @@
   .nav span { position: fixed; left: 50%; transform: translateX(-50%); z-index: 4;
               bottom: calc(4.4rem + env(safe-area-inset-bottom)); color: #c9d1dc; font-size: .8rem;
               background: #1b2330e6; border: 1px solid #262b36; border-radius: 999px; padding: .15rem .7rem; }
+  /* PC: one floating group "← 1 / 761 →" just above the action bar. Phones keep the edge arrows. */
+  @media (min-width: 701px) {
+    .nav { position: fixed; left: 50%; transform: translateX(-50%); z-index: 4;
+           bottom: calc(4.2rem + env(safe-area-inset-bottom)); display: flex; align-items: center; gap: .6rem; }
+    .nav button, .nav button.prev, .nav button.next, .nav span {
+           position: static; transform: none; left: auto; right: auto; top: auto; bottom: auto; }
+    .nav button { width: 44px; height: 44px; font-size: 1.2rem; }
+    .nav span { font-size: .85rem; padding: .3rem .8rem; }
+  }
   .tab { min-height: 44px; }
   .refresh { min-width: 44px; min-height: 44px; background: #1b2330; color: #e6e6e6; border: 1px solid #52525b; border-radius: 8px; cursor: pointer; }
   #activity { position: fixed; top: 4rem; right: 1rem; z-index: 3; background: #1b2330; color: #e6e6e6; padding: .4rem .7rem; border-radius: 6px; pointer-events: none; }
