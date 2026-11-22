@@ -31,7 +31,7 @@ function fixture(fetch) {
 
 test('Home plus the five review views render without socials state or controls', async () => {
   const views = ['pending', 'passed', 'flagged', 'accepted', 'mail'];
-  assert.deepEqual([...html.matchAll(/data-tab="([^"]+)"/g)].map(match => match[1]), ['home', ...views]);
+  assert.deepEqual([...html.matchAll(/data-tab="([^"]+)"/g)].map(match => match[1]), ['home', 'pending', 'passed', 'flagged', 'accepted', 'replies', 'mail']);
   assert.doesNotMatch(html, /renderSocials|toggleSocials|reqsocial|social-links|social-empty|Fetch requested socials|social research/);
   const buttons = { pending: ['reject', 'triage_pass'], passed: ['flag', 'accept'], flagged: ['reject', 'pass'], accepted: ['reject'], mail: ['reject', 'approve'] };
   for (const view of views) {
@@ -389,4 +389,34 @@ test('Accepted view sorts A-Z, newest added or oldest added, and remembers the c
   assert.deepEqual(order(), [3, 1, 2]);                       // oldest added first
   run('cycleAcceptedSort()');
   assert.deepEqual(order(), [2, 3, 1]);                       // back to A-Z
+});
+
+test('Replies view lists replies with status, opens one with both mails and Steam link, and goes back', async () => {
+  const replies = [
+    { reply_id: '<r2@x.co>', appid: 7, game_name: 'FixIt', mailbox: 'meshak@xrevise.cc', from_name: 'Michal', from_addr: 'dev@x.co',
+      subject: 'Re: FixIt', received_at: '2026-11-19T14:32:54Z', status: 'unread', body: 'Send me your portfolio.',
+      our_subject: 'FixIt: chain bonuses?', our_body: 'hey WilDanger Studio, what if mods chained?', our_sent_at: '2026-11-12T12:30:34Z' },
+    { reply_id: '<r1@y.co>', appid: 8, game_name: 'Spellout', mailbox: 'meshak@zacgamedev.com', from_name: '', from_addr: 'g@y.co',
+      subject: 'Re: Spellout', received_at: '2026-11-17T06:30:46Z', status: 'replied', body: 'Thanks but no.',
+      our_subject: 'Spellout', our_body: null, our_sent_at: null }];
+  const { run, elements } = fixture(async url => response(url === '/api/state' ? emptyState
+    : url === '/api/replies' ? { replies } : {}));
+  await run('load()');
+  run("openTab('replies')");
+  for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve));
+  let page = elements.get('#view').innerHTML;
+  assert.match(page, /2 replies · 1 unread/);
+  assert.match(page, /class="ritem unread"[\s\S]*FixIt[\s\S]*Send me your portfolio\./);
+  assert.match(page, /pill replied">Replied/);
+  assert.match(page, /Refresh replies/);
+  run(`showReply('<r2@x.co>')`);
+  page = elements.get('#view').innerHTML;
+  assert.match(page, /Back to replies/);
+  assert.match(page, /Their reply[\s\S]*Send me your portfolio\./);
+  assert.match(page, /Your message[\s\S]*what if mods chained\?/);
+  assert.match(page, /store\.steampowered\.com\/app\/7\//);
+  run('closeReply()');
+  assert.match(elements.get('#view').innerHTML, /2 replies · 1 unread/);
+  run(`showReply('<r1@y.co>')`);
+  assert.match(elements.get('#view').innerHTML, /your original mail was not found in Sent/);
 });

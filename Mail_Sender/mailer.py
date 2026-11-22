@@ -793,9 +793,11 @@ def review():
             ok = _scan_bounces(account.email, account.password, account)
         if not ok:
             failed.append((account.email, "bounce scan"))
+    by_email = {m.email.lower(): m for m in mailboxes}
     sent = pipeline.reply_evidence()
     if not sent:
         print("no Sent leads with retained reply evidence to review.")
+        _sync_replies(by_email, legacy, failed)
         return _review_summary(failed)
     if len(mailboxes) == 1:
         groups = {mailboxes[0].email.lower(): sent}
@@ -804,7 +806,6 @@ def review():
         groups = {}
         for row in sent:
             groups.setdefault((senders.get(row[0]) or legacy).lower(), []).append(row)
-    by_email = {m.email.lower(): m for m in mailboxes}
     replied = 0
     for sender, rows in groups.items():
         account = by_email.get(sender)
@@ -824,7 +825,30 @@ def review():
                   f"({len(rows)} lead(s) not checked): {exc}")
             failed.append((account.email, "reply scan"))
     print(f"reviewed {len(sent)} sent lead(s): {replied} replied -> marked 'Replied'.")
+    _sync_replies(by_email, legacy, failed)
     return _review_summary(failed)
+
+
+def _sync_replies(by_email, legacy, failed):
+    """Store every reply to a Replied game (text, status, our mail) for the Replies view."""
+    import replies
+    groups = {}
+    for appid, raw_email, message_id, started_at, sender in pipeline.replied_threads():
+        groups.setdefault((sender or legacy or "").lower(), []).append(
+            (appid, raw_email, message_id, started_at))
+    stored = 0
+    for sender, rows in groups.items():
+        account = by_email.get(sender)
+        if account is None:
+            print(f"WARN: replies of {len(rows)} game(s) not stored: no access to {sender or '(unknown)'}")
+            continue
+        try:
+            stored += replies.sync_account(account, rows, matches=_matches_reply, since=_imap_since,
+                                           recipient=_recipient, connect=_imap_connect)
+        except Exception as exc:  # one unreachable inbox must not stop the others
+            print(f"WARN: replies sync failed for {account.email} [{account.backend}]: {exc}")
+            failed.append((account.email, "replies sync"))
+    print(f"replies view: {stored} reply message(s) stored")
 
 
 def _review_summary(failed):

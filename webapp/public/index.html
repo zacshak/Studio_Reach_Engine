@@ -85,6 +85,26 @@
   #toast:empty { display: none; }
   .shotsall img { width: 100%; border-radius: 10px; margin-top: .4rem; display: block; }
   .badge.warn { background: #3b2f0b; color: #fde68a; }
+  /* Replies view: vertical list, then one reply with both mails */
+  .rlist { display: flex; flex-direction: column; gap: .5rem; }
+  .ritem { display: block; width: 100%; text-align: left; background: #161b26; color: #c9d1dc;
+    border: 1px solid #262b36; border-radius: 10px; padding: .7rem .9rem; cursor: pointer; font: inherit; }
+  .ritem:hover { border-color: #3b82f6; }
+  .ritem .top { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+  .ritem .game { font-weight: 600; color: #e6e6e6; }
+  .ritem .when { margin-left: auto; color: #9aa4b2; font-size: .8rem; }
+  .ritem .snip { color: #9aa4b2; font-size: .85rem; margin-top: .3rem; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  .ritem.unread { border-left: 3px solid #3b82f6; }
+  .ritem.unread .game, .ritem.unread .snip { color: #fff; }
+  .pill { border-radius: 999px; padding: .05rem .55rem; font-size: .75rem; }
+  .pill.unread { background: #1e3a8a; color: #bfdbfe; }
+  .pill.read { background: #262b36; color: #c9d1dc; }
+  .pill.replied { background: #064e3b; color: #a7f3d0; }
+  .rmsg { background: #161b26; border: 1px solid #262b36; border-radius: 10px; padding: .8rem 1rem; margin-top: .8rem; }
+  .rmsg h3 { margin: 0 0 .3rem; font-size: .95rem; }
+  .rmsg .hdr { color: #9aa4b2; font-size: .8rem; margin-bottom: .5rem; }
+  .rmsg .text { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
   .devcount { display: inline-block; background: #1e293b; color: #cbd5e1; border-radius: 999px;
     padding: 0 .45rem; font-size: .78rem; margin-left: .25rem; white-space: nowrap; }
   table.senders { width: 100%; border-collapse: collapse; margin: .4rem 0 1rem; font-size: .9rem; }
@@ -110,6 +130,7 @@
   <button class="tab" data-tab="passed">✅ Passed <b></b></button>
   <button class="tab" data-tab="flagged">🚩 Flagged <b></b></button>
   <button class="tab" data-tab="accepted">📋 Accepted <b></b></button>
+  <button class="tab" data-tab="replies">💬 Replies <b></b></button>
   <button class="tab" data-tab="mail">📧 Mail <b></b></button>
   <button class="refresh" onclick="load()" aria-label="Refresh dashboard">↻</button>
 </header>
@@ -309,6 +330,7 @@ async function load({ background = false } = {}) {
   noMail = new Set(S.noMail);
   Q = queues();
   render();
+  if (tab === "replies" && R !== null) loadReplies();   // keep statuses fresh on auto-refresh
 }
 
 // ---- manifests: fetch on view, prefetch the next card ----
@@ -385,10 +407,11 @@ function render() {
     const t = b.dataset.tab;
     b.classList.toggle("on", t === tab);
     const count = b.querySelector("b");
-    if (count) count.textContent = Q[t].length;
+    if (count) count.textContent = t === "replies" ? (R ? R.length : "") : Q[t].length;
   });
   const view = $("#view");
   if (tab === "home") { renderHome(view); return; }
+  if (tab === "replies") { renderReplies(view); return; }
   const list = Q[tab];
   const gha = tab === "mail" && S.scheduled ? ghaBtn("📨 Send scheduled mails", "send") : "";
   if (!list.length) {
@@ -529,6 +552,76 @@ function sendersPanel() {
     <tfoot><tr><td colspan="2">Total (accounts that can send)</td><td class="num">${sent} / ${total}</td><td></td></tr></tfoot></table>`;
 }
 function openTab(t) { tab = t; shot = 0; armed = null; showAll = false; render(); }
+
+// ---- Replies view: list of studio replies -> one reply with both mails -> back ----
+let R = null;                 // /api/replies rows, newest first (null until loaded)
+let openReply = null;         // reply_id shown in detail, or null for the list
+let repliesError = "", repliesLoading = false, repliesRefreshAt = 0;
+async function loadReplies() {
+  if (repliesLoading) return;
+  repliesLoading = true;
+  try {
+    const r = await fetch("/api/replies", { signal: AbortSignal.timeout(30000), cache: "no-store" });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(body.error || r.status);
+    R = body.replies || []; repliesError = "";
+  } catch (e) { repliesError = `Could not load replies: ${e.message}`; }
+  finally { repliesLoading = false; render(); }
+}
+const STATUS_LABEL = { unread: "Unread", read: "Read", replied: "Replied" };
+const fmtWhen = (iso) => (iso || "").replace("T", " ").replace(/:\d\dZ$/, " UTC");
+function showReply(id) { openReply = id; renderedHTML = null; render(); globalThis.scrollTo?.(0, 0); }
+function closeReply() { openReply = null; renderedHTML = null; render(); }
+async function refreshReplies() {
+  if (await api("trigger", { workflow: "replies" })) {
+    repliesRefreshAt = Date.now();
+    toast("Checking all mailboxes for replies. This takes a minute or two; the list updates by itself.");
+    for (const wait of [90000, 150000, 240000]) setTimeout(loadReplies, wait);
+  }
+  render();
+}
+function renderReplies(view) {
+  if (R === null) {
+    if (!repliesLoading && !repliesError) loadReplies();
+    paint(view, `<div class="empty">${escapeHtml(repliesError || "Loading replies…")}</div>`);
+    return;
+  }
+  const reply = openReply && R.find((r) => r.reply_id === openReply);
+  if (reply) {
+    const pill = `<span class="pill ${reply.status}">${STATUS_LABEL[reply.status] || escapeHtml(reply.status)}</span>`;
+    paint(view, `
+      <div class="bulk top"><button onclick="closeReply()">← Back to replies</button></div>
+      <div class="card">
+        <h2>${escapeHtml(reply.game_name || String(reply.appid))}</h2>
+        <div class="meta">${pill} · appid ${reply.appid} ·
+          <a href="https://store.steampowered.com/app/${reply.appid}/" target="_blank" rel="noopener">Steam page 🔗</a></div>
+        <div class="rmsg"><h3>Their reply</h3>
+          <div class="hdr">From ${escapeHtml(reply.from_name ? `${reply.from_name} <${reply.from_addr}>` : reply.from_addr || "")}
+            · to ${escapeHtml(reply.mailbox)} · ${escapeHtml(fmtWhen(reply.received_at))}<br>${escapeHtml(reply.subject || "")}</div>
+          <div class="text">${escapeHtml(reply.body || "(no text)")}</div></div>
+        <div class="rmsg"><h3>Your message</h3>
+          <div class="hdr">From ${escapeHtml(reply.mailbox)} · ${escapeHtml(fmtWhen(reply.our_sent_at))}<br>${escapeHtml(reply.our_subject || "")}</div>
+          <div class="text">${escapeHtml(reply.our_body || "(your original mail was not found in Sent)")}</div></div>
+      </div>`);
+    return;
+  }
+  openReply = null;
+  const unread = R.filter((r) => r.status === "unread").length;
+  const refreshing = repliesRefreshAt && Date.now() - repliesRefreshAt < 240000;
+  const bar = `<div class="bulk top"><button ${refreshing || writeBusy ? "disabled" : ""} onclick="refreshReplies()">${
+    refreshing ? "🔄 Checking mailboxes…" : "🔄 Refresh replies"}</button></div>`;
+  const items = R.map((r) => `
+    <button class="ritem ${r.status}" onclick="showReply(${escapeHtml(JSON.stringify(r.reply_id))})">
+      <div class="top"><span class="pill ${r.status}">${STATUS_LABEL[r.status] || escapeHtml(r.status)}</span>
+        <span class="game">${escapeHtml(r.game_name || String(r.appid))}</span>
+        <span>· ${escapeHtml(r.from_name || r.from_addr || "")}</span>
+        <span class="when">${escapeHtml(fmtWhen(r.received_at))}</span></div>
+      <div class="snip">${escapeHtml((r.body || "").replace(/\s+/g, " ").slice(0, 160))}</div>
+    </button>`).join("");
+  paint(view, `${bar}${repliesError ? `<p>${escapeHtml(repliesError)}</p>` : ""}
+    <p class="meta">${R.length} repl${R.length === 1 ? "y" : "ies"} · ${unread} unread</p>
+    ${R.length ? `<div class="rlist">${items}</div>` : '<div class="empty">No replies yet.</div>'}`);
+}
 
 function imageURL(folder, name, thumbnail = false) {
   const preview = manifests.get(folder)?.previews?.[name];
@@ -767,6 +860,7 @@ if (verifyWatch.size) { verifyStarted = Date.now(); scheduleVerifyPoll(1000); }
 document.querySelectorAll(".tab").forEach((b) =>
   b.addEventListener("click", () => { tab = b.dataset.tab; shot = 0; armed = null; showAll = false; render(); }));
 document.addEventListener("keydown", (e) => {
+  if (tab === "replies" && openReply && e.key === "Escape") { closeReply(); return; }
   if (!Q || !Q[tab]?.length) return;
   const key = e.key.toLowerCase();
   if (e.key === "ArrowLeft") move(-1);
