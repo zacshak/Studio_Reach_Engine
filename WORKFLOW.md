@@ -188,6 +188,20 @@ The calling coding agent researches X, LinkedIn, Instagram, Discord, and Website
 then saves using MCP through the scoped review backend. A successful save clears `Require_Socials`.
 Sending mail does not clear the request or its saved data.
 There is no socials dashboard, manual ReqSocial action, or socials GitHub Actions job.
+
+Research rules (owner decisions):
+- **Studio over game.** The socials are for job outreach, so when a studio has both a
+  studio account and a game-only account for a field (for example a studio Discord server
+  and a separate game server, or a studio X and a game X), save the studio one.
+- **Developer over publisher.** A publisher's accounts are not the studio's; prefer the
+  developer's own.
+- **Only links that belong to the studio or game:** linked from their Steam page or own
+  site, or clearly tied to them. Never a guessed handle or a same-name account; leave the
+  field null instead.
+- **Check Discord invites** with `https://discord.com/api/v10/invites/<code>` to see the
+  server name; never save a dead invite (404).
+- **If a page will not load**, try a scraper such as Firecrawl (through Composio) before
+  giving up. A domain with no web server (email only) has no site to save.
 Hermes continues to scrape email addresses only.
 
 Python initialization adds `Socials_Request_ID` without rebuilding the tracker or
