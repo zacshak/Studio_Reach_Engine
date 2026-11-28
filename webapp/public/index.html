@@ -147,6 +147,9 @@
   #verifyDialog h2 { margin: 0 0 .5rem; font-size: 1.05rem; color: #fecaca; }
   #verifyDialog li { margin: .35rem 0; }
   #verifyDialog button { margin-top: .6rem; }
+.socials { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 2px; }
+.socials .social { font-size: 12px; padding: 2px 9px; border: 1px solid #3b4252; border-radius: 999px; text-decoration: none; color: #c9d1dc; background: #161b26; white-space: nowrap; }
+.socials .social:hover, .socials .social:focus-visible { border-color: currentColor; }
 </style>
 </head>
 <body>
@@ -559,6 +562,7 @@ function render() {
         (tab === 'accepted' || tab === 'scheduled') && addedAt(card.appid) ? ` · ➕ Added ${escapeHtml(fmtShort(addedAt(card.appid)))}` : ''}${
         noMail.has(card.appid) ? '<span class="badge">📭 No email</span>' : ''}${
         issue ? `<span class="badge warn" title="${escapeHtml(issue.reason || '')}">⚠️ ${escapeHtml(issueText(issue))}</span>` : ''}</div>
+      ${socialsHtml(card.appid)}
       ${img}${thumbs}${shotsCtl}${allShots}
       ${tab === 'passed' && card.folder && m && !m.missing && Array.isArray(m.images) && !m.images.includes('SpriteSheet_Screenshots.png') ? '<p>Screenshots are incomplete; accepting rebuilds them from Steam.</p>' : ''}
       ${review ? `<details><summary>Triage: ${escapeHtml(review.decision)}</summary><p>${escapeHtml(review.reason || "")}</p>${review.criteria ? `<p>Criteria: ${escapeHtml(review.criteria)}</p>` : ''}</details>` : ""}
@@ -677,6 +681,7 @@ function renderReplies(view) {
         <h2>${escapeHtml(reply.game_name || String(reply.appid))}</h2>
         <div class="meta">${pill} · appid ${reply.appid} ·
           <a href="https://store.steampowered.com/app/${reply.appid}/" target="_blank" rel="noopener">Steam page 🔗</a></div>
+        ${socialsHtml(reply.appid)}
         <div class="rmsg"><div class="rhead"><h3>Their reply</h3>${reply.status === "unread"
             ? `<button class="markread" ${writeBusy ? "disabled" : ""} onclick="markReplyRead(${escapeHtml(JSON.stringify(reply.reply_id))})">✓ Mark as read</button>` : ""}</div>
           <div class="hdr">From ${escapeHtml(reply.from_name ? `${reply.from_name} <${reply.from_addr}>` : reply.from_addr || "")}
@@ -743,6 +748,14 @@ function metaHtml(appid, m) {
   return escapeHtml(dev.trim()) + badge + (rest.length ? " · " + escapeHtml(rest.join("·").trim()) : "");
 }
 
+// studio socials saved by MCP research, as small link chips (only links that were found)
+const SOCIAL_ICONS = { X: '𝕏', LinkedIn: 'in', Instagram: '📷', Discord: '💬', Website: '🌐' };
+function socialsHtml(appid) {
+  const links = S.socials?.[appid];
+  if (!links) return '';
+  return `<div class="socials">${Object.entries(SOCIAL_ICONS).filter(([k]) => links[k]).map(([k, icon]) =>
+    `<a class="social" href="${escapeHtml(links[k])}" target="_blank" rel="noopener" title="${escapeHtml(links[k])}">${icon} ${k}</a>`).join('')}</div>`;
+}
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));

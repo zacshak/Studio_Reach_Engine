@@ -141,7 +141,9 @@ test('dashboard state returns Home counts and the Pending, Passed, Flagged and M
     assert.equal(state.pendingDrafts, true);
     assert.equal(state.scheduled, false);
     assert.deepEqual(state.triageReviews[1], { decision: 'pass', reason: 'Fits', criteria: 'Custom', reviewed_at: '2026-11-09T00:00:00.000Z' });
-    for (const gone of ['triage', 'approval', 'nomail', 'untriaged', 'socials', 'requireSocials']) assert.equal(gone in state, false, gone);
+    assert.equal(statements[16], VIEW_SQL.socials);
+    assert.deepEqual(state.socials, {}); // only researched links; the old per-request socials state stays gone
+    for (const gone of ['triage', 'approval', 'nomail', 'untriaged', 'requireSocials']) assert.equal(gone in state, false, gone);
   } finally { globalThis.fetch = originalFetch; }
 });
 
@@ -345,4 +347,15 @@ test('replies list returns every stored reply with its game, newest first', asyn
 test('mark read only changes an unread reply and queues it for the mailbox', () => {
   assert.match(MARK_READ_SQL, /SET status='read', mark_read_pending=1/);
   assert.match(MARK_READ_SQL, /WHERE reply_id=\? AND status='unread' RETURNING reply_id/);
+});
+
+test('socialsMap keeps only saved http(s) links and drops empty games', async () => {
+  const { socialsMap } = await import('./worker.js');
+  const out = socialsMap([
+    ['5574450', JSON.stringify({ X: 'https://x.com/a', LinkedIn: null, Instagram: null, Discord: 'https://discord.gg/b', Website: 'javascript:alert(1)' })],
+    ['1', JSON.stringify({ X: null, LinkedIn: null, Instagram: null, Discord: null, Website: null })],
+    ['2', 'not json'],
+  ]);
+  assert.deepEqual(out, { 5574450: { X: 'https://x.com/a', Discord: 'https://discord.gg/b' } });
+  assert.match(VIEW_SQL.socials, /Socials_Data/);
 });

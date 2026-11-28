@@ -132,6 +132,8 @@ export const VIEW_SQL = {
   accepted: "SELECT appid, emails, added_at FROM scrape_tracker WHERE Mail_status='Accepted' ORDER BY appid",
   // Scheduled view: approved mails waiting for the send run
   scheduledGames: "SELECT appid, emails, added_at FROM scrape_tracker WHERE Mail_status='Scheduled' ORDER BY appid",
+  // researched studio socials (X, LinkedIn, Instagram, Discord, Website), shown as links on cards and replies
+  socials: "SELECT appid, Socials_Data FROM scrape_tracker WHERE Mail_status IN ('Pending','Triaged','Accepted','Drafted','Scheduled','Sent','Replied') AND coalesce(Socials_Data,'') NOT IN ('','{}') ORDER BY appid",
   // Replies tab badge: replies still unread in their mailbox (and not marked read here)
   repliesUnread: "SELECT count(*) FROM mail_replies WHERE status='unread'",
 };
@@ -152,6 +154,18 @@ export async function repliesList(env, run = sql) {
   const [rows] = await run(env, [[REPLIES_SQL]]);
   return { replies: rows.map(row => Object.fromEntries(REPLY_FIELDS.map((k, i) =>
     [k, k === 'appid' ? Number(row[i]) : row[i] ?? null]))) };
+}
+
+// appid -> {X, LinkedIn, Instagram, Discord, Website} with only the saved http(s) links kept
+export function socialsMap(rows) {
+  const out = {};
+  for (const [appid, raw] of rows || []) {
+    let data; try { data = JSON.parse(raw); } catch { continue; }
+    const links = Object.fromEntries(['X', 'LinkedIn', 'Instagram', 'Discord', 'Website']
+      .filter(k => typeof data?.[k] === 'string' && /^https?:\/\//i.test(data[k])).map(k => [k, data[k]]));
+    if (Object.keys(links).length) out[Number(appid)] = links;
+  }
+  return out;
 }
 
 export function homeCounts(rows) {
@@ -188,9 +202,10 @@ async function state(env) {
       [VIEW_SQL.accepted],
       [VIEW_SQL.repliesUnread],
       [VIEW_SQL.scheduledGames],
+      [VIEW_SQL.socials],
     ]),
   ]);
-  const [pending, passed, flagged, noMail, drafted, counts, reviews, issues, verifying, senders, releases, devGames, bounced, accepted, repliesUnread, scheduledGames] = db;
+  const [pending, passed, flagged, noMail, drafted, counts, reviews, issues, verifying, senders, releases, devGames, bounced, accepted, repliesUnread, scheduledGames, socials] = db;
   const ids = rows => rows.map(r => Number(r[0]));
   const home = { ...homeCounts(counts), bounced: Number(bounced?.[0]?.[0]) || 0 };
   return {
@@ -207,6 +222,7 @@ async function state(env) {
     mail: drafted.map((r) => ({ appid: Number(r[0]), emails: r[1] || "" })),
     accepted: (accepted || []).map((r) => ({ appid: Number(r[0]), emails: r[1] || "", added_at: r[2] ?? null })),
     repliesUnread: Number(repliesUnread?.[0]?.[0]) || 0,
+    socials: socialsMap(socials),
     scheduledGames: (scheduledGames || []).map((r) => ({ appid: Number(r[0]), emails: r[1] || "", added_at: r[2] ?? null })),
     triageReviews: triageSnapshot(reviews).triageReviews,
     scheduled: home.scheduled > 0,
