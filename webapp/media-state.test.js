@@ -342,8 +342,8 @@ test('workflow and bulk actions do not overtake queued card writes', async () =>
   assert.equal(writes,0);
 });
 
-test('cards show the release date next to the appid, or say there is none', async () => {
-  for (const [releases, expected] of [[{ 1: 'Mar 26, 2027' }, /appid 1 · 📅 Mar 26, 2027 ·/], [{}, /appid 1 · 📅 No release date ·/]]) {
+test('cards show the release date after the developer, or say there is none', async () => {
+  for (const [releases, expected] of [[{ 1: 'Mar 26, 2027' }, / · 📅 Mar 26, 2027 ·/], [{}, / · 📅 No release date ·/]]) {
     const state = { ...emptyState, index: { 1: 'Game_1' }, pending: [1], releases };
     const { run, elements } = fixture(async url => response(url === '/api/state' ? state
       : { name: 'Game', desc: 'Description', images: ['SpriteSheet_Screenshots.png'] }));
@@ -354,11 +354,11 @@ test('cards show the release date next to the appid, or say there is none', asyn
   }
 });
 
-test('cards show the developer\'s Steam game count right after the developer name', async () => {
+test('cards show the developer and Steam game count, without genres or appid', async () => {
   for (const [devGames, meta, expected] of [
-    [{ 1: 3 }, 'Red <Corn>  ·  Action, Indie', /Red &lt;Corn&gt;<span class="devcount"[^>]*>🎮 3 games<\/span> · Action, Indie · appid 1/],
-    [{ 1: 1 }, 'Solo', /Solo<span class="devcount"[^>]*>🎮 1 game<\/span> · appid 1/],
-    [{}, 'Studio  ·  Action', /Studio  ·  Action · appid 1/]]) {
+    [{ 1: 3 }, 'Red <Corn>  ·  Action, Indie', /Red &lt;Corn&gt;<span class="devcount"[^>]*>🎮 3 games<\/span> · 📅/],
+    [{ 1: 1 }, 'Solo', /Solo<span class="devcount"[^>]*>🎮 1 game<\/span> · 📅/],
+    [{}, 'Studio  ·  Action', /<div class="meta">Studio · 📅/]]) {
     const state = { ...emptyState, index: { 1: 'Game_1' }, pending: [1], devGames };
     const { run, elements } = fixture(async url => response(url === '/api/state' ? state
       : { name: 'Game', desc: 'Description', meta, images: ['SpriteSheet_Screenshots.png'] }));
@@ -366,6 +366,7 @@ test('cards show the developer\'s Steam game count right after the developer nam
     run("openTab('pending')");
     await new Promise(resolve => setImmediate(resolve));
     assert.match(elements.get('#view').innerHTML, expected);
+    assert.doesNotMatch(elements.get('#view').innerHTML, /Action|appid 1/);
   }
 });
 
